@@ -132,12 +132,25 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 	for i, k := range cfg.Server.APIKeys {
 		keys[i] = api.LocalKey{Name: k.Name, Key: k.Key}
 	}
+	tiers := make(map[string][]providers.ModelRef, len(cfg.Tiers))
+	for name, tier := range cfg.Tiers {
+		candidates := make([]providers.ModelRef, len(tier.Models))
+		for i, model := range tier.Models {
+			ref, err := providers.ParseModelRef(model)
+			if err != nil {
+				return nil, fmt.Errorf("tier %s model %d: %w", name, i, err)
+			}
+			candidates[i] = ref
+		}
+		tiers[name] = candidates
+	}
 	var allowedHosts []string
 	if cfg.Server.Loopback() {
 		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
 	}
 	return api.NewHandler(api.Options{
 		Providers:    set,
+		Tiers:        tiers,
 		LocalKeys:    keys,
 		AllowedHosts: allowedHosts,
 		Logger:       logger,

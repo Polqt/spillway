@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +21,8 @@ const maxBodyBytes = 10 << 20
 
 type chatHandler struct {
 	providers         providerSet
+	logger            *slog.Logger
+	tiers             map[string][]providers.ModelRef
 	bodyReadTimeout   time.Duration
 	chunkWriteTimeout time.Duration
 }
@@ -35,6 +39,23 @@ type chatBody struct {
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, ok := decodeChat(w, r, h.bodyReadTimeout)
 	if !ok {
+		return
+	}
+	if strings.HasPrefix(*body.Model, "spillway/") {
+		tier := strings.TrimPrefix(*body.Model, "spillway/")
+		candidates, ok := h.tiers[tier]
+		if !ok {
+			names := make([]string, 0, len(h.tiers))
+			for name := range h.tiers {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			writeError(w, http.StatusNotFound,
+				fmt.Sprintf("Tier %q not found. Configured tiers: %s.", tier, strings.Join(names, ", ")),
+				typeInvalidRequest, "model_not_found")
+			return
+		}
+		h.serveTier(w, r, tier, candidates, body)
 		return
 	}
 	ref, provider, ok := h.resolve(w, *body.Model)
@@ -61,6 +82,144 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp.Body)
+}
+
+type candidateFailure struct {
+	ref    providers.ModelRef
+	reason string
+}
+
+func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier string, candidates []providers.ModelRef, body chatBody) {
+	rec := recordFrom(r.Context())
+	rec.tier = tier
+	failures := make([]candidateFailure, 0, len(candidates))
+	for _, ref := range candidates {
+		if r.Context().Err() != nil {
+			return
+		}
+		provider, ok := h.providers.Lookup(ref.Provider)
+		if !ok {
+			// A validated config cannot reach this path, but an incomplete API option should fail safely.
+			err := providers.ErrModelNotFound
+			reason := candidateReason(err)
+			failures = append(failures, candidateFailure{ref: ref, reason: reason})
+			h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
+			continue
+		}
+		clearCandidateHeaders(w)
+		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
+		rec.attempts++
+		if body.Stream {
+			// Streaming attempts are handled by the next ticket. Calling the established path
+			// preserves v0.1 behaviour for a tier until that commit adds pre-first-chunk retry.
+			rec.provider, rec.model = ref.Provider, ref.Model
+			w.Header().Set("X-Spillway-Provider", ref.Provider)
+			w.Header().Set("X-Spillway-Model", ref.Model)
+			serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+			return
+		}
+		resp, err := provider.Chat(r.Context(), req)
+		if err == nil {
+			rec.provider, rec.model = ref.Provider, ref.Model
+			w.Header().Set("X-Spillway-Provider", ref.Provider)
+			w.Header().Set("X-Spillway-Model", ref.Model)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp.Body)
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		reason := candidateReason(err)
+		failures = append(failures, candidateFailure{ref: ref, reason: reason})
+		h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
+		if !isSpillable(err) {
+			clearCandidateHeaders(w)
+			rec.err = errors.New(reason)
+			writeProviderError(w, r, ref, err)
+			return
+		}
+	}
+	clearCandidateHeaders(w)
+	message := exhaustionMessage(tier, failures)
+	rec.err = errors.New("no candidate available")
+	writeError(w, http.StatusServiceUnavailable, message, typeAPI, "no_candidate_available")
+}
+
+func clearCandidateHeaders(w http.ResponseWriter) {
+	w.Header().Del("X-Spillway-Provider")
+	w.Header().Del("X-Spillway-Model")
+	w.Header().Del("Retry-After")
+}
+
+func (h *chatHandler) logCandidateFailure(r *http.Request, tier string, ref providers.ModelRef, kind string) {
+	h.logger.WarnContext(r.Context(), "tier candidate failed", "tier", tier, "provider", ref.Provider, "model", ref.Model, "error_kind", kind)
+}
+
+func candidateErrorKind(err error) string {
+	switch {
+	case errors.Is(err, providers.ErrRateLimited):
+		return "rate_limited"
+	case errors.Is(err, providers.ErrPaymentRequired):
+		return "payment_required"
+	case errors.Is(err, providers.ErrUnauthorized):
+		return "unauthorized"
+	case errors.Is(err, providers.ErrModelNotFound):
+		return "model_not_found"
+	case errors.Is(err, providers.ErrUpstreamUnavailable):
+		return "upstream_unavailable"
+	case errors.Is(err, providers.ErrBadRequest):
+		return "bad_request"
+	default:
+		return "upstream_error"
+	}
+}
+
+func candidateReason(err error) string {
+	switch candidateErrorKind(err) {
+	case "rate_limited":
+		return "rate limited"
+	case "payment_required":
+		return "payment required"
+	case "unauthorized":
+		return "unauthorized"
+	case "model_not_found":
+		return "model not found"
+	case "upstream_unavailable":
+		return "unavailable"
+	case "bad_request":
+		return "bad request"
+	default:
+		return "upstream error"
+	}
+}
+
+func isSpillable(err error) bool {
+	return errors.Is(err, providers.ErrRateLimited) || errors.Is(err, providers.ErrPaymentRequired) ||
+		errors.Is(err, providers.ErrUnauthorized) || errors.Is(err, providers.ErrModelNotFound) ||
+		errors.Is(err, providers.ErrUpstreamUnavailable)
+}
+
+func exhaustionMessage(tier string, failures []candidateFailure) string {
+	const maxMessageBytes = 1800
+	message := fmt.Sprintf("No candidate in tier %q can serve this request: ", tier)
+	for i, failure := range failures {
+		entry := fmt.Sprintf("%s %s", failure.ref.String(), failure.reason)
+		if i > 0 {
+			entry = "; " + entry
+		}
+		if len(message)+len(entry) > maxMessageBytes {
+			remaining := maxMessageBytes - len(message)
+			if remaining > 3 {
+				message += entry[:remaining-3] + "..."
+			} else {
+				message += "..."
+			}
+			break
+		}
+		message += entry
+	}
+	return message
 }
 
 func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (chatBody, bool) {
@@ -116,7 +275,7 @@ func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (
 }
 
 func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.ModelRef, providers.Provider, bool) {
-	if model == "auto" || strings.HasPrefix(model, "spillway/") {
+	if model == "auto" {
 		writeError(w, http.StatusNotFound,
 			fmt.Sprintf("Virtual model %q requires the router, which arrives in v0.3. Send a provider/model reference, or see GET /v1/models.", model),
 			typeInvalidRequest, "model_not_found")

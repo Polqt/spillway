@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -27,6 +28,8 @@ type providerSet interface {
 // Options configures NewHandler.
 type Options struct {
 	Providers providerSet
+	// Tiers maps virtual tier names to candidates in their configured order.
+	Tiers map[string][]providers.ModelRef
 	// LocalKeys must hold at least one non-empty key; there is no
 	// unauthenticated mode (ADR 0003).
 	LocalKeys []LocalKey
@@ -64,10 +67,14 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout})
+	tiers := make(map[string][]providers.ModelRef, len(o.Tiers))
+	for name, candidates := range o.Tiers {
+		tiers[name] = slices.Clone(candidates)
+	}
+	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout, tiers: tiers})
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
-		chunkWriteTimeout: o.ChunkWriteTimeout,
+		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, tiers: tiers,
 	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.

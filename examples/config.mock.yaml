@@ -10,5 +10,5 @@ providers:
   mock: {}
 
 tiers:
-  free:
-    models: [mock/echo]
+  demo:
+    models: [mock/rate-limited, mock/unavailable, mock/echo]

@@ -15,6 +15,8 @@ type requestRecord struct {
 	clientApp string
 	provider  string
 	model     string
+	tier      string
+	attempts  int
 	stream    bool
 	err       error
 }
@@ -81,6 +83,9 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 		}
 		if rec.provider != "" {
 			attrs = append(attrs, "provider", rec.provider, "model", rec.model, "stream", rec.stream)
+		}
+		if rec.tier != "" {
+			attrs = append(attrs, "tier", rec.tier, "attempts", rec.attempts)
 		}
 		if rec.err != nil {
 			attrs = append(attrs, "error", rec.err.Error())

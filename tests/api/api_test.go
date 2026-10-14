@@ -22,6 +22,7 @@ import (
 	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
+	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/redact"
 )
 
@@ -38,6 +39,23 @@ type countingProvider struct {
 	models func(context.Context) ([]providers.Model, error)
 	chat   func(providers.ChatRequest) (providers.ChatResponse, error)
 	stream func(context.Context, providers.ChatRequest) (providers.Stream, error)
+}
+
+type cancelingProvider struct {
+	started chan struct{}
+}
+
+func (*cancelingProvider) Name() string { return "cancel" }
+func (*cancelingProvider) Models(context.Context) ([]providers.Model, error) {
+	return nil, nil
+}
+func (p *cancelingProvider) Chat(ctx context.Context, _ providers.ChatRequest) (providers.ChatResponse, error) {
+	close(p.started)
+	<-ctx.Done()
+	return providers.ChatResponse{}, ctx.Err()
+}
+func (*cancelingProvider) ChatStream(context.Context, providers.ChatRequest) (providers.Stream, error) {
+	return nil, errors.New("not used")
 }
 
 func (p *countingProvider) Name() string { return p.name }
@@ -595,7 +613,7 @@ func TestChat_ModelNotFound(t *testing.T) {
 func TestChat_VirtualModelNotFoundPointsToRouterVersion(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)
-	for _, model := range []string{"auto", "spillway/cheap"} {
+	for _, model := range []string{"auto"} {
 		t.Run(model, func(t *testing.T) {
 			t.Parallel()
 			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
@@ -605,6 +623,289 @@ func TestChat_VirtualModelNotFoundPointsToRouterVersion(t *testing.T) {
 				t.Errorf("message = %s, want router version and model listing guidance", rec.Body)
 			}
 		})
+	}
+}
+
+func TestChat_TierSpillsInConfiguredOrder(t *testing.T) {
+	t.Parallel()
+	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := providers.NewSet(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &syncBuffer{}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.NewTextHandler(logs, nil)),
+		Tiers: map[string][]providers.ModelRef{"demo": {
+			{Provider: "mock", Model: "rate-limited"},
+			{Provider: "mock", Model: "unavailable"},
+			{Provider: "mock", Model: "echo"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+		}
+		if rec.Header().Get("X-Spillway-Provider") != "mock" || rec.Header().Get("X-Spillway-Model") != "echo" {
+			t.Errorf("spillway headers = %q/%q, want mock/echo", rec.Header().Get("X-Spillway-Provider"), rec.Header().Get("X-Spillway-Model"))
+		}
+		if got := rec.Header().Get("Retry-After"); got != "" {
+			t.Errorf("Retry-After = %q, want empty after failed candidates", got)
+		}
+		if !strings.Contains(rec.Body.String(), `"model":"echo"`) {
+			t.Errorf("response body does not identify echo: %s", rec.Body)
+		}
+	}
+	if !strings.Contains(logs.String(), `tier=demo`) || !strings.Contains(logs.String(), `attempts=3`) {
+		t.Errorf("logs do not identify tier and attempts: %s", logs)
+	}
+}
+
+func TestChat_TierSpillsOnlyForProviderFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		err       error
+		spill     bool
+		wantCalls int32
+	}{
+		{name: "rate limited", err: providers.ErrRateLimited, spill: true, wantCalls: 1},
+		{name: "payment required", err: providers.ErrPaymentRequired, spill: true, wantCalls: 1},
+		{name: "server errors", err: providers.ErrUpstreamUnavailable, spill: true, wantCalls: 1},
+		{name: "transport", err: fmt.Errorf("connection refused: %w", providers.ErrUpstreamUnavailable), spill: true, wantCalls: 1},
+		{name: "timeout", err: fmt.Errorf("timeout: %w", providers.ErrUpstreamUnavailable), spill: true, wantCalls: 1},
+		{name: "unauthorized", err: providers.ErrUnauthorized, spill: true, wantCalls: 1},
+		{name: "forbidden", err: providers.ErrUnauthorized, spill: true, wantCalls: 1},
+		{name: "not found", err: providers.ErrModelNotFound, spill: true, wantCalls: 1},
+		{name: "client error", err: providers.ErrBadRequest, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{}, tt.err
+			}}
+			second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{Body: json.RawMessage(`{"model":"second-model"}`)}, nil
+			}}
+			set, err := providers.NewSet(first, second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, err := api.NewHandler(api.Options{
+				Providers: set,
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+				Logger:    slog.New(slog.DiscardHandler),
+				Tiers: map[string][]providers.ModelRef{"demo": {
+					{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if got := second.calls.Load(); got != tt.wantCalls {
+				t.Errorf("later candidate calls = %d, want %d", got, tt.wantCalls)
+			}
+			if tt.spill && (rec.Code != http.StatusOK || rec.Header().Get("X-Spillway-Provider") != "second") {
+				t.Errorf("response = %d headers %v body %s, want second candidate success", rec.Code, rec.Header(), rec.Body)
+			}
+			if !tt.spill && rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400; body %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+func TestChat_TierDoesNotSpillOnUpstreamClientStatuses(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":{"message":"invalid request"}}`)
+			}))
+			defer upstream.Close()
+			first, err := openaicompat.New(openaicompat.Options{
+				Name: "first", BaseURL: upstream.URL, APIKey: redact.NewSecret(keyCursor), Timeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{Body: json.RawMessage(`{"model":"second"}`)}, nil
+			}}
+			set, err := providers.NewSet(first, second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, err := api.NewHandler(api.Options{
+				Providers: set,
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+				Logger:    slog.New(slog.DiscardHandler),
+				Tiers: map[string][]providers.ModelRef{"demo": {
+					{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assertError(t, rec, http.StatusBadRequest, "invalid_request_error", "provider_bad_request")
+			if got := second.calls.Load(); got != 0 {
+				t.Errorf("later candidate calls = %d for upstream %d, want 0", got, status)
+			}
+			if got := upstreamCalls.Load(); got != 1 {
+				t.Errorf("upstream calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestChat_TierExhaustionIsBoundedAndDoesNotLeakProviderText(t *testing.T) {
+	t.Parallel()
+	first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, fmt.Errorf("upstream response %s: %w", keyCursor, providers.ErrRateLimited)
+	}}
+	second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, fmt.Errorf("private upstream body: %w", providers.ErrUnauthorized)
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &syncBuffer{}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.NewTextHandler(logs, nil)),
+		Tiers: map[string][]providers.ModelRef{"demo": {
+			{Provider: "first", Model: "one"}, {Provider: "second", Model: "two"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertError(t, rec, http.StatusServiceUnavailable, "api_error", "no_candidate_available")
+	if len(rec.Body.Bytes()) >= 2<<10 {
+		t.Errorf("error body is %d bytes, want under 2 KiB", len(rec.Body.Bytes()))
+	}
+	for _, never := range []string{keyCI, keyCursor, "private upstream body", "upstream response"} {
+		if strings.Contains(rec.Body.String()+logs.String(), never) {
+			t.Errorf("response or logs leak %q: body=%s logs=%s", never, rec.Body, logs)
+		}
+	}
+	for _, want := range []string{"first/one rate limited", "second/two unauthorized"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("exhaustion message lacks %q: %s", want, rec.Body)
+		}
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After = %q after exhaustion, want empty", got)
+	}
+	for _, want := range []string{"tier=demo", "attempts=2", "error_kind=rate_limited", "error_kind=unauthorized"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs lack %q: %s", want, logs)
+		}
+	}
+	if got := strings.Count(logs.String(), `msg="tier candidate failed"`); got != 2 {
+		t.Errorf("failed-attempt log lines = %d, want 2: %s", got, logs)
+	}
+}
+
+func TestChat_TierUnknownNamesConfiguredTiersAndAutoStaysUnavailable(t *testing.T) {
+	t.Parallel()
+	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := providers.NewSet(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers:     map[string][]providers.ModelRef{"demo": {{Provider: "mock", Model: "echo"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for model, want := range map[string]string{"spillway/missing": "demo", "auto": "v0.3"} {
+		t.Run(model, func(t *testing.T) {
+			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assertError(t, rec, http.StatusNotFound, "invalid_request_error", "model_not_found")
+			if !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("message = %s, want %q", rec.Body, want)
+			}
+		})
+	}
+}
+
+func TestChat_TierCancellationStopsFurtherCandidates(t *testing.T) {
+	started := make(chan struct{})
+	first := &cancelingProvider{started: started}
+	second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: json.RawMessage(`{"model":"second"}`)}, nil
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers: map[string][]providers.ModelRef{"demo": {
+			{Provider: "cancel", Model: "blocked"}, {Provider: "second", Model: "candidate"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { h.ServeHTTP(rec, req); close(done) }()
+	<-started
+	cancel()
+	<-done
+	if got := second.calls.Load(); got != 0 {
+		t.Errorf("later candidate calls = %d after cancellation, want 0", got)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("response body = %s after cancellation, want empty", rec.Body)
 	}
 }
 
@@ -655,6 +956,58 @@ func TestModels_ListsConfiguredModelsInStableOrder(t *testing.T) {
 		if model.ID != want[i] || model.Object != "model" || model.OwnedBy == "" {
 			t.Errorf("data[%d] = %+v, want id %q and OpenAI model fields", i, model, want[i])
 		}
+	}
+}
+
+func TestModels_ListsSortedVirtualTiers(t *testing.T) {
+	t.Parallel()
+	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := providers.NewSet(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers: map[string][]providers.ModelRef{
+			"z-tier": {{Provider: "mock", Model: "echo"}},
+			"a-tier": {{Provider: "mock", Model: "echo"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var tiers []string
+	for _, item := range body.Data {
+		if strings.HasPrefix(item.ID, "spillway/") {
+			if item.OwnedBy != "spillway" {
+				t.Errorf("%s owned_by = %q, want spillway", item.ID, item.OwnedBy)
+			}
+			tiers = append(tiers, item.ID)
+		}
+	}
+	if got := strings.Join(tiers, ","); got != "spillway/a-tier,spillway/z-tier" {
+		t.Errorf("virtual tiers = %q, want sorted tier IDs", got)
 	}
 }
 
