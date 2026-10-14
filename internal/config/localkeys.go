@@ -81,7 +81,7 @@ func localKeyPath(i int) string {
 	return "server.api_keys[" + strconv.Itoa(i) + "]"
 }
 
-// isString reports whether n is a non-null scalar.
+// isString reports whether n is a string scalar.
 func isString(n *yaml.Node) bool {
-	return n.Kind == yaml.ScalarNode && n.Tag != "!!null"
+	return n.Kind == yaml.ScalarNode && n.Tag == "!!str"
 }

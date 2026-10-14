@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -16,7 +18,7 @@ import (
 var localKeyName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
 // knownProviders lists the provider names this release can build.
-var knownProviders = []string{"mock"}
+var knownProviders = []string{"gemini", "groq", "mock", "ollama", "openrouter"}
 
 func (c Config) validate() error {
 	if err := validateListen(c.Server.Listen); err != nil {
@@ -25,18 +27,41 @@ func (c Config) validate() error {
 	if err := validateLocalKeys(c.Server.APIKeys); err != nil {
 		return err
 	}
+	if !slices.Contains([]string{"debug", "info", "warn", "error"}, c.Logging.Level) {
+		return fmt.Errorf("logging.level %q must be debug, info, warn or error", c.Logging.Level)
+	}
 	return validateProviders(c.Providers)
 }
 
 func validateListen(listen string) error {
-	_, port, err := net.SplitHostPort(listen)
+	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		return fmt.Errorf("server.listen %q must be host:port, such as 127.0.0.1:8080", listen)
+		return fmt.Errorf("server.listen must be host:port, such as 127.0.0.1:8080")
 	}
 	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return fmt.Errorf("server.listen %q must have a port from 0 to 65535", listen)
+		return fmt.Errorf("server.listen port must be a number from 0 to 65535")
+	}
+	if host != "" && net.ParseIP(strings.Split(host, "%")[0]) == nil && !validHostname(host) {
+		return errors.New("server.listen host must be an IP address or a valid hostname")
 	}
 	return nil
+}
+
+func validHostname(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateLocalKeys enforces ADR 0003 (a local key on every listen address)
@@ -76,10 +101,56 @@ func validateProviders(ps map[string]Provider) error {
 	if len(ps) == 0 {
 		return errors.New(`providers must configure at least one provider; add "mock: {}" to try Spillway without provider keys`)
 	}
+	names := make([]string, 0, len(ps))
 	for name := range ps {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if name == "spillway" || name == "auto" {
+			return fmt.Errorf("providers.%s is reserved; use a provider name: %s", name, strings.Join(knownProviders, ", "))
+		}
 		if !slices.Contains(knownProviders, name) {
 			return fmt.Errorf("providers.%s: unknown provider; supported: %s", name, strings.Join(knownProviders, ", "))
 		}
+		p := ps[name]
+		requiresKey := name == "gemini" || name == "groq" || name == "openrouter"
+		if requiresKey && p.APIKey.IsZero() {
+			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s_API_KEY}\"", name, strings.ToUpper(name))
+		}
+		if name == "mock" && !p.APIKey.IsZero() {
+			return errors.New("providers.mock.api_key is not supported; remove it")
+		}
+		if p.Timeout <= 0 || p.Timeout > 30*time.Minute {
+			return fmt.Errorf("providers.%s.timeout must be positive and at most 30m", name)
+		}
+		if p.BaseURL != "" {
+			if err := validateBaseURL(name, p.BaseURL); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func validateBaseURL(provider, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
+		return fmt.Errorf("providers.%s.base_url must be an absolute URL without userinfo, query or fragment", provider)
+	}
+	if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
+		return fmt.Errorf("providers.%s.base_url must use https unless the host is loopback", provider)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("providers.%s.base_url scheme must be http or https", provider)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

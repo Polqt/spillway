@@ -74,3 +74,54 @@ func TestRun_UsageError(t *testing.T) {
 		})
 	}
 }
+
+func TestRun_CheckValidRedactsSecrets(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  api_keys: [\"${LOCAL_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"LOCAL_KEY": "sk-test-local-check", "GROQ_API_KEY": "sk-test-groq-check"}
+		value, ok := values[name]
+		return value, ok
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, lookup)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "[REDACTED]") || !strings.Contains(stdout.String(), "key-1") {
+		t.Errorf("stdout = %q, want redacted keys and key name", stdout.String())
+	}
+	if stderr.String() != "config OK\n" {
+		t.Errorf("stderr = %q, want config OK", stderr.String())
+	}
+	for _, secret := range []string{"sk-test-local-check", "sk-test-groq-check"} {
+		if strings.Contains(stdout.String()+stderr.String(), secret) {
+			t.Errorf("check output contains secret %q", secret)
+		}
+	}
+}
+
+func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  mock: {}\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "spillway: ") || !strings.Contains(stderr.String(), "MISSING_KEY") {
+		t.Errorf("stderr = %q, want prefixed variable diagnostic", stderr.String())
+	}
+}
+
+func TestRun_CheckMissingFlagValue(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config"}, &stdout, &stderr, noEnv)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+}

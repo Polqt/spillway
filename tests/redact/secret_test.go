@@ -3,6 +3,7 @@ package redact_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -125,6 +126,52 @@ func TestSecret_ZeroValue(t *testing.T) {
 	}
 	if redact.NewSecret(testKey).IsZero() {
 		t.Error("non-zero Secret: IsZero() = true, want false")
+	}
+}
+
+func TestScrubber_ReplacesSecretOccurrences(t *testing.T) {
+	t.Parallel()
+	scrubber := redact.NewScrubber(redact.NewSecret("secret"), redact.NewSecret("secret-long"), redact.NewSecret(""))
+	got := scrubber.Scrub("secret-long/secret/secret")
+	if got != "[REDACTED]/[REDACTED]/[REDACTED]" {
+		t.Errorf("Scrub() = %q, want every occurrence redacted", got)
+	}
+}
+
+func TestScrubber_ErrorKeepsIdentityWithoutLeaking(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("provider failure: " + testKey)
+	err := redact.NewScrubber(redact.NewSecret(testKey)).Error(sentinel)
+	if !errors.Is(err, sentinel) {
+		t.Error("scrubbed error lost its cause")
+	}
+	for _, verb := range []string{"%s", "%v", "%+v", "%#v", "%q"} {
+		if got := fmt.Sprintf(verb, err); strings.Contains(got, testKey) {
+			t.Errorf("Sprintf(%s) leaked the key: %q", verb, got)
+		}
+	}
+}
+
+type leakingStringer struct{ value string }
+
+func (s leakingStringer) String() string { return s.value }
+
+type leakingStruct struct{ value string }
+
+func TestHandler_ScrubsMessageAndAttributes(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	key := redact.NewSecret(testKey)
+	secretName := testKey
+	base := slog.NewTextHandler(&buf, nil)
+	logger := slog.New(redact.NewHandler(base, redact.NewScrubber(key))).With(secretName, testKey).WithGroup(secretName)
+	logger.Error(testKey, secretName, testKey, "err", errors.New(testKey), "stringer", leakingStringer{value: testKey}, "struct", leakingStruct{value: testKey}, "nested", slog.Group(secretName, "key", testKey))
+
+	if strings.Contains(buf.String(), testKey) {
+		t.Fatalf("log output contains key: %s", buf.String())
+	}
+	if got := strings.Count(buf.String(), "[REDACTED]"); got < 7 {
+		t.Errorf("log output has %d redactions, want at least 7: %s", got, buf.String())
 	}
 }
 

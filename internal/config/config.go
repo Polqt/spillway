@@ -9,7 +9,9 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/Polqt/spillway/internal/redact"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -21,7 +23,13 @@ const defaultListen = "127.0.0.1:8080"
 // Config is a loaded, validated config.
 type Config struct {
 	Server    Server              `yaml:"server"`
+	Logging   Logging             `yaml:"logging"`
 	Providers map[string]Provider `yaml:"providers"`
+}
+
+// Logging configures the program's structured logger.
+type Logging struct {
+	Level string `yaml:"level"`
 }
 
 // Server configures the HTTP listener and its local keys.
@@ -44,18 +52,75 @@ func (s Server) Host() string {
 // An empty host listens on every interface and is not loopback.
 func (s Server) Loopback() bool {
 	host := s.Host()
-	if strings.EqualFold(host, "localhost") {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
 
-// Provider configures one provider. The mock provider takes no settings.
-type Provider struct{}
+// Provider configures one upstream provider.
+type Provider struct {
+	APIKey     redact.Secret `yaml:"api_key,omitempty"`
+	BaseURL    string        `yaml:"base_url,omitempty"`
+	Timeout    time.Duration `yaml:"timeout,omitempty"`
+	timeoutSet bool
+}
+
+// UnmarshalYAML accepts durations as strings and keeps errors free of values.
+func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("provider config (line %d): must be a mapping", n.Line)
+	}
+	seen := make(map[string]struct{}, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		field, value := n.Content[i], n.Content[i+1]
+		if field.Value != "api_key" && field.Value != "base_url" && field.Value != "timeout" {
+			return fmt.Errorf("provider config (line %d): unknown field", field.Line)
+		}
+		if value.Kind != yaml.ScalarNode || value.Tag == "!!null" || value.Tag != "!!str" {
+			return fmt.Errorf("providers.%s (line %d): must be a string", field.Value, value.Line)
+		}
+		if _, ok := seen[field.Value]; ok {
+			return fmt.Errorf("providers.%s (line %d): duplicate field", field.Value, field.Line)
+		}
+		seen[field.Value] = struct{}{}
+		switch field.Value {
+		case "api_key":
+			p.APIKey = redact.NewSecret(value.Value)
+		case "base_url":
+			p.BaseURL = value.Value
+		case "timeout":
+			d, err := time.ParseDuration(value.Value)
+			if err != nil {
+				return fmt.Errorf("provider.timeout (line %d): must be a duration such as 30s", value.Line)
+			}
+			p.Timeout = d
+			p.timeoutSet = true
+		}
+	}
+	return nil
+}
+
+// MarshalYAML writes durations in their human-readable YAML form.
+func (p Provider) MarshalYAML() (any, error) {
+	value := map[string]any{"timeout": p.Timeout.String()}
+	if !p.APIKey.IsZero() {
+		value["api_key"] = p.APIKey
+	}
+	if p.BaseURL != "" {
+		value["base_url"] = p.BaseURL
+	}
+	return value, nil
+}
 
 // Load reads, parses and validates the config file at path.
 func Load(path string) (Config, error) {
+	return LoadWithEnv(path, os.LookupEnv)
+}
+
+// LoadWithEnv reads, expands, parses and validates the config at path.
+func LoadWithEnv(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	f, err := os.Open(path) // #nosec G304 -- the path is the operator's own -config flag
 	if err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
@@ -69,25 +134,91 @@ func Load(path string) (Config, error) {
 	if len(data) > maxFileBytes {
 		return Config{}, fmt.Errorf("config: %s is larger than 1 MiB", path)
 	}
-	return Parse(data)
+	return ParseWithEnv(data, lookupEnv)
 }
 
 // Parse decodes and validates a config. Unknown fields are errors.
 func Parse(data []byte) (Config, error) {
-	dec := yaml.NewDecoder(bytes.NewReader(data))
+	return ParseWithEnv(data, os.LookupEnv)
+}
+
+// ParseWithEnv expands environment references, decodes and validates config.
+func ParseWithEnv(data []byte, lookupEnv func(string) (string, bool)) (Config, error) {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return Config{}, fmt.Errorf("config: invalid YAML: %w", err)
+	}
+	if len(node.Content) == 0 {
+		return Config{}, errors.New("config: config is empty")
+	}
+	if lookupEnv == nil {
+		lookupEnv = func(string) (string, bool) { return "", false }
+	}
+	if err := rejectFutureSections(node.Content[0]); err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	if err := rejectUnknownFields(node.Content[0]); err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	if err := expandConfig(node.Content[0], lookupEnv); err != nil {
+		return Config{}, fmt.Errorf("config: %w", err)
+	}
+	var expanded bytes.Buffer
+	enc := yaml.NewEncoder(&expanded)
+	if err := enc.Encode(&node); err != nil {
+		return Config{}, fmt.Errorf("config: encode expanded YAML: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return Config{}, fmt.Errorf("config: encode expanded YAML: %w", err)
+	}
+	dec := yaml.NewDecoder(&expanded)
 	dec.KnownFields(true)
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
 		if errors.Is(err, io.EOF) {
 			return Config{}, errors.New("config: config is empty")
 		}
-		return Config{}, fmt.Errorf("config: %w", err)
+		return Config{}, fmt.Errorf("config: %w", redact.NewScrubber(secretsFromNode(node.Content[0])...).Error(err))
 	}
 	if cfg.Server.Listen == "" {
 		cfg.Server.Listen = defaultListen
 	}
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = "info"
+	}
+	for name, provider := range cfg.Providers {
+		if !provider.timeoutSet {
+			provider.Timeout = 120 * time.Second
+			cfg.Providers[name] = provider
+		}
+	}
 	if err := cfg.validate(); err != nil {
-		return Config{}, fmt.Errorf("config: %w", err)
+		return Config{}, fmt.Errorf("config: %w", redact.NewScrubber(cfg.Secrets()...).Error(err))
 	}
 	return cfg, nil
+}
+
+// Secrets returns all provider and local keys configured in c.
+func (c Config) Secrets() []redact.Secret {
+	secrets := make([]redact.Secret, 0, len(c.Providers)+len(c.Server.APIKeys))
+	for _, provider := range c.Providers {
+		if !provider.APIKey.IsZero() {
+			secrets = append(secrets, provider.APIKey)
+		}
+	}
+	for _, key := range c.Server.APIKeys {
+		if !key.Key.IsZero() {
+			secrets = append(secrets, key.Key)
+		}
+	}
+	return secrets
+}
+
+// WriteRedacted writes the validated configuration with all keys redacted.
+func (c Config) WriteRedacted(w io.Writer) error {
+	enc := yaml.NewEncoder(w)
+	if err := enc.Encode(c); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return enc.Close()
 }
