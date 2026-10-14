@@ -151,7 +151,7 @@ func TestChat_BodyReadTimeout(t *testing.T) {
 			body, err := io.ReadAll(response.Body)
 			responseDone <- responseResult{status: response.StatusCode, body: body, err: err}
 		}()
-		time.Sleep(2 * time.Second)
+		<-time.After(2 * time.Second)
 		result := <-responseDone
 		if result.err != nil {
 			t.Fatal(result.err)
@@ -646,15 +646,119 @@ func TestModels_ListsConfiguredModelsInStableOrder(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Object != "list" || len(body.Data) != 3 {
-		t.Fatalf("list = %+v, want object=list and three models", body)
+	if body.Object != "list" || len(body.Data) != 6 {
+		t.Fatalf("list = %+v, want object=list and six models", body)
 	}
-	want := []string{"fake/available", "mock/echo", "mock/stream-error"}
+	want := []string{"fake/available", "mock/echo", "mock/rate-limited", "mock/stream-error", "mock/unauthorized", "mock/unavailable"}
 	for i, model := range body.Data {
 		if model.ID != want[i] || model.Object != "model" || model.OwnedBy == "" {
 			t.Errorf("data[%d] = %+v, want id %q and OpenAI model fields", i, model, want[i])
 		}
 	}
+}
+
+func TestModels_QueriesProvidersConcurrently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{}, 2)
+		release := make(chan struct{})
+		var timedOut atomic.Int32
+		provider := func(name string) *countingProvider {
+			return &countingProvider{
+				name: name,
+				models: func(ctx context.Context) ([]providers.Model, error) {
+					started <- struct{}{}
+					select {
+					case <-release:
+						return []providers.Model{{ID: name}}, nil
+					case <-ctx.Done():
+						timedOut.Add(1)
+						return nil, ctx.Err()
+					}
+				},
+				chat:   func(providers.ChatRequest) (providers.ChatResponse, error) { return providers.ChatResponse{}, nil },
+				stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) { return nil, nil },
+			}
+		}
+		set, err := providers.NewSet(provider("alpha"), provider("beta"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := api.NewHandler(api.Options{
+			Providers:     set,
+			LocalKeys:     []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+			Logger:        slog.New(slog.DiscardHandler),
+			ModelsTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		rec := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() { h.ServeHTTP(rec, req); close(done) }()
+		for range 2 {
+			select {
+			case <-started:
+			case <-time.After(6 * time.Second):
+				cancel()
+				t.Fatal("providers were not queried concurrently")
+			}
+		}
+		if got := timedOut.Load(); got != 0 {
+			cancel()
+			t.Fatalf("providers timed out before both started: %d", got)
+		}
+		close(release)
+		<-done
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "alpha/alpha") || !strings.Contains(rec.Body.String(), "beta/beta") {
+			t.Fatalf("response = %d %s; want both provider model lists", rec.Code, rec.Body)
+		}
+	})
+}
+
+func TestModels_TimesOutSlowProvider(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stalled := &countingProvider{
+			name: "stalled",
+			models: func(ctx context.Context) ([]providers.Model, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			chat:   func(providers.ChatRequest) (providers.ChatResponse, error) { return providers.ChatResponse{}, nil },
+			stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) { return nil, nil },
+		}
+		healthy := &countingProvider{
+			name: "healthy",
+			models: func(context.Context) ([]providers.Model, error) {
+				return []providers.Model{{ID: "ready"}}, nil
+			},
+			chat:   func(providers.ChatRequest) (providers.ChatResponse, error) { return providers.ChatResponse{}, nil },
+			stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) { return nil, nil },
+		}
+		set, err := providers.NewSet(stalled, healthy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := api.NewHandler(api.Options{
+			Providers:     set,
+			LocalKeys:     []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+			Logger:        slog.New(slog.DiscardHandler),
+			ModelsTimeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "healthy/ready") || strings.Contains(rec.Body.String(), "stalled/") {
+			t.Fatalf("response = %d %s; want healthy model and stalled provider omitted", rec.Code, rec.Body)
+		}
+	})
 }
 
 func TestModels_RequiresLocalKey(t *testing.T) {

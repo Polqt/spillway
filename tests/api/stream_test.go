@@ -380,7 +380,7 @@ type delayedStream struct {
 
 func (s *delayedStream) Recv() (providers.ChatChunk, error) {
 	if s.index > 0 && s.index-1 < len(s.delays) {
-		time.Sleep(s.delays[s.index-1])
+		<-time.After(s.delays[s.index-1])
 	}
 	if s.index >= len(s.chunks) {
 		return providers.ChatChunk{}, io.EOF
@@ -431,7 +431,7 @@ func TestStream_StalledClientStopsAtWriteDeadline(t *testing.T) {
 		if result.err != nil {
 			t.Fatal(result.err)
 		}
-		time.Sleep(2 * time.Second)
+		<-time.After(2 * time.Second)
 		select {
 		case <-stream.closed:
 		default:
@@ -499,7 +499,7 @@ func (s *idleErrorStream) Recv() (providers.ChatChunk, error) {
 		s.sent = true
 		return providers.ChatChunk{Data: []byte(`{"n":1}`)}, nil
 	}
-	time.Sleep(2 * time.Second)
+	<-time.After(2 * time.Second)
 	return providers.ChatChunk{}, providers.ErrUpstreamUnavailable
 }
 

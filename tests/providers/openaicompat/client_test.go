@@ -152,7 +152,7 @@ func TestClient_ChatTimeoutOnStalledResponse(t *testing.T) {
 			result <- err
 		}()
 		<-started
-		time.Sleep(6 * time.Second)
+		<-time.After(6 * time.Second)
 		if err := <-result; !errors.Is(err, providers.ErrUpstreamUnavailable) {
 			t.Fatalf("Chat() error = %v, want upstream unavailable", err)
 		}
@@ -173,7 +173,7 @@ func TestClient_ChatStreamAllowsLongActiveStream(t *testing.T) {
 				_, _ = fmt.Fprintf(w, "data: {\"n\":%d}\n\n", i)
 				w.(http.Flusher).Flush()
 				if i < 3 {
-					time.Sleep(4 * time.Second)
+					<-time.After(4 * time.Second)
 				}
 			}
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
@@ -249,7 +249,7 @@ func TestClient_ChatStreamTimesOutWhenUpstreamStalls(t *testing.T) {
 		}
 		result := make(chan error, 1)
 		go func() { _, err := stream.Recv(); result <- err }()
-		time.Sleep(6 * time.Second)
+		<-time.After(6 * time.Second)
 		if err := <-result; !errors.Is(err, providers.ErrUpstreamUnavailable) {
 			t.Fatalf("stalled Recv() error = %v, want upstream unavailable", err)
 		}

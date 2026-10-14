@@ -96,8 +96,8 @@ func TestGroq_UpstreamErrorsBecomeOpenAIErrors(t *testing.T) {
 		want       string
 	}{
 		{http.StatusTooManyRequests, http.StatusTooManyRequests, "rate_limit_exceeded"},
-		{http.StatusUnauthorized, http.StatusUnauthorized, "provider_authentication_error"},
-		{http.StatusForbidden, http.StatusUnauthorized, "provider_authentication_error"},
+		{http.StatusUnauthorized, http.StatusBadGateway, "upstream_unauthorized"},
+		{http.StatusForbidden, http.StatusBadGateway, "upstream_unauthorized"},
 		{http.StatusBadRequest, http.StatusBadRequest, "provider_bad_request"},
 		{http.StatusNotFound, http.StatusNotFound, "model_not_found"},
 		{http.StatusServiceUnavailable, http.StatusBadGateway, "upstream_unavailable"},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,60 @@ func TestNew_RequiresClock(t *testing.T) {
 	t.Parallel()
 	if _, err := mock.New(mock.Options{}); err == nil {
 		t.Error("New without Now succeeded, want error")
+	}
+}
+
+func TestMock_Models(t *testing.T) {
+	t.Parallel()
+	models, err := newMock(t).Models(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, model := range models {
+		got = append(got, model.ID)
+	}
+	want := []string{"echo", "rate-limited", "stream-error", "unauthorized", "unavailable"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Models() ids = %q, want %q", got, want)
+	}
+}
+
+func TestMock_ErrorModels(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		model string
+		kind  error
+	}{
+		{model: "rate-limited", kind: providers.ErrRateLimited},
+		{model: "unavailable", kind: providers.ErrUpstreamUnavailable},
+		{model: "unauthorized", kind: providers.ErrUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			t.Parallel()
+			p := newMock(t)
+			_, err := p.Chat(t.Context(), userRequest(tt.model, "hi"))
+			if !errors.Is(err, tt.kind) {
+				t.Errorf("Chat() error = %v, want %v", err, tt.kind)
+			}
+			if tt.model == "rate-limited" {
+				var retry providers.RetryAfterError
+				if !errors.As(err, &retry) || retry.After != 7*time.Second {
+					t.Errorf("Chat() error = %v, want RetryAfter 7s", err)
+				}
+			}
+			_, err = p.ChatStream(t.Context(), userRequest(tt.model, "hi"))
+			if !errors.Is(err, tt.kind) {
+				t.Errorf("ChatStream() error = %v, want %v", err, tt.kind)
+			}
+			if tt.model == "rate-limited" {
+				var retry providers.RetryAfterError
+				if !errors.As(err, &retry) || retry.After != 7*time.Second {
+					t.Errorf("ChatStream() error = %v, want RetryAfter 7s", err)
+				}
+			}
+		})
 	}
 }
 

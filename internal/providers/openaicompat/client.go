@@ -292,8 +292,7 @@ func retryAfter(value string, now time.Time) time.Duration {
 
 func requestBody(chat providers.ChatRequest) ([]byte, error) {
 	data := chat.RawBody
-	if len(chat.RawBody) != 0 {
-	} else {
+	if len(chat.RawBody) == 0 {
 		var err error
 		data, err = json.Marshal(chat)
 		if err != nil {

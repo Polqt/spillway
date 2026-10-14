@@ -36,6 +36,7 @@ type Options struct {
 	Logger            *slog.Logger
 	BodyReadTimeout   time.Duration
 	ChunkWriteTimeout time.Duration
+	ModelsTimeout     time.Duration
 }
 
 // NewHandler returns the API handler. Middleware runs outermost first:
@@ -53,6 +54,9 @@ func NewHandler(o Options) (http.Handler, error) {
 	if o.ChunkWriteTimeout <= 0 {
 		o.ChunkWriteTimeout = 30 * time.Second
 	}
+	if o.ModelsTimeout <= 0 {
+		o.ModelsTimeout = 10 * time.Second
+	}
 	auth, err := newAuthenticator(o.LocalKeys)
 	if err != nil {
 		return nil, err
@@ -60,7 +64,7 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger})
+	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout})
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout,

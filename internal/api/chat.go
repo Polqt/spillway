@@ -170,7 +170,7 @@ func providerError(ref providers.ModelRef, err error) (int, errorDetail) {
 	case errors.Is(err, providers.ErrRateLimited):
 		return http.StatusTooManyRequests, errorDetail{Message: fmt.Sprintf("Provider %q is rate limited; retry later or use another model.", ref.Provider), Type: typeAPI, Code: "rate_limit_exceeded"}
 	case errors.Is(err, providers.ErrUnauthorized):
-		return http.StatusUnauthorized, errorDetail{Message: fmt.Sprintf("Provider %q rejected its configured key.", ref.Provider), Type: typeAuthentication, Code: "provider_authentication_error"}
+		return http.StatusBadGateway, errorDetail{Message: fmt.Sprintf("Provider %q rejected its configured key.", ref.Provider), Type: typeAPI, Code: "upstream_unauthorized"}
 	case errors.Is(err, providers.ErrBadRequest):
 		return http.StatusBadRequest, errorDetail{Message: fmt.Sprintf("Provider %q rejected the request.", ref.Provider), Type: typeInvalidRequest, Code: "provider_bad_request"}
 	default:

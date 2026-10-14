@@ -22,9 +22,7 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Provider is the mock provider. Its upstream models are "echo", which
-// replies with the text of the last user message, and "stream-error", which
-// fails: at once for Chat, and after two chunks for ChatStream.
+// Provider is the deterministic mock provider used by tests and demos.
 type Provider struct {
 	now func() time.Time
 }
@@ -47,7 +45,13 @@ func (p *Provider) Models(ctx context.Context) ([]providers.Model, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return []providers.Model{{ID: modelEcho}, {ID: modelStreamError}}, nil
+	return []providers.Model{
+		{ID: modelEcho},
+		{ID: modelRateLimited},
+		{ID: modelStreamError},
+		{ID: modelUnauthorized},
+		{ID: modelUnavailable},
+	}, nil
 }
 
 // Chat answers for the upstream model "echo"; "stream-error" is
@@ -64,6 +68,9 @@ func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (provide
 	}
 	if req.Model == modelStreamError {
 		return providers.ChatResponse{}, modelError(req.Model, providers.ErrUpstreamUnavailable)
+	}
+	if err := simulatedError(req.Model); err != nil {
+		return providers.ChatResponse{}, err
 	}
 	rep, err := p.reply(req)
 	if err != nil {
@@ -88,6 +95,11 @@ func (p *Provider) ChatStream(ctx context.Context, req providers.ChatRequest) (p
 	}
 	if err := checkModel(req.Model); err != nil {
 		return nil, err
+	}
+	if req.Model != modelStreamError {
+		if err := simulatedError(req.Model); err != nil {
+			return nil, err
+		}
 	}
 	rep, err := p.reply(req)
 	if err != nil {
@@ -147,15 +159,33 @@ func (s *stream) Close() error {
 }
 
 const (
-	modelEcho        = "echo"
-	modelStreamError = "stream-error"
+	modelEcho         = "echo"
+	modelRateLimited  = "rate-limited"
+	modelStreamError  = "stream-error"
+	modelUnauthorized = "unauthorized"
+	modelUnavailable  = "unavailable"
 )
 
 func checkModel(model string) error {
-	if model != modelEcho && model != modelStreamError {
+	switch model {
+	case modelEcho, modelRateLimited, modelStreamError, modelUnauthorized, modelUnavailable:
+	default:
 		return modelError(model, providers.ErrModelNotFound)
 	}
 	return nil
+}
+
+func simulatedError(model string) error {
+	switch model {
+	case modelRateLimited:
+		return fmt.Errorf("mock: upstream model %q: %w", model, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited})
+	case modelUnauthorized:
+		return modelError(model, providers.ErrUnauthorized)
+	case modelUnavailable:
+		return modelError(model, providers.ErrUpstreamUnavailable)
+	default:
+		return nil
+	}
 }
 
 func modelError(model string, kind error) error {

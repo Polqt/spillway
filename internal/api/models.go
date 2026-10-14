@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
 )
@@ -13,6 +16,7 @@ import (
 type modelsHandler struct {
 	providers providerSet
 	logger    *slog.Logger
+	timeout   time.Duration
 }
 
 type modelList struct {
@@ -29,16 +33,32 @@ type modelItem struct {
 
 func (h *modelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	configured := h.providers.Providers()
+	type result struct {
+		models []providers.Model
+		err    error
+	}
+	results := make([]result, len(configured))
+	var wg sync.WaitGroup
+	for i, provider := range configured {
+		wg.Add(1)
+		go func(ctx context.Context, i int, provider providers.Provider) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(ctx, h.timeout)
+			defer cancel()
+			results[i].models, results[i].err = provider.Models(ctx)
+		}(r.Context(), i, provider)
+	}
+	wg.Wait()
+
 	data := make([]modelItem, 0)
 	failed := 0
-	for _, provider := range configured {
-		models, err := provider.Models(r.Context())
-		if err != nil {
+	for i, provider := range configured {
+		if results[i].err != nil {
 			failed++
 			h.logger.WarnContext(r.Context(), "provider model listing failed", "provider", provider.Name())
 			continue
 		}
-		for _, model := range models {
+		for _, model := range results[i].models {
 			ownedBy := model.OwnedBy
 			if ownedBy == "" {
 				ownedBy = provider.Name()
