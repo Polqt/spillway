@@ -53,6 +53,8 @@ var (
 	ErrUpstreamUnavailable = errors.New("provider unavailable")
 	// ErrRateLimited means the provider rejected a request because of its quota.
 	ErrRateLimited = errors.New("provider rate limited")
+	// ErrPaymentRequired means the provider account has no available credit.
+	ErrPaymentRequired = errors.New("provider payment required")
 	// ErrUnauthorized means the provider rejected its configured key.
 	ErrUnauthorized = errors.New("provider unauthorized")
 	// ErrBadRequest means the provider rejected the request as invalid.

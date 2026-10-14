@@ -1,6 +1,7 @@
 package openaicompat_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -475,6 +476,78 @@ func TestClient_ChatStreamSurfacesUpstreamFailureAfterChunk(t *testing.T) {
 	}
 	if _, err := stream.Recv(); err == nil || errors.Is(err, io.EOF) {
 		t.Fatalf("second Recv() = %v, want an upstream read failure", err)
+	}
+}
+
+func TestClient_ChatStreamErrorFidelity(t *testing.T) {
+	tests := []struct {
+		name          string
+		fixture       string
+		wantKind      error
+		wantError     string
+		wantChunks    int
+		maxErrorBytes int
+	}{
+		{name: "OpenRouter first event", fixture: "stream-error-first.sse", wantKind: providers.ErrRateLimited, wantError: "OpenRouter quota exhausted", wantChunks: 0},
+		{name: "payment required", fixture: "stream-error-payment.sse", wantKind: providers.ErrPaymentRequired, wantError: "payment required", wantChunks: 0},
+		{name: "after two chunks", fixture: "stream-error-after-chunks.sse", wantKind: providers.ErrUpstreamUnavailable, wantError: "upstream unavailable", wantChunks: 2},
+		{name: "non-status code", fixture: "stream-error-other-code.sse", wantKind: providers.ErrUpstreamUnavailable, wantError: "provider unavailable", wantChunks: 0},
+		{name: "without done", fixture: "stream-truncated.sse", wantKind: providers.ErrUpstreamUnavailable, wantError: "stream ended without [DONE]", wantChunks: 2},
+		{name: "long error message", fixture: "stream-error-long-message.sse", wantKind: providers.ErrUpstreamUnavailable, wantError: "upstream stream error", wantChunks: 0, maxErrorBytes: 512},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixtureBody := fixture(t, tt.fixture)
+			var results []string
+			for _, partial := range []bool{false, true} {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					if !partial {
+						_, _ = w.Write(fixtureBody)
+						return
+					}
+					flusher := w.(http.Flusher)
+					for start := 0; start < len(fixtureBody); start += 3 {
+						end := min(start+3, len(fixtureBody))
+						_, _ = w.Write(fixtureBody[start:end])
+						flusher.Flush()
+					}
+				}))
+				stream, err := client(t, srv.URL).ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[],"stream":true}`)})
+				if err != nil {
+					srv.Close()
+					t.Fatal(err)
+				}
+				var chunks []string
+				var recvErr error
+				for {
+					chunk, err := stream.Recv()
+					if err != nil {
+						recvErr = err
+						break
+					}
+					chunks = append(chunks, string(chunk.Data))
+				}
+				_ = stream.Close()
+				srv.Close()
+				if len(chunks) != tt.wantChunks {
+					t.Fatalf("chunks = %q, want %d", chunks, tt.wantChunks)
+				}
+				if !errors.Is(recvErr, tt.wantKind) || !strings.Contains(recvErr.Error(), tt.wantError) {
+					t.Fatalf("Recv() error = %v, want %v containing %q", recvErr, tt.wantKind, tt.wantError)
+				}
+				if strings.Contains(recvErr.Error(), providerKey) {
+					t.Fatalf("Recv() error exposes provider key: %v", recvErr)
+				}
+				if tt.maxErrorBytes > 0 && len(recvErr.Error()) > tt.maxErrorBytes {
+					t.Fatalf("Recv() error length = %d, want at most %d bytes", len(recvErr.Error()), tt.maxErrorBytes)
+				}
+				results = append(results, fmt.Sprintf("%q|%v", chunks, recvErr))
+			}
+			if !bytes.Equal([]byte(results[0]), []byte(results[1])) {
+				t.Errorf("3-byte writes result = %q, want %q", results[1], results[0])
+			}
+		})
 	}
 }
 

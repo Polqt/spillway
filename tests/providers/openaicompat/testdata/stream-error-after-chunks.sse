@@ -1,0 +1,6 @@
+data: {"id":"chunk-1","choices":[{"delta":{"content":"one"}}]}
+
+data: {"id":"chunk-2","choices":[{"delta":{"content":"two"}}]}
+
+data: {"error":{"message":"upstream unavailable sk-test-groq-fixture","code":"503"}}
+

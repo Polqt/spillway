@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
@@ -369,6 +370,7 @@ type sseStream struct {
 	idleTimeout  time.Duration
 	idleTimedOut atomic.Bool
 	closed       bool
+	done         bool
 }
 
 func (s *sseStream) Recv() (providers.ChatChunk, error) {
@@ -387,7 +389,18 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 		}
 		data := bytes.TrimSpace([]byte(strings.TrimPrefix(line, "data:")))
 		if bytes.Equal(data, []byte("[DONE]")) {
+			s.done = true
 			return providers.ChatChunk{}, io.EOF
+		}
+		var payload struct {
+			Error json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(data, &payload); err == nil && len(payload.Error) > 0 && !bytes.Equal(payload.Error, []byte("null")) {
+			var upstreamError struct {
+				Code json.RawMessage `json:"code"`
+			}
+			_ = json.Unmarshal(payload.Error, &upstreamError)
+			return providers.ChatChunk{}, s.streamError(streamErrorKind(upstreamError.Code), errorMessage(data))
 		}
 		var chunk struct {
 			Usage *providers.Usage `json:"usage"`
@@ -403,7 +416,45 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 		}
 		return providers.ChatChunk{}, s.clean.Error(fmt.Errorf("%s: read stream: %w", s.name, err))
 	}
-	return providers.ChatChunk{}, io.EOF
+	if s.done {
+		return providers.ChatChunk{}, io.EOF
+	}
+	return providers.ChatChunk{}, s.streamError(providers.ErrUpstreamUnavailable, "stream ended without [DONE]")
+}
+
+func streamErrorKind(code json.RawMessage) error {
+	var status int
+	if err := json.Unmarshal(code, &status); err != nil {
+		var text string
+		if json.Unmarshal(code, &text) != nil {
+			return providers.ErrUpstreamUnavailable
+		}
+		parsed, err := strconv.Atoi(text)
+		if err != nil {
+			return providers.ErrUpstreamUnavailable
+		}
+		status = parsed
+	}
+	switch status {
+	case http.StatusTooManyRequests:
+		return providers.ErrRateLimited
+	case http.StatusPaymentRequired:
+		return providers.ErrPaymentRequired
+	default:
+		return providers.ErrUpstreamUnavailable
+	}
+}
+
+func (s *sseStream) streamError(kind error, message string) error {
+	text := s.clean.Scrub(fmt.Sprintf("%s: upstream stream error: %s", s.name, message))
+	limit := 512 - len(kind.Error()) - 2
+	if len(text) > limit {
+		text = text[:limit]
+		for !utf8.ValidString(text) {
+			text = text[:len(text)-1]
+		}
+	}
+	return fmt.Errorf("%w: %s", kind, text)
 }
 
 func (s *sseStream) Close() error {

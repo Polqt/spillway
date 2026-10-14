@@ -22,6 +22,8 @@ import (
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/providers/openaicompat"
+	"github.com/Polqt/spillway/internal/redact"
 )
 
 const echoStreamBody = `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"hello spillway"}]}`
@@ -156,6 +158,74 @@ func TestStream_ErrorBeforeFirstChunk(t *testing.T) {
 			assertError(t, rec, c.status, c.typ, c.code)
 			if rec.Header().Get("X-Spillway-Provider") == "" {
 				t.Error("X-Spillway-Provider missing on error")
+			}
+		})
+	}
+}
+
+func TestStream_OpenAICompatErrorAndTruncatedStreamsOmitDone(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "error event after chunks",
+			body: "data: {\"id\":\"one\",\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n" +
+				"data: {\"id\":\"two\",\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n" +
+				"data: {\"error\":{\"message\":\"upstream failed\",\"code\":503}}\n\n",
+		},
+		{
+			name: "truncated stream",
+			body: "data: {\"id\":\"one\",\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n" +
+				"data: {\"id\":\"two\",\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer upstream.Close()
+			provider, err := openaicompat.New(openaicompat.Options{
+				Name: "groq", BaseURL: upstream.URL, APIKey: redact.NewSecret("sk-test-groq-stream"), Timeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			set, err := providers.NewSet(provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler, err := api.NewHandler(api.Options{
+				Providers: set,
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+				Logger:    slog.New(slog.DiscardHandler),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"groq/upstream","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+			events := readEvents(t, rec.Body)
+			if len(events) != 3 {
+				t.Fatalf("events = %q, want two chunks and one SSE error", events)
+			}
+			var upstreamChunk map[string]any
+			if err := json.Unmarshal([]byte(events[0]), &upstreamChunk); err != nil || upstreamChunk["id"] != "one" {
+				t.Errorf("first event = %q, want first upstream chunk (decode error %v)", events[0], err)
+			}
+			var streamError openAIError
+			if err := json.Unmarshal([]byte(events[2]), &streamError); err != nil || streamError.Error.Type != "api_error" || streamError.Error.Code != "upstream_unavailable" {
+				t.Errorf("last event = %q, want OpenAI-shaped upstream error (decode error %v)", events[2], err)
+			}
+			if strings.Contains(rec.Body.String(), "[DONE]") {
+				t.Errorf("failed stream ends with [DONE]: %s", rec.Body)
 			}
 		})
 	}
