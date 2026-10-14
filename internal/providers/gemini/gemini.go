@@ -1,0 +1,79 @@
+// Package gemini adapts Gemini's OpenAI-compatible endpoint.
+package gemini
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/providers/openaicompat"
+	"github.com/Polqt/spillway/internal/redact"
+)
+
+const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+// Options configures a Gemini provider.
+type Options struct {
+	APIKey  redact.Secret
+	BaseURL string
+	Timeout time.Duration
+}
+
+// Client implements providers.Provider for Gemini's OpenAI-compatible API.
+type Client struct {
+	compat *openaicompat.Client
+}
+
+// New validates options and builds a Gemini client.
+func New(o Options) (*Client, error) {
+	if o.BaseURL == "" {
+		o.BaseURL = defaultBaseURL
+	}
+	compat, err := openaicompat.New(openaicompat.Options{
+		Name: "gemini", BaseURL: o.BaseURL, APIKey: o.APIKey, Timeout: o.Timeout,
+		ClassifyError: classifyError,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Client{compat: compat}, nil
+}
+
+// Name returns the provider name used in model references.
+func (c *Client) Name() string { return "gemini" }
+
+// Models lists Gemini models without the API's models/ resource prefix.
+func (c *Client) Models(ctx context.Context) ([]providers.Model, error) {
+	models, err := c.compat.Models(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		models[i].ID = strings.TrimPrefix(models[i].ID, "models/")
+	}
+	return models, nil
+}
+
+// Chat sends a non-streaming chat completion.
+func (c *Client) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
+	return c.compat.Chat(ctx, req)
+}
+
+// ChatStream starts a streaming chat completion.
+func (c *Client) ChatStream(ctx context.Context, req providers.ChatRequest) (providers.Stream, error) {
+	return c.compat.ChatStream(ctx, req)
+}
+
+func classifyError(_ int, body []byte) (error, bool) {
+	var payload []struct {
+		Error struct {
+			Status string `json:"status"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil || len(payload) != 1 || payload[0].Error.Status != "RESOURCE_EXHAUSTED" {
+		return nil, false
+	}
+	return providers.RetryAfterError{Kind: providers.ErrRateLimited}, true
+}

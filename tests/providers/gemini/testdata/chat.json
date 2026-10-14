@@ -1,0 +1,1 @@
+{"id":"chatcmpl-gemini","object":"chat.completion","created":1735689600,"model":"gemini-2.5-flash","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}

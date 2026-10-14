@@ -303,6 +303,88 @@ func TestRun_ServeGroqEndToEnd(t *testing.T) {
 	<-logs.done
 }
 
+func TestRun_ServeGeminiEndToEnd(t *testing.T) {
+	t.Parallel()
+	const geminiKey = "sk-test-gemini-cli"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+geminiKey {
+			t.Errorf("upstream Authorization = %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Query().Get("key") != "" {
+			t.Errorf("Gemini key appeared in URL query")
+		}
+		switch r.URL.Path {
+		case "/v1beta/openai/models":
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"models/gemini-2.5-flash","owned_by":"google"}]}`)
+		case "/v1beta/openai/chat/completions":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `[{"error":{"code":429,"message":"Quota exhausted","status":"RESOURCE_EXHAUSTED"}}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  gemini:\n    api_key: \"${GEMINI_API_KEY}\"\n    base_url: \""+upstream.URL+"/v1beta/openai\"\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"SPILLWAY_KEY": e2eKey, "GEMINI_API_KEY": geminiKey}
+		value, ok := values[name]
+		return value, ok
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		_ = pw.Close()
+	}()
+	var base string
+	select {
+	case addr := <-logs.addr:
+		base = "http://" + addr
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+
+	modelsReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelsReq.Header.Set("Authorization", "Bearer "+e2eKey)
+	modelsResp, err := http.DefaultClient.Do(modelsReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelBody, err := io.ReadAll(modelsResp.Body)
+	_ = modelsResp.Body.Close()
+	if err != nil || modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelBody), `"id":"gemini/gemini-2.5-flash"`) || strings.Contains(string(modelBody), "models/") {
+		t.Fatalf("models response = %d %s, %v; want prefix-free gemini model reference", modelsResp.StatusCode, modelBody, err)
+	}
+
+	chatReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/chat/completions", strings.NewReader(`{"model":"gemini/gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatReq.Header.Set("Authorization", "Bearer "+e2eKey)
+	chatReq.Header.Set("Content-Type", "application/json")
+	chatResp, err := http.DefaultClient.Do(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatBody, err := io.ReadAll(chatResp.Body)
+	_ = chatResp.Body.Close()
+	if err != nil || chatResp.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(chatBody), `"type":"api_error"`) || !strings.Contains(string(chatBody), `"code":"rate_limit_exceeded"`) {
+		t.Errorf("chat response = %d %s, %v; want the OpenAI error object with 429 rate_limit_exceeded", chatResp.StatusCode, chatBody, err)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("exit code after cancel = %d, want 0", code)
+	}
+	<-logs.done
+}
+
 func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
 	t.Parallel()
 	const openrouterKey = "sk-test-openrouter-cli"

@@ -15,6 +15,7 @@ import (
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/providers/gemini"
 	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/redact"
@@ -77,6 +78,15 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 			p, err := mock.New(mock.Options{Now: time.Now})
 			if err != nil {
 				return nil, fmt.Errorf("build provider mock: %w", err)
+			}
+			ps = append(ps, p)
+		case "gemini":
+			baseURL := cfg.Providers[name].BaseURL
+			p, err := gemini.New(gemini.Options{
+				APIKey: cfg.Providers[name].APIKey, BaseURL: baseURL, Timeout: cfg.Providers[name].Timeout,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("build provider gemini: %w", err)
 			}
 			ps = append(ps, p)
 		case "groq", "openrouter", "ollama":

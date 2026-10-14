@@ -26,20 +26,22 @@ const maxSSELineBytes = 4 << 20
 
 // Options configures one OpenAI-compatible provider endpoint.
 type Options struct {
-	Name    string
-	BaseURL string
-	APIKey  redact.Secret
-	Timeout time.Duration
+	Name          string
+	BaseURL       string
+	APIKey        redact.Secret
+	Timeout       time.Duration
+	ClassifyError func(status int, body []byte) (error, bool)
 }
 
 // Client implements providers.Provider using the OpenAI-compatible API.
 type Client struct {
-	name    string
-	baseURL string
-	key     redact.Secret
-	timeout time.Duration
-	http    *http.Client
-	clean   *redact.Scrubber
+	name          string
+	baseURL       string
+	key           redact.Secret
+	timeout       time.Duration
+	http          *http.Client
+	clean         *redact.Scrubber
+	classifyError func(status int, body []byte) (error, bool)
 }
 
 // New validates options and builds a client that never follows redirects.
@@ -64,7 +66,7 @@ func New(o Options) (*Client, error) {
 	return &Client{
 		name: o.Name, baseURL: strings.TrimRight(o.BaseURL, "/"), key: o.APIKey, timeout: o.Timeout,
 		http:  &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		clean: redact.NewScrubber(o.APIKey),
+		clean: redact.NewScrubber(o.APIKey), classifyError: o.ClassifyError,
 	}, nil
 }
 
@@ -204,6 +206,15 @@ func (c *Client) transportError(action string, err error) error {
 
 func (c *Client) responseError(resp *http.Response) error {
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes+int64(len(c.key.Reveal()))))
+	if c.classifyError != nil {
+		if kind, ok := c.classifyError(resp.StatusCode, body); ok {
+			message := fmt.Errorf("%s: upstream status %d: %s", c.name, resp.StatusCode, c.clean.Scrub(errorMessage(body)))
+			if readErr != nil {
+				message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
+			}
+			return fmt.Errorf("%w: %w", kind, message)
+		}
+	}
 	detail := c.clean.Scrub(errorMessage(body))
 	if detail == "" {
 		detail = http.StatusText(resp.StatusCode)
