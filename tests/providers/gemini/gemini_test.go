@@ -28,6 +28,7 @@ func fixture(t *testing.T, name string) []byte {
 }
 
 func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
+	t.Parallel()
 	modelsFixture := fixture(t, "models.json")
 	chatFixture := fixture(t, "chat.json")
 	streamFixture := fixture(t, "stream.sse")
@@ -80,6 +81,7 @@ func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
 }
 
 func TestProvider_ResourceExhaustedMapsToRateLimited(t *testing.T) {
+	t.Parallel()
 	fixture := fixture(t, "resource-exhausted.json")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -97,6 +99,7 @@ func TestProvider_ResourceExhaustedMapsToRateLimited(t *testing.T) {
 }
 
 func TestProvider_TransportErrorDoesNotExposeKey(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	endpoint := srv.URL + "/v1beta/openai"
 	srv.Close()

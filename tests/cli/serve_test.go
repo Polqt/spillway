@@ -318,7 +318,7 @@ func TestRun_ServeGeminiEndToEnd(t *testing.T) {
 			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"models/gemini-2.5-flash","owned_by":"google"}]}`)
 		case "/v1beta/openai/chat/completions":
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `[{"error":{"code":429,"message":"Quota exhausted","status":"RESOURCE_EXHAUSTED"}}]`)
+			_, _ = io.WriteString(w, `[{"error":{"code":429,"message":"`+geminiKey+` quota exhausted","status":"RESOURCE_EXHAUSTED"}}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -375,7 +375,7 @@ func TestRun_ServeGeminiEndToEnd(t *testing.T) {
 	}
 	chatBody, err := io.ReadAll(chatResp.Body)
 	_ = chatResp.Body.Close()
-	if err != nil || chatResp.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(chatBody), `"type":"api_error"`) || !strings.Contains(string(chatBody), `"code":"rate_limit_exceeded"`) {
+	if err != nil || chatResp.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(chatBody), `"type":"api_error"`) || !strings.Contains(string(chatBody), `"code":"rate_limit_exceeded"`) || strings.Contains(string(chatBody), geminiKey) {
 		t.Errorf("chat response = %d %s, %v; want the OpenAI error object with 429 rate_limit_exceeded", chatResp.StatusCode, chatBody, err)
 	}
 	cancel()
@@ -383,6 +383,9 @@ func TestRun_ServeGeminiEndToEnd(t *testing.T) {
 		t.Errorf("exit code after cancel = %d, want 0", code)
 	}
 	<-logs.done
+	if strings.Contains(logs.String(), geminiKey) {
+		t.Errorf("serve logs contain Gemini key: %s", logs)
+	}
 }
 
 func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
