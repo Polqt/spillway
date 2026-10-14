@@ -30,11 +30,18 @@ const (
 type countingProvider struct {
 	name   string
 	calls  atomic.Int32
+	models func(context.Context) ([]providers.Model, error)
 	chat   func(providers.ChatRequest) (providers.ChatResponse, error)
 	stream func(context.Context, providers.ChatRequest) (providers.Stream, error)
 }
 
 func (p *countingProvider) Name() string { return p.name }
+func (p *countingProvider) Models(ctx context.Context) ([]providers.Model, error) {
+	if p.models == nil {
+		return nil, errors.New("models not configured")
+	}
+	return p.models(ctx)
+}
 func (p *countingProvider) Chat(_ context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
 	p.calls.Add(1)
 	return p.chat(req)
@@ -485,9 +492,140 @@ func TestChat_ModelNotFound(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			t.Parallel()
 			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
-			assertError(t, e.do(t, request{auth: "Bearer " + keyCI, body: body}), http.StatusNotFound, "invalid_request_error", "model_not_found")
+			rec := e.do(t, request{auth: "Bearer " + keyCI, body: body})
+			assertError(t, rec, http.StatusNotFound, "invalid_request_error", "model_not_found")
+			if model != "mock/nope" && (!strings.Contains(rec.Body.String(), "provider/model") || !strings.Contains(rec.Body.String(), "GET /v1/models")) {
+				t.Errorf("message = %s, want a model reference fix and model listing guidance", rec.Body)
+			}
 		})
 	}
+}
+
+func TestChat_VirtualModelNotFoundPointsToRouterVersion(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	for _, model := range []string{"auto", "spillway/cheap"} {
+		t.Run(model, func(t *testing.T) {
+			t.Parallel()
+			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+			rec := e.do(t, request{auth: "Bearer " + keyCI, body: body})
+			assertError(t, rec, http.StatusNotFound, "invalid_request_error", "model_not_found")
+			if !strings.Contains(rec.Body.String(), "v0.3") || !strings.Contains(rec.Body.String(), "GET /v1/models") || !strings.Contains(rec.Body.String(), "provider/model") {
+				t.Errorf("message = %s, want router version and model listing guidance", rec.Body)
+			}
+		})
+	}
+}
+
+func TestChat_ModelReferencePreservesUpstreamSlashAndColon(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got string
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req.Model
+		return providers.ChatResponse{Body: json.RawMessage(`{"object":"chat.completion"}`)}, nil
+	}
+
+	rec := e.do(t, request{auth: "Bearer " + keyCI, body: `{"model":"fake/org/model:v1","messages":[{"role":"user","content":"hi"}]}`})
+
+	if rec.Code != http.StatusOK || got != "org/model:v1" {
+		t.Errorf("response = %d, upstream model = %q; want 200 and org/model:v1", rec.Code, got)
+	}
+}
+
+func TestModels_ListsConfiguredModelsInStableOrder(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.models = func(context.Context) ([]providers.Model, error) {
+		return []providers.Model{{ID: "available"}}, nil
+	}
+
+	rec := e.do(t, request{method: http.MethodGet, path: "/v1/models", auth: "Bearer " + keyCI})
+
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("response = %d %q %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	}
+	var body struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Object != "list" || len(body.Data) != 3 {
+		t.Fatalf("list = %+v, want object=list and three models", body)
+	}
+	want := []string{"fake/available", "mock/echo", "mock/stream-error"}
+	for i, model := range body.Data {
+		if model.ID != want[i] || model.Object != "model" || model.OwnedBy == "" {
+			t.Errorf("data[%d] = %+v, want id %q and OpenAI model fields", i, model, want[i])
+		}
+	}
+}
+
+func TestModels_RequiresLocalKey(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+
+	assertError(t, e.do(t, request{method: http.MethodGet, path: "/v1/models"}), http.StatusUnauthorized, "authentication_error", "invalid_api_key")
+}
+
+func TestModels_PartialFailureLogsScrubbedWarning(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.models = func(context.Context) ([]providers.Model, error) {
+		return nil, errors.New("provider failed with sk-test-provider-secret")
+	}
+
+	rec := e.do(t, request{method: http.MethodGet, path: "/v1/models", auth: "Bearer " + keyCI})
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "mock/echo") {
+		t.Errorf("response = %d %s, want partial model list", rec.Code, rec.Body)
+	}
+	log := e.logs.String()
+	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, "provider=fake") || strings.Contains(log, "sk-test-provider-secret") {
+		t.Errorf("log = %s, want scrubbed WARN for fake provider", log)
+	}
+}
+
+func TestModels_AllProvidersFailReturnsBadGateway(t *testing.T) {
+	t.Parallel()
+	fail := func(name string) *countingProvider {
+		return &countingProvider{
+			name: name,
+			models: func(context.Context) ([]providers.Model, error) {
+				return nil, errors.New("provider failed")
+			},
+			chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{}, nil
+			},
+			stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+				return nil, nil
+			},
+		}
+	}
+	set, err := providers.NewSet(fail("alpha"), fail("beta"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertError(t, rec, http.StatusBadGateway, "api_error", "upstream_unavailable")
 }
 
 // A client mistake is not a Spillway failure, so it must not log at error level.

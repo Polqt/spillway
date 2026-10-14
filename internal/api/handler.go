@@ -20,6 +20,7 @@ type LocalKey struct {
 // providerSet is the part of providers.Set the API uses.
 type providerSet interface {
 	Lookup(name string) (providers.Provider, bool)
+	Providers() []providers.Provider
 }
 
 // Options configures NewHandler.
@@ -50,10 +51,12 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger})
 	mux.Handle("POST /v1/chat/completions", &chatHandler{providers: o.Providers})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.
 	mux.Handle("/healthz", methodNotAllowed("GET, HEAD"))
+	mux.Handle("/v1/models", methodNotAllowed("GET"))
 	mux.Handle("/v1/chat/completions", methodNotAllowed("POST"))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "Not found. Spillway serves POST /v1/chat/completions.", typeInvalidRequest, "not_found")

@@ -42,6 +42,14 @@ func (p *Provider) Name() string {
 	return "mock"
 }
 
+// Models lists the mock provider's supported models.
+func (p *Provider) Models(ctx context.Context) ([]providers.Model, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []providers.Model{{ID: modelEcho}, {ID: modelStreamError}}, nil
+}
+
 // Chat answers for the upstream model "echo"; "stream-error" is
 // providers.ErrUpstreamUnavailable and any other model is
 // providers.ErrModelNotFound.

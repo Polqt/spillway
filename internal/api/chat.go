@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Polqt/spillway/internal/providers"
 )
@@ -83,14 +84,20 @@ func decodeChat(w http.ResponseWriter, r *http.Request) (chatBody, bool) {
 }
 
 func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.ModelRef, providers.Provider, bool) {
+	if model == "auto" || strings.HasPrefix(model, "spillway/") {
+		writeError(w, http.StatusNotFound,
+			fmt.Sprintf("Virtual model %q requires the router, which arrives in v0.3. Send a provider/model reference, or see GET /v1/models.", model),
+			typeInvalidRequest, "model_not_found")
+		return providers.ModelRef{}, nil, false
+	}
 	ref, err := providers.ParseModelRef(model)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found. Name a model as provider/model, such as mock/echo.", model), typeInvalidRequest, "model_not_found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found. Send a model reference as provider/model, such as mock/echo, or see GET /v1/models.", model), typeInvalidRequest, "model_not_found")
 		return providers.ModelRef{}, nil, false
 	}
 	p, ok := h.providers.Lookup(ref.Provider)
 	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found: provider %q is not configured.", model, ref.Provider), typeInvalidRequest, "model_not_found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found: provider %q is not configured. Send a configured provider/model reference, or see GET /v1/models.", model, ref.Provider), typeInvalidRequest, "model_not_found")
 		return providers.ModelRef{}, nil, false
 	}
 	return ref, p, true

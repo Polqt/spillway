@@ -47,7 +47,8 @@ func TestParseModelRef_SplitsAtFirstSlash(t *testing.T) {
 
 type named string
 
-func (n named) Name() string { return string(n) }
+func (n named) Name() string                                      { return string(n) }
+func (n named) Models(context.Context) ([]providers.Model, error) { return nil, nil }
 func (n named) Chat(context.Context, providers.ChatRequest) (providers.ChatResponse, error) {
 	return providers.ChatResponse{}, nil
 }
@@ -66,6 +67,18 @@ func TestSet_Lookup(t *testing.T) {
 	}
 	if _, ok := set.Lookup("gemini"); ok {
 		t.Error("Lookup(gemini) found a provider, want none")
+	}
+}
+
+func TestSet_ProvidersAreNameSorted(t *testing.T) {
+	t.Parallel()
+	set, err := providers.NewSet(named("zeta"), named("alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := set.Providers()
+	if len(got) != 2 || got[0].Name() != "alpha" || got[1].Name() != "zeta" {
+		t.Errorf("Providers() = %v, want [alpha zeta]", got)
 	}
 }
 

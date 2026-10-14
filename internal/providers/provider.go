@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -13,12 +14,24 @@ import (
 type Provider interface {
 	// Name is the provider part of a model reference, such as "mock".
 	Name() string
+	// Models lists the upstream models this provider serves.
+	Models(ctx context.Context) ([]Model, error)
 	// Chat sends a non-streaming chat completion for the upstream model in req.
 	Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
 	// ChatStream starts a streaming chat completion. Errors the provider
 	// reports before the first chunk are returned here, so the caller can
 	// still answer with a plain HTTP error.
 	ChatStream(ctx context.Context, req ChatRequest) (Stream, error)
+}
+
+// Model is one model served by a provider.
+type Model struct {
+	// ID is the upstream model identifier.
+	ID string
+	// Created is the model creation time as a Unix timestamp.
+	Created int64
+	// OwnedBy is the organization that owns the model, when known.
+	OwnedBy string
 }
 
 // Stream is a pull-based stream of chat completion chunks. An implementation
@@ -84,4 +97,18 @@ func NewSet(ps ...Provider) (*Set, error) {
 func (s *Set) Lookup(name string) (Provider, bool) {
 	p, ok := s.byName[name]
 	return p, ok
+}
+
+// Providers returns the configured providers in name order.
+func (s *Set) Providers() []Provider {
+	names := make([]string, 0, len(s.byName))
+	for name := range s.byName {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	ps := make([]Provider, 0, len(names))
+	for _, name := range names {
+		ps = append(ps, s.byName[name])
+	}
+	return ps
 }
