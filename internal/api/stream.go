@@ -13,14 +13,16 @@ import (
 // serveStream relays a provider stream as server-sent events, one flushed
 // "data:" event per chunk, ending with "data: [DONE]". Headers are sent with
 // the first chunk, so a failure before it is still a plain HTTP error.
-func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) {
+// serveStream returns failures that happen before the first chunk so a tier
+// can try another candidate. Once a chunk reaches the client, failures are
+// written as SSE events and the request is committed.
+func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) error {
 	rec := recordFrom(r.Context())
 	rec.stream = true
 	stream, err := provider.ChatStream(r.Context(), req)
 	if err != nil {
 		rec.err = err
-		writeProviderError(w, r, ref, err)
-		return
+		return err
 	}
 	defer func() {
 		if err := stream.Close(); err != nil && rec.err == nil {
@@ -35,13 +37,12 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 		if err != nil && !errors.Is(err, io.EOF) {
 			rec.err = err
 			if !started {
-				writeProviderError(w, r, ref, err)
-				return
+				return err
 			}
 			if r.Context().Err() == nil {
 				writeStreamError(w, rc, ref, err, writeTimeout)
 			}
-			return
+			return nil
 		}
 		if !started {
 			startEventStream(w)
@@ -51,11 +52,11 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 			if err := writeEvent(w, rc, []byte("[DONE]"), writeTimeout); err != nil {
 				rec.err = err
 			}
-			return
+			return nil
 		}
 		if err := writeEvent(w, rc, chunk.Data, writeTimeout); err != nil {
 			rec.err = err
-			return
+			return nil
 		}
 	}
 }

@@ -71,7 +71,10 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
-		serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+		if err := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout); err != nil {
+			rec.err = err
+			writeProviderError(w, r, ref, err)
+		}
 		return
 	}
 	resp, err := provider.Chat(r.Context(), req)
@@ -97,6 +100,7 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 		if r.Context().Err() != nil {
 			return
 		}
+		rec.err = nil
 		provider, ok := h.providers.Lookup(ref.Provider)
 		if !ok {
 			// A validated config cannot reach this path, but an incomplete API option should fail safely.
@@ -109,23 +113,26 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 		clearCandidateHeaders(w)
 		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 		rec.attempts++
+		var err error
 		if body.Stream {
-			// Streaming attempts are handled by the next ticket. Calling the established path
-			// preserves v0.1 behaviour for a tier until that commit adds pre-first-chunk retry.
 			rec.provider, rec.model = ref.Provider, ref.Model
 			w.Header().Set("X-Spillway-Provider", ref.Provider)
 			w.Header().Set("X-Spillway-Model", ref.Model)
-			serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
-			return
-		}
-		resp, err := provider.Chat(r.Context(), req)
-		if err == nil {
-			rec.provider, rec.model = ref.Provider, ref.Model
-			w.Header().Set("X-Spillway-Provider", ref.Provider)
-			w.Header().Set("X-Spillway-Model", ref.Model)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(resp.Body)
-			return
+			err = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+			if err == nil {
+				return
+			}
+		} else {
+			resp, chatErr := provider.Chat(r.Context(), req)
+			if chatErr == nil {
+				rec.provider, rec.model = ref.Provider, ref.Model
+				w.Header().Set("X-Spillway-Provider", ref.Provider)
+				w.Header().Set("X-Spillway-Model", ref.Model)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(resp.Body)
+				return
+			}
+			err = chatErr
 		}
 		if r.Context().Err() != nil {
 			return
@@ -135,7 +142,7 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 		h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
 			clearCandidateHeaders(w)
-			rec.err = errors.New(reason)
+			rec.err = err
 			writeProviderError(w, r, ref, err)
 			return
 		}

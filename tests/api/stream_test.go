@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"testing/synctest"
@@ -251,6 +253,254 @@ func TestStream_FirstRecvFailureIsHTTPError(t *testing.T) {
 	rec := e.do(t, request{auth: "Bearer " + keyCI, body: `{"model":"fake/x","stream":true,"messages":[{"role":"user","content":"hi"}]}`})
 
 	assertError(t, rec, http.StatusBadGateway, "api_error", "upstream_unavailable")
+}
+
+func TestStream_TierSpillsBeforeFirstChunk(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		chatStream bool
+	}{
+		{name: "ChatStream failure", chatStream: true},
+		{name: "first Recv failure"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			firstClosed := false
+			first := &countingProvider{name: "first"}
+			first.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+				if tt.chatStream {
+					return nil, providers.ErrRateLimited
+				}
+				return &trackedStream{recvErr: providers.ErrRateLimited, closed: func() { firstClosed = true }}, nil
+			}
+			second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+				return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+			}}
+			h := newTierStreamHandler(t, first, second)
+			rec := serveTierStream(t, h)
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("response = %d %v %s, want SSE 200", rec.Code, rec.Header(), rec.Body)
+			}
+			if got := readEvents(t, rec.Body); !slices.Equal(got, []string{`{"model":"second"}`, "[DONE]"}) {
+				t.Errorf("events = %q, want only second candidate and [DONE]", got)
+			}
+			assertTierStreamHasNoKeys(t, rec.Body.String())
+			if first.calls.Load() != 1 {
+				t.Errorf("first candidate calls = %d, want 1", first.calls.Load())
+			}
+			if second.calls.Load() != 1 {
+				t.Errorf("second candidate calls = %d, want 1", second.calls.Load())
+			}
+			if !tt.chatStream && !firstClosed {
+				t.Error("failed first stream was not closed")
+			}
+		})
+	}
+}
+
+func TestStream_TierFirstOpenAIErrorEventSpills(t *testing.T) {
+	t.Parallel()
+	fixture, err := os.ReadFile("../providers/openaicompat/testdata/stream-error-first.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(fixture)
+	}))
+	defer upstream.Close()
+	first, err := openaicompat.New(openaicompat.Options{Name: "first", BaseURL: upstream.URL, APIKey: redact.NewSecret("sk-test-provider"), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+	}}
+	h := newTierStreamHandler(t, first, second)
+	rec := serveTierStream(t, h)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if got := readEvents(t, rec.Body); !slices.Equal(got, []string{`{"model":"second"}`, "[DONE]"}) {
+		t.Errorf("events = %q, want only second candidate and [DONE]", got)
+	}
+	assertTierStreamHasNoKeys(t, rec.Body.String())
+	if strings.Contains(rec.Body.String(), "OpenRouter quota exhausted") {
+		t.Errorf("response leaks upstream error: %s", rec.Body)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Errorf("first candidate calls = %d, want 1", got)
+	}
+}
+
+func TestStream_TierFailureAfterChunkDoesNotSpill(t *testing.T) {
+	t.Parallel()
+	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"first"}`}, afterChunks: providers.ErrRateLimited}, nil
+	}}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+	}}
+	rec := serveTierStream(t, newTierStreamHandler(t, first, second))
+	events := readEvents(t, rec.Body)
+	if rec.Code != http.StatusOK || len(events) != 2 || events[0] != `{"model":"first"}` {
+		t.Fatalf("response = %d %q, want first chunk and an error event", rec.Code, events)
+	}
+	var streamError openAIError
+	if err := json.Unmarshal([]byte(events[1]), &streamError); err != nil || streamError.Error.Code != "rate_limit_exceeded" {
+		t.Errorf("error event = %q, %v; want rate_limit_exceeded", events[1], err)
+	}
+	if strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Error("failed stream ends with [DONE]")
+	}
+	assertTierStreamHasNoKeys(t, rec.Body.String())
+	if second.calls.Load() != 0 {
+		t.Errorf("second candidate calls = %d, want 0", second.calls.Load())
+	}
+}
+
+func TestStream_TierExhaustionIsPlainHTTPError(t *testing.T) {
+	t.Parallel()
+	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return nil, providers.ErrRateLimited
+	}}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return nil, providers.ErrUpstreamUnavailable
+	}}
+	rec := serveTierStream(t, newTierStreamHandler(t, first, second))
+	assertError(t, rec, http.StatusServiceUnavailable, "api_error", "no_candidate_available")
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("Content-Type = %q, want JSON", got)
+	}
+	if strings.Contains(rec.Body.String(), "data:") || strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Errorf("exhaustion response is SSE: %s", rec.Body)
+	}
+}
+
+func TestStream_TierClientDisconnectClosesPendingStream(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	closed := make(chan struct{})
+	first := &countingProvider{name: "first", stream: func(ctx context.Context, _ providers.ChatRequest) (providers.Stream, error) {
+		return &pendingStream{ctx: ctx, started: started, closed: closed}, nil
+	}}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+	}}
+	h := newTierStreamHandler(t, first, second)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"spillway/demo","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			done <- err
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		resp, err := srv.Client().Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	<-started
+	cancel()
+	<-closed
+	<-done
+	if second.calls.Load() != 0 {
+		t.Errorf("second candidate calls = %d after disconnect, want 0", second.calls.Load())
+	}
+}
+
+type trackedStream struct {
+	chunks      []string
+	afterChunks error
+	recvErr     error
+	closed      func()
+	index       int
+}
+
+func (s *trackedStream) Recv() (providers.ChatChunk, error) {
+	if s.index < len(s.chunks) {
+		chunk := providers.ChatChunk{Data: []byte(s.chunks[s.index])}
+		s.index++
+		return chunk, nil
+	}
+	if s.recvErr != nil {
+		return providers.ChatChunk{}, s.recvErr
+	}
+	if s.afterChunks != nil {
+		return providers.ChatChunk{}, s.afterChunks
+	}
+	return providers.ChatChunk{}, io.EOF
+}
+
+func (s *trackedStream) Close() error {
+	if s.closed != nil {
+		s.closed()
+	}
+	return nil
+}
+
+type pendingStream struct {
+	ctx     context.Context
+	started chan<- struct{}
+	closed  chan<- struct{}
+}
+
+func (s *pendingStream) Recv() (providers.ChatChunk, error) {
+	close(s.started)
+	<-s.ctx.Done()
+	return providers.ChatChunk{}, s.ctx.Err()
+}
+
+func (s *pendingStream) Close() error {
+	close(s.closed)
+	return nil
+}
+
+func newTierStreamHandler(t *testing.T, first, second providers.Provider) http.Handler {
+	t.Helper()
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers: map[string][]providers.ModelRef{"demo": {
+			{Provider: first.Name(), Model: "candidate"}, {Provider: second.Name(), Model: "candidate"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func serveTierStream(t *testing.T, h http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"model":"spillway/demo","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func assertTierStreamHasNoKeys(t *testing.T, body string) {
+	t.Helper()
+	for _, key := range []string{keyCI, "sk-test-provider"} {
+		if strings.Contains(body, key) {
+			t.Errorf("SSE response leaks key %q: %s", key, body)
+		}
+	}
 }
 
 // A client that is already gone gets nothing written, streaming or not.
