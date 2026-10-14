@@ -1,0 +1,85 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+// localKeyName keeps client_app values comparable without case folding and
+// short enough not to flood a log line.
+var localKeyName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+
+// knownProviders lists the provider names this release can build.
+var knownProviders = []string{"mock"}
+
+func (c Config) validate() error {
+	if err := validateListen(c.Server.Listen); err != nil {
+		return err
+	}
+	if err := validateLocalKeys(c.Server.APIKeys); err != nil {
+		return err
+	}
+	return validateProviders(c.Providers)
+}
+
+func validateListen(listen string) error {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("server.listen %q must be host:port, such as 127.0.0.1:8080", listen)
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("server.listen %q must have a port from 0 to 65535", listen)
+	}
+	return nil
+}
+
+// validateLocalKeys enforces ADR 0003 (a local key on every listen address)
+// and that each key resolves to exactly one client app.
+func validateLocalKeys(keys LocalKeys) error {
+	if len(keys) == 0 {
+		return errors.New(`server.api_keys must list at least one local key, even on loopback (ADR 0003); add a long random string as a local key`)
+	}
+	nameAt := make(map[string]int, len(keys))
+	keyAt := make(map[string]int, len(keys))
+	for i, k := range keys {
+		path := "server.api_keys[" + strconv.Itoa(i) + "]"
+		if !localKeyName.MatchString(k.Name) {
+			return fmt.Errorf("%s.name %q must be 1 to 64 characters of a-z, 0-9 and -", path, k.Name)
+		}
+		if j, dup := nameAt[k.Name]; dup {
+			return fmt.Errorf("%s.name %q duplicates server.api_keys[%d]; give each local key its own name", path, k.Name, j)
+		}
+		nameAt[k.Name] = i
+
+		v := k.Key.Reveal()
+		if v == "" {
+			return fmt.Errorf("%s.key must not be empty", path)
+		}
+		if strings.ContainsFunc(v, unicode.IsSpace) {
+			return fmt.Errorf("%s.key must not contain whitespace", path)
+		}
+		if j, dup := keyAt[v]; dup {
+			return fmt.Errorf("%s.key duplicates server.api_keys[%d].key; give each client app its own local key", path, j)
+		}
+		keyAt[v] = i
+	}
+	return nil
+}
+
+func validateProviders(ps map[string]Provider) error {
+	if len(ps) == 0 {
+		return errors.New(`providers must configure at least one provider; add "mock: {}" to try Spillway without provider keys`)
+	}
+	for name := range ps {
+		if !slices.Contains(knownProviders, name) {
+			return fmt.Errorf("providers.%s: unknown provider; supported: %s", name, strings.Join(knownProviders, ", "))
+		}
+	}
+	return nil
+}

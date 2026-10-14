@@ -16,6 +16,7 @@ var version = "dev"
 const usage = `usage: spillway <command>
 
 commands:
+  serve     serve the OpenAI-compatible API (flags: -config path, default config.yaml)
   version   print the version and exit
 `
 
@@ -27,6 +28,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		return 2
 	}
 	switch args[0] {
+	case "serve":
+		return serve(ctx, args[1:], stderr)
 	case "version":
 		_, err := fmt.Fprintf(stdout, "spillway %s %s %s/%s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 		if err != nil {
