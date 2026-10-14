@@ -11,6 +11,8 @@ type ChatRequest struct {
 	// Model is the upstream model, with the provider prefix already stripped.
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
+	// RawBody preserves request fields the gateway does not interpret.
+	RawBody json.RawMessage `json:"-"`
 }
 
 // Message is one chat message.

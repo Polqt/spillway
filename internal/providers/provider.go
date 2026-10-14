@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Provider is one configured upstream endpoint that serves models.
@@ -50,7 +51,26 @@ var (
 	ErrModelNotFound = errors.New("model not found")
 	// ErrUpstreamUnavailable means the provider failed or could not be reached.
 	ErrUpstreamUnavailable = errors.New("provider unavailable")
+	// ErrRateLimited means the provider rejected a request because of its quota.
+	ErrRateLimited = errors.New("provider rate limited")
+	// ErrUnauthorized means the provider rejected its configured key.
+	ErrUnauthorized = errors.New("provider unauthorized")
+	// ErrBadRequest means the provider rejected the request as invalid.
+	ErrBadRequest = errors.New("provider bad request")
 )
+
+// RetryAfterError carries a provider's retry delay while preserving its error kind.
+type RetryAfterError struct {
+	After time.Duration
+	Kind  error
+}
+
+func (e RetryAfterError) Error() string {
+	return fmt.Sprintf("%v: retry after %s", e.Kind, e.After)
+}
+
+// Unwrap returns the provider error kind.
+func (e RetryAfterError) Unwrap() error { return e.Kind }
 
 // ModelRef is a model reference: a provider name and an upstream model.
 type ModelRef struct {

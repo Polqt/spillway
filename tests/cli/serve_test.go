@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -240,6 +241,66 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	if strings.Contains(out, e2eKey) {
 		t.Errorf("log contains the local key:\n%s", out)
 	}
+}
+
+func TestRun_ServeGroqEndToEnd(t *testing.T) {
+	t.Parallel()
+	const providerKey = "sk-test-groq-cli"
+	var upstreamAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAuth = r.Header.Get("Authorization")
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-cli","object":"chat.completion","created":1,"model":"llama-3.1-8b-instant","choices":[{"index":0,"message":{"role":"assistant","content":"Groq wired"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n    base_url: \""+upstream.URL+"/v1\"\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"SPILLWAY_KEY": e2eKey, "GROQ_API_KEY": providerKey}
+		value, ok := values[name]
+		return value, ok
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		_ = pw.Close()
+	}()
+	var base string
+	select {
+	case addr := <-logs.addr:
+		base = "http://" + addr
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/chat/completions", strings.NewReader(`{"model":"groq/llama-3.1-8b-instant","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e2eKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Groq wired") || upstreamAuth != "Bearer "+providerKey {
+		t.Errorf("chat = %d %s, upstream auth = %q", resp.StatusCode, body, upstreamAuth)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("exit code after cancel = %d, want 0", code)
+	}
+	<-logs.done
 }
 
 type reply struct {

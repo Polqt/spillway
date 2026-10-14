@@ -15,6 +15,7 @@ import (
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
+	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/redact"
 )
 
@@ -75,6 +76,18 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 			p, err := mock.New(mock.Options{Now: time.Now})
 			if err != nil {
 				return nil, fmt.Errorf("build provider mock: %w", err)
+			}
+			ps = append(ps, p)
+		case "groq":
+			baseURL := cfg.Providers[name].BaseURL
+			if baseURL == "" {
+				baseURL = "https://api.groq.com/openai/v1"
+			}
+			p, err := openaicompat.New(openaicompat.Options{
+				Name: name, BaseURL: baseURL, APIKey: cfg.Providers[name].APIKey, Timeout: cfg.Providers[name].Timeout,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("build provider %s: %w", name, err)
 			}
 			ps = append(ps, p)
 		default:

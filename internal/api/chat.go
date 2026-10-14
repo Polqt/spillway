@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -24,6 +26,7 @@ type chatBody struct {
 	Model    *string             `json:"model"`
 	Messages []providers.Message `json:"messages"`
 	Stream   bool                `json:"stream"`
+	RawBody  json.RawMessage     `json:"-"`
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +45,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Spillway-Provider", ref.Provider)
 	w.Header().Set("X-Spillway-Model", ref.Model)
 
-	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages}
+	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
 		serveStream(w, r, ref, provider, req)
 		return
@@ -58,9 +61,18 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeChat(w http.ResponseWriter, r *http.Request) (chatBody, bool) {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if maxErr := (*http.MaxBytesError)(nil); errors.As(err, &maxErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "Request body is larger than 10 MiB.", typeInvalidRequest, "request_too_large")
+		return chatBody{}, false
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Request body could not be read.", typeInvalidRequest, "invalid_request")
+		return chatBody{}, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	var body chatBody
-	err := dec.Decode(&body)
+	err = dec.Decode(&body)
 	if err == nil && !errors.Is(dec.Decode(&struct{}{}), io.EOF) {
 		err = errors.New("trailing data after the JSON object")
 	}
@@ -80,6 +92,7 @@ func decodeChat(w http.ResponseWriter, r *http.Request) (chatBody, bool) {
 		writeError(w, http.StatusBadRequest, `"messages" must be a non-empty array.`, typeInvalidRequest, "invalid_request")
 		return chatBody{}, false
 	}
+	body.RawBody = raw
 	return body, true
 }
 
@@ -111,6 +124,10 @@ func writeProviderError(w http.ResponseWriter, r *http.Request, ref providers.Mo
 		return
 	}
 	status, detail := providerError(ref, err)
+	var retry providers.RetryAfterError
+	if errors.As(err, &retry) && retry.After > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry.After.Seconds())))
+	}
 	writeErrorDetail(w, status, detail)
 }
 
@@ -131,6 +148,12 @@ func providerError(ref providers.ModelRef, err error) (int, errorDetail) {
 			Type:    typeAPI,
 			Code:    "upstream_unavailable",
 		}
+	case errors.Is(err, providers.ErrRateLimited):
+		return http.StatusTooManyRequests, errorDetail{Message: fmt.Sprintf("Provider %q is rate limited; retry later or use another model.", ref.Provider), Type: typeAPI, Code: "rate_limit_exceeded"}
+	case errors.Is(err, providers.ErrUnauthorized):
+		return http.StatusUnauthorized, errorDetail{Message: fmt.Sprintf("Provider %q rejected its configured key.", ref.Provider), Type: typeAuthentication, Code: "provider_authentication_error"}
+	case errors.Is(err, providers.ErrBadRequest):
+		return http.StatusBadRequest, errorDetail{Message: fmt.Sprintf("Provider %q rejected the request.", ref.Provider), Type: typeInvalidRequest, Code: "provider_bad_request"}
 	default:
 		return http.StatusInternalServerError, internalError()
 	}

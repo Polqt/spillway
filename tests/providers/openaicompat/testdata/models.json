@@ -1,0 +1,1 @@
+{"object":"list","data":[{"id":"llama-3.1-8b-instant","object":"model","created":1720000000,"owned_by":"groq"},{"id":"mixtral-8x7b-32768","object":"model","created":1710000000,"owned_by":"groq"}]}
