@@ -28,7 +28,7 @@ func (ks *LocalKeys) UnmarshalYAML(n *yaml.Node) error {
 	}
 	keys := make(LocalKeys, 0, len(n.Content))
 	for i, entry := range n.Content {
-		path := "server.api_keys[" + strconv.Itoa(i) + "]"
+		path := localKeyPath(i)
 		switch {
 		case isString(entry):
 			keys = append(keys, LocalKey{Name: "key-" + strconv.Itoa(i+1), Key: redact.NewSecret(entry.Value)})
@@ -53,16 +53,18 @@ func decodeNamedKey(n *yaml.Node, path string) (LocalKey, error) {
 	var hasName, hasKey bool
 	for j := 0; j+1 < len(n.Content); j += 2 {
 		field, value := n.Content[j], n.Content[j+1]
+		if field.Value != "name" && field.Value != "key" {
+			// The field is not printed: a local key mistyped as a mapping
+			// key ("- sk-...:") would otherwise leak into the error.
+			return LocalKey{}, fmt.Errorf("%s (line %d): unknown field; an entry takes only name and key", path, field.Line)
+		}
 		if !isString(value) {
 			return LocalKey{}, fmt.Errorf("%s.%s (line %d): must be a string", path, field.Value, value.Line)
 		}
-		switch field.Value {
-		case "name":
+		if field.Value == "name" {
 			k.Name, hasName = value.Value, true
-		case "key":
+		} else {
 			k.Key, hasKey = redact.NewSecret(value.Value), true
-		default:
-			return LocalKey{}, fmt.Errorf("%s.%s (line %d): unknown field; use name and key", path, field.Value, field.Line)
 		}
 	}
 	if !hasName {
@@ -72,6 +74,11 @@ func decodeNamedKey(n *yaml.Node, path string) (LocalKey, error) {
 		return LocalKey{}, fmt.Errorf("%s.key is required (line %d)", path, n.Line)
 	}
 	return k, nil
+}
+
+// localKeyPath is the YAML path of the i-th server.api_keys entry, for errors.
+func localKeyPath(i int) string {
+	return "server.api_keys[" + strconv.Itoa(i) + "]"
 }
 
 // isString reports whether n is a non-null scalar.

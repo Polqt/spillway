@@ -47,6 +47,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 
+	if !cfg.Server.Loopback() {
+		logger.WarnContext(ctx, "listening on a non-loopback address; the API is reachable from the network and the Host check is off, so use long random local keys",
+			"addr", cfg.Server.Listen)
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Server.Listen)
 	if err != nil {
@@ -86,9 +90,7 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 	}
 	var allowedHosts []string
 	if cfg.Server.Loopback() {
-		// Validated by config, so the split cannot fail.
-		host, _, _ := net.SplitHostPort(cfg.Server.Listen)
-		allowedHosts = api.LoopbackHosts(host)
+		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
 	}
 	return api.NewHandler(api.Options{
 		Providers:    set,

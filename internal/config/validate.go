@@ -48,7 +48,7 @@ func validateLocalKeys(keys LocalKeys) error {
 	nameAt := make(map[string]int, len(keys))
 	keyAt := make(map[string]int, len(keys))
 	for i, k := range keys {
-		path := "server.api_keys[" + strconv.Itoa(i) + "]"
+		path := localKeyPath(i)
 		if !localKeyName.MatchString(k.Name) {
 			return fmt.Errorf("%s.name %q must be 1 to 64 characters of a-z, 0-9 and -", path, k.Name)
 		}

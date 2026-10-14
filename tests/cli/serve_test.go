@@ -52,6 +52,27 @@ func TestRun_ServeRejectsMissingLocalKey(t *testing.T) {
 	}
 }
 
+// A non-loopback listen exposes the API to the network with the Host check
+// off, so serve says so before binding. 192.0.2.1 (TEST-NET-1) is never a
+// local address, so the bind fails and no socket is opened.
+func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  listen: \"192.0.2.1:0\"\n  api_keys: [sk-test-local-e2e]\nproviders:\n  mock: {}\n")
+	var stdout, stderr strings.Builder
+
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, &stdout, &stderr, noEnv)
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (bind to a non-local address fails)", code)
+	}
+	if !strings.Contains(stderr.String(), "level=WARN") || !strings.Contains(stderr.String(), "reachable from the network") {
+		t.Errorf("stderr = %q, want a WARN that the API is reachable from the network", stderr.String())
+	}
+	if strings.Contains(stderr.String(), e2eKey) {
+		t.Errorf("stderr contains the local key: %q", stderr.String())
+	}
+}
+
 func TestRun_ServeErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -209,6 +230,9 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	<-logs.done
 
 	out := logs.String()
+	if strings.Contains(out, "level=WARN") {
+		t.Errorf("loopback listen logged a warning:\n%s", out)
+	}
 	if !strings.Contains(out, "client_app=e2e") {
 		t.Errorf("log lacks client_app=e2e:\n%s", out)
 	}

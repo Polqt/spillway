@@ -90,7 +90,12 @@ func TestParse_LocalKeyErrors(t *testing.T) {
 		{name: "null entry", entries: "  api_keys: [null]\n", want: "server.api_keys[0] (line 2)"},
 		{name: "mapping without name", entries: "  api_keys: [{key: sk-test-local-ci}]\n", want: "server.api_keys[0].name is required"},
 		{name: "mapping without key", entries: "  api_keys: [{name: ci}]\n", want: "server.api_keys[0].key is required"},
-		{name: "unknown field", entries: "  api_keys: [{name: ci, key: sk-test-local-ci, scope: all}]\n", want: `server.api_keys[0].scope (line 2): unknown field`},
+		{name: "unknown field", entries: "  api_keys: [{name: ci, key: sk-test-local-ci, scope: all}]\n", want: `server.api_keys[0] (line 2): unknown field`},
+		// Security property: a key mistyped as a mapping key is never printed.
+		{name: "key as mapping key with null value", entries: "  api_keys:\n    - sk-test-local-ci:\n", want: "server.api_keys[0] (line 3): unknown field"},
+		{name: "key as mapping key with a value", entries: "  api_keys: [{sk-test-local-ci: x}]\n", want: "server.api_keys[0] (line 2): unknown field"},
+		{name: "key as extra field", entries: "  api_keys: [{name: ci, key: sk-test-local-cursor, sk-test-local-ci: 1}]\n", want: "server.api_keys[0] (line 2): unknown field"},
+		{name: "non-string name", entries: "  api_keys: [{name: [ci], key: sk-test-local-ci}]\n", want: "server.api_keys[0].name (line 2): must be a string"},
 		{name: "empty key", entries: "  api_keys: [\"\"]\n", want: "server.api_keys[0].key must not be empty"},
 		{name: "key with space", entries: "  api_keys: [\"sk-test-local ci\"]\n", want: "server.api_keys[0].key must not contain whitespace"},
 		{name: "uppercase name", entries: "  api_keys: [{name: CI, key: sk-test-local-ci}]\n", want: `server.api_keys[0].name "CI" must be`},
@@ -181,6 +186,25 @@ func TestServer_Loopback(t *testing.T) {
 			t.Parallel()
 			if got := (config.Server{Listen: tt.listen}).Loopback(); got != tt.want {
 				t.Errorf("Loopback() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServer_Host(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"127.0.0.1:8080": "127.0.0.1",
+		"[::1]:8080":     "::1",
+		"localhost:8080": "localhost",
+		":8080":          "",
+		"nope":           "",
+	}
+	for listen, want := range tests {
+		t.Run(listen, func(t *testing.T) {
+			t.Parallel()
+			if got := (config.Server{Listen: listen}).Host(); got != want {
+				t.Errorf("Host() = %q, want %q", got, want)
 			}
 		})
 	}

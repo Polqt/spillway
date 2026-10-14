@@ -8,7 +8,7 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 )
 
-func TestParseModelRef(t *testing.T) {
+func TestParseModelRef_SplitsAtFirstSlash(t *testing.T) {
 	t.Parallel()
 	valid := []struct {
 		in             string

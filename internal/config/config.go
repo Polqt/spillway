@@ -30,13 +30,20 @@ type Server struct {
 	APIKeys LocalKeys `yaml:"api_keys"`
 }
 
+// Host returns the host part of the listen address, without brackets for
+// IPv6, or "" when the address is malformed or listens on every interface.
+func (s Server) Host() string {
+	host, _, err := net.SplitHostPort(s.Listen)
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
 // Loopback reports whether the listen host is "localhost" or a loopback IP.
 // An empty host listens on every interface and is not loopback.
 func (s Server) Loopback() bool {
-	host, _, err := net.SplitHostPort(s.Listen)
-	if err != nil {
-		return false
-	}
+	host := s.Host()
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

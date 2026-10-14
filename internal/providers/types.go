@@ -2,6 +2,7 @@ package providers
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -98,7 +99,7 @@ func NewChatResponse(c Completion) (ChatResponse, error) {
 		Usage: c.Usage,
 	})
 	if err != nil {
-		return ChatResponse{}, err
+		return ChatResponse{}, fmt.Errorf("encode chat completion: %w", err)
 	}
 	return ChatResponse{Body: body}, nil
 }

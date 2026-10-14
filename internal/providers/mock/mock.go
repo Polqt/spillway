@@ -44,6 +44,8 @@ func (p *Provider) Name() string {
 // providers.ErrModelNotFound.
 func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
 	if err := ctx.Err(); err != nil {
+		// Unwrapped, like every provider, so the API layer can tell a client
+		// disconnect from an upstream failure.
 		return providers.ChatResponse{}, err
 	}
 	if req.Model != "echo" {
