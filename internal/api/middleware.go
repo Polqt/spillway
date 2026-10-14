@@ -15,6 +15,7 @@ type requestRecord struct {
 	clientApp string
 	provider  string
 	model     string
+	stream    bool
 	err       error
 }
 
@@ -79,7 +80,7 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 			attrs = append(attrs, "client_app", rec.clientApp)
 		}
 		if rec.provider != "" {
-			attrs = append(attrs, "provider", rec.provider, "model", rec.model)
+			attrs = append(attrs, "provider", rec.provider, "model", rec.model, "stream", rec.stream)
 		}
 		if rec.err != nil {
 			attrs = append(attrs, "error", rec.err.Error())

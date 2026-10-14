@@ -15,10 +15,29 @@ type Provider interface {
 	Name() string
 	// Chat sends a non-streaming chat completion for the upstream model in req.
 	Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
+	// ChatStream starts a streaming chat completion. Errors the provider
+	// reports before the first chunk are returned here, so the caller can
+	// still answer with a plain HTTP error.
+	ChatStream(ctx context.Context, req ChatRequest) (Stream, error)
 }
 
-// ErrModelNotFound means the provider does not serve the requested upstream model.
-var ErrModelNotFound = errors.New("model not found")
+// Stream is a pull-based stream of chat completion chunks. An implementation
+// owns no goroutine: Recv does its work on the caller's goroutine.
+type Stream interface {
+	// Recv returns the next chunk, io.EOF after the last one, or any other
+	// error, which ends the stream. A caller whose ctx was cancelled gets
+	// context.Canceled unwrapped.
+	Recv() (ChatChunk, error)
+	// Close releases the stream. It is safe to call twice and after io.EOF.
+	Close() error
+}
+
+var (
+	// ErrModelNotFound means the provider does not serve the requested upstream model.
+	ErrModelNotFound = errors.New("model not found")
+	// ErrUpstreamUnavailable means the provider failed or could not be reached.
+	ErrUpstreamUnavailable = errors.New("provider unavailable")
+)
 
 // ModelRef is a model reference: a provider name and an upstream model.
 type ModelRef struct {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +114,151 @@ func TestMock_HonoursContext(t *testing.T) {
 	_, err := newMock(t).Chat(ctx, userRequest("echo", "hi"))
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
+	}
+}
+
+func closeStream(t *testing.T, s providers.Stream) {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// drain reads a stream to its end and returns the chunk payloads and the
+// error that ended it.
+func drain(t *testing.T, s providers.Stream) ([]string, error) {
+	t.Helper()
+	var chunks []string
+	for {
+		c, err := s.Recv()
+		if err != nil {
+			return chunks, err
+		}
+		chunks = append(chunks, string(c.Data))
+	}
+}
+
+func TestMock_EchoStream(t *testing.T) {
+	t.Parallel()
+	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer closeStream(t, s)
+
+	chunks, err := drain(t, s)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("stream ended with %v, want io.EOF", err)
+	}
+	id := regexp.MustCompile(`chatcmpl-mock-[0-9a-f]{12}`)
+	const head = `{"id":"ID","object":"chat.completion.chunk","created":1760400000,"model":"echo","choices":[{"index":0,"delta":`
+	want := []string{
+		head + `{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}`,
+		head + `{"content":" said:"},"logprobs":null,"finish_reason":null}]}`,
+		head + `{"content":" hello"},"logprobs":null,"finish_reason":null}]}`,
+		head + `{"content":" spillway"},"logprobs":null,"finish_reason":null}]}`,
+		head + `{},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":4,"total_tokens":8}}`,
+	}
+	if len(chunks) != len(want) {
+		t.Fatalf("got %d chunks, want %d:\n%s", len(chunks), len(want), strings.Join(chunks, "\n"))
+	}
+	for i, c := range chunks {
+		if got := id.ReplaceAllString(c, "ID"); got != want[i] {
+			t.Errorf("chunk %d\n got: %s\nwant: %s", i, got, want[i])
+		}
+	}
+}
+
+func TestMock_EchoStreamReportsUsage(t *testing.T) {
+	t.Parallel()
+	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer closeStream(t, s)
+	var last providers.ChatChunk
+	for {
+		c, err := s.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if last.Usage != nil {
+			t.Error("a chunk before the last carries usage")
+		}
+		last = c
+	}
+	want := providers.Usage{PromptTokens: 4, CompletionTokens: 4, TotalTokens: 8}
+	if last.Usage == nil || *last.Usage != want {
+		t.Errorf("last chunk usage = %+v, want %+v", last.Usage, want)
+	}
+}
+
+func TestMock_StreamErrorMidStream(t *testing.T) {
+	t.Parallel()
+	s, err := newMock(t).ChatStream(t.Context(), userRequest("stream-error", "hello spillway"))
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer closeStream(t, s)
+
+	chunks, err := drain(t, s)
+	if len(chunks) != 2 {
+		t.Errorf("got %d chunks before the error, want 2", len(chunks))
+	}
+	if !errors.Is(err, providers.ErrUpstreamUnavailable) {
+		t.Errorf("stream ended with %v, want ErrUpstreamUnavailable", err)
+	}
+}
+
+func TestMock_StreamErrorModelFailsChat(t *testing.T) {
+	t.Parallel()
+	_, err := newMock(t).Chat(t.Context(), userRequest("stream-error", "hi"))
+	if !errors.Is(err, providers.ErrUpstreamUnavailable) {
+		t.Errorf("error = %v, want ErrUpstreamUnavailable", err)
+	}
+}
+
+func TestMock_StreamUnknownModel(t *testing.T) {
+	t.Parallel()
+	_, err := newMock(t).ChatStream(t.Context(), userRequest("nope", "hi"))
+	if !errors.Is(err, providers.ErrModelNotFound) {
+		t.Errorf("error = %v, want ErrModelNotFound", err)
+	}
+}
+
+func TestMock_StreamHonoursContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	s, err := newMock(t).ChatStream(ctx, userRequest("echo", "hello spillway"))
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer closeStream(t, s)
+	if _, err := s.Recv(); err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	cancel()
+	if _, err := s.Recv(); err != context.Canceled { //nolint:errorlint // the contract is context.Canceled unwrapped
+		t.Errorf("Recv after cancel = %v, want context.Canceled unwrapped", err)
+	}
+}
+
+func TestMock_StreamClose(t *testing.T) {
+	t.Parallel()
+	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hi"))
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	if _, err := s.Recv(); err == nil || errors.Is(err, io.EOF) {
+		t.Errorf("Recv after Close = %v, want a non-EOF error", err)
 	}
 }

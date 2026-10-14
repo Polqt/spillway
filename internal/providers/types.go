@@ -103,3 +103,63 @@ func NewChatResponse(c Completion) (ChatResponse, error) {
 	}
 	return ChatResponse{Body: body}, nil
 }
+
+// ChatChunk carries one OpenAI chat.completion.chunk object verbatim.
+type ChatChunk struct {
+	Data json.RawMessage
+	// Usage is set when the chunk carries token accounting.
+	Usage *Usage
+}
+
+// Delta is the input for NewChatChunk: one step of a synthesised stream.
+// Role is set on the first chunk only, and FinishReason on the last.
+type Delta struct {
+	ID, Model, Role, Content, FinishReason string
+	Created                                int64
+	Usage                                  *Usage
+}
+
+type chatCompletionChunk struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []chunkChoice `json:"choices"`
+	Usage   *Usage        `json:"usage,omitempty"`
+}
+
+type chunkChoice struct {
+	Index        int             `json:"index"`
+	Delta        chunkDelta      `json:"delta"`
+	Logprobs     json.RawMessage `json:"logprobs"`
+	FinishReason *string         `json:"finish_reason"`
+}
+
+type chunkDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// NewChatChunk builds an OpenAI chat.completion.chunk object with one choice.
+func NewChatChunk(d Delta) (ChatChunk, error) {
+	var finish *string
+	if d.FinishReason != "" {
+		finish = &d.FinishReason
+	}
+	data, err := json.Marshal(chatCompletionChunk{
+		ID:      d.ID,
+		Object:  "chat.completion.chunk",
+		Created: d.Created,
+		Model:   d.Model,
+		Choices: []chunkChoice{{
+			Delta:        chunkDelta{Role: d.Role, Content: d.Content},
+			Logprobs:     json.RawMessage("null"),
+			FinishReason: finish,
+		}},
+		Usage: d.Usage,
+	})
+	if err != nil {
+		return ChatChunk{}, fmt.Errorf("encode chat completion chunk: %w", err)
+	}
+	return ChatChunk{Data: data, Usage: d.Usage}, nil
+}

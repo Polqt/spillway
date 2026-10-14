@@ -22,6 +22,7 @@ type chatHandler struct {
 type chatBody struct {
 	Model    *string             `json:"model"`
 	Messages []providers.Message `json:"messages"`
+	Stream   bool                `json:"stream"`
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,10 +41,15 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Spillway-Provider", ref.Provider)
 	w.Header().Set("X-Spillway-Model", ref.Model)
 
-	resp, err := provider.Chat(r.Context(), providers.ChatRequest{Model: ref.Model, Messages: body.Messages})
+	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages}
+	if body.Stream {
+		serveStream(w, r, ref, provider, req)
+		return
+	}
+	resp, err := provider.Chat(r.Context(), req)
 	if err != nil {
 		rec.err = err
-		writeProviderError(w, ref, err)
+		writeProviderError(w, r, ref, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -90,12 +96,35 @@ func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.Mo
 	return ref, p, true
 }
 
-// writeProviderError maps a provider error to the OpenAI shape. The client
-// never sees the provider's error text; the access log records it.
-func writeProviderError(w http.ResponseWriter, ref providers.ModelRef, err error) {
-	if errors.Is(err, providers.ErrModelNotFound) {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found on provider %q.", ref.String(), ref.Provider), typeInvalidRequest, "model_not_found")
+// writeProviderError answers a provider error that arrived before any of
+// the response was sent. A client that is gone gets nothing; the access log
+// still records the error.
+func writeProviderError(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, err error) {
+	if r.Context().Err() != nil {
 		return
 	}
-	writeInternalError(w)
+	status, detail := providerError(ref, err)
+	writeErrorDetail(w, status, detail)
+}
+
+// providerError maps a provider error to an HTTP status and the OpenAI error
+// shape. The client never sees the provider's error text; the access log
+// records it.
+func providerError(ref providers.ModelRef, err error) (int, errorDetail) {
+	switch {
+	case errors.Is(err, providers.ErrModelNotFound):
+		return http.StatusNotFound, errorDetail{
+			Message: fmt.Sprintf("Model %q not found on provider %q.", ref.String(), ref.Provider),
+			Type:    typeInvalidRequest,
+			Code:    "model_not_found",
+		}
+	case errors.Is(err, providers.ErrUpstreamUnavailable):
+		return http.StatusBadGateway, errorDetail{
+			Message: fmt.Sprintf("Provider %q is unavailable; retry later or use another model.", ref.Provider),
+			Type:    typeAPI,
+			Code:    "upstream_unavailable",
+		}
+	default:
+		return http.StatusInternalServerError, internalError()
+	}
 }

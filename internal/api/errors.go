@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 )
@@ -27,14 +28,30 @@ type errorDetail struct {
 // secret, a presented token or a presented Host; echoing the client's own
 // model reference, JSON-escaped, is fine.
 func writeError(w http.ResponseWriter, status int, message, typ, code string) {
+	writeErrorDetail(w, status, errorDetail{Message: message, Type: typ, Code: code})
+}
+
+func writeErrorDetail(w http.ResponseWriter, status int, detail errorDetail) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
+	_, _ = w.Write(append(errorJSON(detail), '\n'))
+}
+
+// errorJSON encodes detail in the OpenAI error shape.
+func errorJSON(detail errorDetail) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	// Keep "<key>" in messages readable instead of HTML-escaping its angle brackets.
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(errorBody{Error: errorDetail{Message: message, Type: typ, Code: code}})
+	// Encoding a struct of strings cannot fail.
+	_ = enc.Encode(errorBody{Error: detail})
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 }
 
 func writeInternalError(w http.ResponseWriter) {
-	writeError(w, http.StatusInternalServerError, "Internal error in Spillway; see its log for details.", typeAPI, "internal_error")
+	writeErrorDetail(w, http.StatusInternalServerError, internalError())
+}
+
+func internalError() errorDetail {
+	return errorDetail{Message: "Internal error in Spillway; see its log for details.", Type: typeAPI, Code: "internal_error"}
 }

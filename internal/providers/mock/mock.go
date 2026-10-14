@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -21,8 +22,9 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Provider is the mock provider. Its upstream model "echo" replies with the
-// text of the last user message.
+// Provider is the mock provider. Its upstream models are "echo", which
+// replies with the text of the last user message, and "stream-error", which
+// fails: at once for Chat, and after two chunks for ChatStream.
 type Provider struct {
 	now func() time.Time
 }
@@ -40,7 +42,8 @@ func (p *Provider) Name() string {
 	return "mock"
 }
 
-// Chat answers for the upstream model "echo"; any other model is
+// Chat answers for the upstream model "echo"; "stream-error" is
+// providers.ErrUpstreamUnavailable and any other model is
 // providers.ErrModelNotFound.
 func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
 	if err := ctx.Err(); err != nil {
@@ -48,27 +51,134 @@ func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (provide
 		// disconnect from an upstream failure.
 		return providers.ChatResponse{}, err
 	}
-	if req.Model != "echo" {
-		return providers.ChatResponse{}, fmt.Errorf("mock: upstream model %q: %w", req.Model, providers.ErrModelNotFound)
+	if err := checkModel(req.Model); err != nil {
+		return providers.ChatResponse{}, err
 	}
-	id, err := requestID(req)
+	if req.Model == modelStreamError {
+		return providers.ChatResponse{}, modelError(req.Model, providers.ErrUpstreamUnavailable)
+	}
+	rep, err := p.reply(req)
 	if err != nil {
 		return providers.ChatResponse{}, err
 	}
-	content := "You said: " + lastUserText(req.Messages)
+	return providers.NewChatResponse(providers.Completion{
+		ID:           rep.id,
+		Model:        req.Model,
+		Content:      strings.Join(rep.words, " "),
+		FinishReason: "stop",
+		Created:      rep.created,
+		Usage:        rep.usage,
+	})
+}
+
+// ChatStream streams the "echo" reply one word per chunk, then a finish
+// chunk with usage. "stream-error" streams the first two word chunks, then
+// fails with providers.ErrUpstreamUnavailable.
+func (p *Provider) ChatStream(ctx context.Context, req providers.ChatRequest) (providers.Stream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := checkModel(req.Model); err != nil {
+		return nil, err
+	}
+	rep, err := p.reply(req)
+	if err != nil {
+		return nil, err
+	}
+	deltas := make([]providers.Delta, 0, len(rep.words)+1)
+	for i, w := range rep.words {
+		d := providers.Delta{Content: " " + w}
+		if i == 0 {
+			d = providers.Delta{Role: "assistant", Content: w}
+		}
+		deltas = append(deltas, d)
+	}
+	deltas = append(deltas, providers.Delta{FinishReason: "stop", Usage: &rep.usage})
+
+	end := io.EOF
+	if req.Model == modelStreamError {
+		deltas = deltas[:2]
+		end = fmt.Errorf("mock: upstream model %q failed mid-stream: %w", req.Model, providers.ErrUpstreamUnavailable)
+	}
+	chunks := make([]providers.ChatChunk, len(deltas))
+	for i, d := range deltas {
+		d.ID, d.Model, d.Created = rep.id, req.Model, rep.created
+		if chunks[i], err = providers.NewChatChunk(d); err != nil {
+			return nil, err
+		}
+	}
+	return &stream{ctx: ctx, chunks: chunks, end: end}, nil
+}
+
+// stream replays precomputed chunks. It does no I/O and owns no goroutine.
+type stream struct {
+	ctx    context.Context
+	chunks []providers.ChatChunk
+	end    error // returned once the chunks are exhausted
+	closed bool
+}
+
+func (s *stream) Recv() (providers.ChatChunk, error) {
+	if s.closed {
+		return providers.ChatChunk{}, errors.New("mock: stream is closed")
+	}
+	if err := s.ctx.Err(); err != nil {
+		return providers.ChatChunk{}, err
+	}
+	if len(s.chunks) == 0 {
+		return providers.ChatChunk{}, s.end
+	}
+	c := s.chunks[0]
+	s.chunks = s.chunks[1:]
+	return c, nil
+}
+
+func (s *stream) Close() error {
+	s.closed = true
+	return nil
+}
+
+const (
+	modelEcho        = "echo"
+	modelStreamError = "stream-error"
+)
+
+func checkModel(model string) error {
+	if model != modelEcho && model != modelStreamError {
+		return modelError(model, providers.ErrModelNotFound)
+	}
+	return nil
+}
+
+func modelError(model string, kind error) error {
+	return fmt.Errorf("mock: upstream model %q: %w", model, kind)
+}
+
+// reply is what the mock answers to req, before it is shaped as a response
+// or as chunks.
+type reply struct {
+	id      string
+	created int64
+	words   []string
+	usage   providers.Usage
+}
+
+func (p *Provider) reply(req providers.ChatRequest) (reply, error) {
+	id, err := requestID(req)
+	if err != nil {
+		return reply{}, err
+	}
+	words := strings.Fields("You said: " + lastUserText(req.Messages))
 	prompt := 0
 	for _, m := range req.Messages {
 		prompt += len(strings.Fields(m.Text()))
 	}
-	completion := len(strings.Fields(content))
-	return providers.NewChatResponse(providers.Completion{
-		ID:           id,
-		Model:        req.Model,
-		Content:      content,
-		FinishReason: "stop",
-		Created:      p.now().Unix(),
-		Usage:        providers.Usage{PromptTokens: prompt, CompletionTokens: completion, TotalTokens: prompt + completion},
-	})
+	return reply{
+		id:      id,
+		created: p.now().Unix(),
+		words:   words,
+		usage:   providers.Usage{PromptTokens: prompt, CompletionTokens: len(words), TotalTokens: prompt + len(words)},
+	}, nil
 }
 
 // requestID derives the response id from the request, so identical requests

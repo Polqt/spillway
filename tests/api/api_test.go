@@ -28,15 +28,20 @@ const (
 
 // countingProvider records calls so tests can prove a request never reached a provider.
 type countingProvider struct {
-	name  string
-	calls atomic.Int32
-	chat  func(providers.ChatRequest) (providers.ChatResponse, error)
+	name   string
+	calls  atomic.Int32
+	chat   func(providers.ChatRequest) (providers.ChatResponse, error)
+	stream func(context.Context, providers.ChatRequest) (providers.Stream, error)
 }
 
 func (p *countingProvider) Name() string { return p.name }
 func (p *countingProvider) Chat(_ context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
 	p.calls.Add(1)
 	return p.chat(req)
+}
+func (p *countingProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (providers.Stream, error) {
+	p.calls.Add(1)
+	return p.stream(ctx, req)
 }
 
 // syncBuffer is a log sink safe for concurrent handler writes.
@@ -73,6 +78,8 @@ func newEnv(t *testing.T, hosts []string) env {
 	}
 	fake := &countingProvider{name: "fake", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
 		return providers.ChatResponse{Body: json.RawMessage(`{"object":"chat.completion"}`)}, nil
+	}, stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return nil, errors.New("fake: no stream configured")
 	}}
 	set, err := providers.NewSet(m, fake)
 	if err != nil {

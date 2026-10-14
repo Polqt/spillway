@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -49,6 +50,9 @@ type named string
 func (n named) Name() string { return string(n) }
 func (n named) Chat(context.Context, providers.ChatRequest) (providers.ChatResponse, error) {
 	return providers.ChatResponse{}, nil
+}
+func (n named) ChatStream(context.Context, providers.ChatRequest) (providers.Stream, error) {
+	return nil, errors.New("named: no stream")
 }
 
 func TestSet_Lookup(t *testing.T) {
