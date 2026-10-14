@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
@@ -31,8 +32,10 @@ type Options struct {
 	LocalKeys []LocalKey
 	// AllowedHosts, when non-nil, enables the Host check. Set it to
 	// LoopbackHosts only when listening on loopback.
-	AllowedHosts []string
-	Logger       *slog.Logger
+	AllowedHosts      []string
+	Logger            *slog.Logger
+	BodyReadTimeout   time.Duration
+	ChunkWriteTimeout time.Duration
 }
 
 // NewHandler returns the API handler. Middleware runs outermost first:
@@ -44,6 +47,12 @@ func NewHandler(o Options) (http.Handler, error) {
 	if o.Logger == nil {
 		return nil, errors.New("api: Options.Logger is required")
 	}
+	if o.BodyReadTimeout <= 0 {
+		o.BodyReadTimeout = 30 * time.Second
+	}
+	if o.ChunkWriteTimeout <= 0 {
+		o.ChunkWriteTimeout = 30 * time.Second
+	}
 	auth, err := newAuthenticator(o.LocalKeys)
 	if err != nil {
 		return nil, err
@@ -52,7 +61,10 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger})
-	mux.Handle("POST /v1/chat/completions", &chatHandler{providers: o.Providers})
+	mux.Handle("POST /v1/chat/completions", &chatHandler{
+		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
+		chunkWriteTimeout: o.ChunkWriteTimeout,
+	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.
 	mux.Handle("/healthz", methodNotAllowed("GET, HEAD"))

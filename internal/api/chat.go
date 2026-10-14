@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
 )
@@ -17,7 +18,9 @@ import (
 const maxBodyBytes = 10 << 20
 
 type chatHandler struct {
-	providers providerSet
+	providers         providerSet
+	bodyReadTimeout   time.Duration
+	chunkWriteTimeout time.Duration
 }
 
 // chatBody is the part of a chat request Spillway acts on. Model is a
@@ -30,7 +33,7 @@ type chatBody struct {
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, ok := decodeChat(w, r)
+	body, ok := decodeChat(w, r, h.bodyReadTimeout)
 	if !ok {
 		return
 	}
@@ -47,7 +50,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
-		serveStream(w, r, ref, provider, req)
+		serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
 		return
 	}
 	resp, err := provider.Chat(r.Context(), req)
@@ -60,8 +63,24 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.Body)
 }
 
-func decodeChat(w http.ResponseWriter, r *http.Request) (chatBody, bool) {
+func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (chatBody, bool) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		writeError(w, http.StatusInternalServerError, "Request body deadline could not be set.", typeAPI, "internal_error")
+		return chatBody{}, false
+	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err == nil {
+		if clearErr := rc.SetReadDeadline(time.Time{}); clearErr != nil && !errors.Is(clearErr, http.ErrNotSupported) {
+			err = clearErr
+		}
+	} else {
+		// Do not reuse a connection whose body was incomplete or exceeded its limit.
+		r.Close = true
+		w.Header().Set("Connection", "close")
+		_ = r.Body.Close()
+		_ = rc.SetReadDeadline(time.Time{})
+	}
 	if maxErr := (*http.MaxBytesError)(nil); errors.As(err, &maxErr) {
 		writeError(w, http.StatusRequestEntityTooLarge, "Request body is larger than 10 MiB.", typeInvalidRequest, "request_too_large")
 		return chatBody{}, false

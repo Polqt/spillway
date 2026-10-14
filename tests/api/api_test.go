@@ -1,10 +1,12 @@
 package api_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,9 +14,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Polqt/spillway/internal/api"
+	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/redact"
@@ -78,6 +82,10 @@ type env struct {
 // newEnv builds a handler over the mock provider and a counting fake, with two
 // local keys. hosts is passed through as Options.AllowedHosts.
 func newEnv(t *testing.T, hosts []string) env {
+	return newEnvWithTimeouts(t, hosts, 0, 0)
+}
+
+func newEnvWithTimeouts(t *testing.T, hosts []string, bodyReadTimeout, chunkWriteTimeout time.Duration) env {
 	t.Helper()
 	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
@@ -99,13 +107,67 @@ func newEnv(t *testing.T, hosts []string) env {
 			{Name: "ci", Key: redact.NewSecret(keyCI)},
 			{Name: "cursor", Key: redact.NewSecret(keyCursor)},
 		},
-		AllowedHosts: hosts,
-		Logger:       slog.New(slog.NewTextHandler(logs, nil)),
+		AllowedHosts:    hosts,
+		Logger:          slog.New(slog.NewTextHandler(logs, nil)),
+		BodyReadTimeout: bodyReadTimeout, ChunkWriteTimeout: chunkWriteTimeout,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
 	return env{handler: h, logs: logs, fake: fake}
+}
+
+func TestChat_BodyReadTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnvWithTimeouts(t, api.LoopbackHosts("127.0.0.1"), time.Second, time.Second)
+		listener := fakenet.Listen()
+		server := api.NewServer(e.handler, slog.New(slog.DiscardHandler))
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
+
+		conn, err := listener.DialContext(t.Context(), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		request := "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer " + keyCI + "\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n"
+		if _, err := conn.Write([]byte(request)); err != nil {
+			t.Fatal(err)
+		}
+		type responseResult struct {
+			status int
+			body   []byte
+			err    error
+		}
+		responseDone := make(chan responseResult, 1)
+		go func() {
+			response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+			if err != nil {
+				responseDone <- responseResult{err: err}
+				return
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, err := io.ReadAll(response.Body)
+			responseDone <- responseResult{status: response.StatusCode, body: body, err: err}
+		}()
+		time.Sleep(2 * time.Second)
+		result := <-responseDone
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.status != http.StatusBadRequest || !strings.Contains(string(result.body), `"type":"invalid_request_error"`) {
+			t.Fatalf("response = %d %s; want OpenAI 400", result.status, result.body)
+		}
+		if got := e.fake.calls.Load(); got != 0 {
+			t.Errorf("provider calls = %d, want zero", got)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
 }
 
 type request struct {
@@ -484,6 +546,34 @@ func TestChat_BodyTooLarge(t *testing.T) {
 
 	assertError(t, rec, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large")
 }
+
+func TestChat_BodyTooLargeStopsAtLimit(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	bodyText := `{"model":"mock/echo","messages":[{"role":"user","content":"` + strings.Repeat("x", 10<<20) + `"}]}`
+	body := &countingBody{reader: strings.NewReader(bodyText)}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", body)
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	recorder := httptest.NewRecorder()
+	e.handler.ServeHTTP(recorder, req)
+	assertError(t, recorder, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large")
+	if body.read != (10<<20)+1 {
+		t.Errorf("body bytes read = %d, want exactly 10 MiB + 1", body.read)
+	}
+}
+
+type countingBody struct {
+	reader *strings.Reader
+	read   int
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	b.read += n
+	return n, err
+}
+
+func (b *countingBody) Close() error { return nil }
 
 func TestChat_ModelNotFound(t *testing.T) {
 	t.Parallel()

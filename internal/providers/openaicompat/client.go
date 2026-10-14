@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -30,6 +31,7 @@ type Options struct {
 	BaseURL       string
 	APIKey        redact.Secret
 	Timeout       time.Duration
+	HTTPClient    *http.Client
 	ClassifyError func(status int, body []byte) (error, bool)
 }
 
@@ -63,9 +65,16 @@ func New(o Options) (*Client, error) {
 		return nil, errors.New("openaicompat: timeout must be positive")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	httpClient := &http.Client{Transport: transport}
+	if o.HTTPClient != nil {
+		clientCopy := *o.HTTPClient
+		httpClient = &clientCopy
+	}
+	httpClient.Timeout = 0
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
 		name: o.Name, baseURL: strings.TrimRight(o.BaseURL, "/"), key: o.APIKey, timeout: o.Timeout,
-		http:  &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		http:  httpClient,
 		clean: redact.NewScrubber(o.APIKey), classifyError: o.ClassifyError,
 	}, nil
 }
@@ -156,29 +165,37 @@ func (c *Client) Chat(ctx context.Context, chat providers.ChatRequest) (provider
 
 // ChatStream starts an SSE chat completion stream.
 func (c *Client) ChatStream(ctx context.Context, chat providers.ChatRequest) (providers.Stream, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	ctx, cancel := context.WithCancel(ctx)
+	timeout := time.AfterFunc(c.timeout, cancel)
 	body, err := requestBody(chat)
 	if err != nil {
+		timeout.Stop()
 		cancel()
 		return nil, fmt.Errorf("%s: encode chat request: %w", c.name, err)
 	}
 	req, err := c.request(ctx, http.MethodPost, "/chat/completions", body)
 	if err != nil {
+		timeout.Stop()
 		cancel()
 		return nil, fmt.Errorf("%s: build chat request: %w", c.name, err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := c.http.Do(req)
 	if err != nil {
+		timeout.Stop()
 		cancel()
 		return nil, c.transportError("stream chat completion", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer cancel()
+		defer func() {
+			timeout.Stop()
+			cancel()
+		}()
 		defer func() { _ = resp.Body.Close() }()
 		return nil, c.responseError(resp)
 	}
-	return &sseStream{body: resp.Body, cancel: cancel, scanner: newScanner(resp.Body), clean: c.clean, name: c.name}, nil
+	timeout.Stop()
+	return &sseStream{body: resp.Body, cancel: cancel, scanner: newScanner(resp.Body), clean: c.clean, name: c.name, idleTimeout: c.timeout}, nil
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
@@ -345,18 +362,25 @@ func newScanner(r io.Reader) *bufio.Scanner {
 }
 
 type sseStream struct {
-	body    io.ReadCloser
-	cancel  context.CancelFunc
-	scanner *bufio.Scanner
-	clean   *redact.Scrubber
-	name    string
-	closed  bool
+	body         io.ReadCloser
+	cancel       context.CancelFunc
+	scanner      *bufio.Scanner
+	clean        *redact.Scrubber
+	name         string
+	idleTimeout  time.Duration
+	idleTimedOut atomic.Bool
+	closed       bool
 }
 
 func (s *sseStream) Recv() (providers.ChatChunk, error) {
 	if s.closed {
 		return providers.ChatChunk{}, errors.New("openaicompat: stream is closed")
 	}
+	idleTimer := time.AfterFunc(s.idleTimeout, func() {
+		s.idleTimedOut.Store(true)
+		s.cancel()
+	})
+	defer idleTimer.Stop()
 	for s.scanner.Scan() {
 		line := s.scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -375,6 +399,9 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 		return providers.ChatChunk{Data: append(json.RawMessage(nil), data...), Usage: chunk.Usage}, nil
 	}
 	if err := s.scanner.Err(); err != nil {
+		if s.idleTimedOut.Load() {
+			return providers.ChatChunk{}, fmt.Errorf("%w: no stream data for %s", providers.ErrUpstreamUnavailable, s.idleTimeout)
+		}
 		return providers.ChatChunk{}, s.clean.Error(fmt.Errorf("%s: read stream: %w", s.name, err))
 	}
 	return providers.ChatChunk{}, io.EOF

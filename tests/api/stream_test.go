@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,12 +16,16 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+	"testing/synctest"
+	"time"
 
 	"github.com/Polqt/spillway/internal/api"
+	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
 )
 
 const echoStreamBody = `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"hello spillway"}]}`
+const fakeStreamBody = `{"model":"fake/x","stream":true,"messages":[{"role":"user","content":"hello spillway"}]}`
 
 // readEvents parses an SSE body into its data payloads, reading line by line
 // as an incremental client does.
@@ -318,6 +324,205 @@ func TestStream_FlushesEachChunk(t *testing.T) {
 	if want := []string{`{"n":2}`, "[DONE]"}; !slices.Equal(rest, want) {
 		t.Errorf("remaining events = %q, want %q", rest, want)
 	}
+}
+
+func TestStream_OutlivesServerIdleTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, api.LoopbackHosts("127.0.0.1"))
+		e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+			return &delayedStream{delays: []time.Duration{121 * time.Second}, chunks: []string{`{"n":1}`, `{"n":2}`}}, nil
+		}
+		listener := fakenet.Listen()
+		server := api.NewServer(e.handler, slog.New(slog.DiscardHandler))
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1/v1/chat/completions", strings.NewReader(fakeStreamBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		type result struct {
+			body []byte
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			resp, err := client.Do(req)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			done <- result{body: body, err: err}
+		}()
+		got := <-done
+		if got.err != nil || !strings.Contains(string(got.body), `data: [DONE]`) {
+			t.Fatalf("stream response = %q, %v; want complete events", got.body, got.err)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+}
+
+type delayedStream struct {
+	chunks []string
+	delays []time.Duration
+	index  int
+}
+
+func (s *delayedStream) Recv() (providers.ChatChunk, error) {
+	if s.index > 0 && s.index-1 < len(s.delays) {
+		time.Sleep(s.delays[s.index-1])
+	}
+	if s.index >= len(s.chunks) {
+		return providers.ChatChunk{}, io.EOF
+	}
+	chunk := providers.ChatChunk{Data: []byte(s.chunks[s.index])}
+	s.index++
+	return chunk, nil
+}
+
+func (s *delayedStream) Close() error { return nil }
+
+func TestStream_StalledClientStopsAtWriteDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnvWithTimeouts(t, api.LoopbackHosts("127.0.0.1"), time.Second, time.Second)
+		stream := &largeStream{data: []byte(strings.Repeat("x", 2<<20)), closed: make(chan struct{})}
+		e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) { return stream, nil }
+		listener := fakenet.Listen()
+		server := api.NewServer(e.handler, slog.New(slog.DiscardHandler))
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1/v1/chat/completions", strings.NewReader(fakeStreamBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		responseDone := make(chan struct {
+			response *http.Response
+			err      error
+		}, 1)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		go func() {
+			response, err := client.Do(req)
+			if response != nil {
+				defer func() { _ = response.Body.Close() }()
+			}
+			responseDone <- struct {
+				response *http.Response
+				err      error
+			}{response: response, err: err}
+			<-release
+		}()
+		result := <-responseDone
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		time.Sleep(2 * time.Second)
+		select {
+		case <-stream.closed:
+		default:
+			t.Fatal("provider stream remains open after write deadline")
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+}
+
+func TestStream_ProviderTimeoutAfterFirstEventIsErrorEvent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t, api.LoopbackHosts("127.0.0.1"))
+		e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+			return &idleErrorStream{}, nil
+		}
+		listener := fakenet.Listen()
+		server := api.NewServer(e.handler, slog.New(slog.DiscardHandler))
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://127.0.0.1/v1/chat/completions", strings.NewReader(fakeStreamBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		type result struct {
+			status int
+			body   []byte
+			err    error
+		}
+		done := make(chan result, 1)
+		go func() {
+			response, err := client.Do(req)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, err := io.ReadAll(response.Body)
+			done <- result{status: response.StatusCode, body: body, err: err}
+		}()
+		got := <-done
+		if got.err != nil || got.status != http.StatusOK || !strings.Contains(string(got.body), `"code":"upstream_unavailable"`) || strings.Contains(string(got.body), "[DONE]") {
+			t.Fatalf("stream response = %d %q, %v; want an OpenAI error event without [DONE]", got.status, got.body, got.err)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+}
+
+type idleErrorStream struct{ sent bool }
+
+func (s *idleErrorStream) Recv() (providers.ChatChunk, error) {
+	if !s.sent {
+		s.sent = true
+		return providers.ChatChunk{Data: []byte(`{"n":1}`)}, nil
+	}
+	time.Sleep(2 * time.Second)
+	return providers.ChatChunk{}, providers.ErrUpstreamUnavailable
+}
+
+func (*idleErrorStream) Close() error { return nil }
+
+type largeStream struct {
+	data   []byte
+	closed chan struct{}
+	once   sync.Once
+	sent   bool
+}
+
+func (s *largeStream) Recv() (providers.ChatChunk, error) {
+	if s.sent {
+		return providers.ChatChunk{}, io.EOF
+	}
+	s.sent = true
+	return providers.ChatChunk{Data: s.data}, nil
+}
+
+func (s *largeStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
 }
 
 // A client may receive an event split across any number of reads; framing

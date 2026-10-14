@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
 )
@@ -12,7 +13,7 @@ import (
 // serveStream relays a provider stream as server-sent events, one flushed
 // "data:" event per chunk, ending with "data: [DONE]". Headers are sent with
 // the first chunk, so a failure before it is still a plain HTTP error.
-func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest) {
+func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) {
 	rec := recordFrom(r.Context())
 	rec.stream = true
 	stream, err := provider.ChatStream(r.Context(), req)
@@ -38,7 +39,7 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 				return
 			}
 			if r.Context().Err() == nil {
-				writeStreamError(w, rc, ref, err)
+				writeStreamError(w, rc, ref, err, writeTimeout)
 			}
 			return
 		}
@@ -47,12 +48,12 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 			started = true
 		}
 		if errors.Is(err, io.EOF) {
-			if err := writeEvent(w, rc, []byte("[DONE]")); err != nil {
+			if err := writeEvent(w, rc, []byte("[DONE]"), writeTimeout); err != nil {
 				rec.err = err
 			}
 			return
 		}
-		if err := writeEvent(w, rc, chunk.Data); err != nil {
+		if err := writeEvent(w, rc, chunk.Data, writeTimeout); err != nil {
 			rec.err = err
 			return
 		}
@@ -71,18 +72,26 @@ func startEventStream(w http.ResponseWriter) {
 // writeStreamError ends a stream that has already sent chunks. Spillover is
 // no longer possible, so the client gets an OpenAI error event and no
 // [DONE], which keeps the truncation visible.
-func writeStreamError(w http.ResponseWriter, rc *http.ResponseController, ref providers.ModelRef, err error) {
+func writeStreamError(w http.ResponseWriter, rc *http.ResponseController, ref providers.ModelRef, err error, timeout time.Duration) {
 	_, detail := providerError(ref, err)
 	// The stream ends here either way; a failed write has nothing left to stop.
-	_ = writeEvent(w, rc, errorJSON(detail))
+	_ = writeEvent(w, rc, errorJSON(detail), timeout)
 }
 
-func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte) error {
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-		return fmt.Errorf("write event to client: %w", err)
+func writeEvent(w http.ResponseWriter, rc *http.ResponseController, data []byte, timeout time.Duration) error {
+	if err := rc.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return fmt.Errorf("set client write deadline: %w", err)
 	}
-	if err := rc.Flush(); err != nil {
-		return fmt.Errorf("flush event to client: %w", err)
+	_, writeErr := fmt.Fprintf(w, "data: %s\n\n", data)
+	if writeErr == nil {
+		writeErr = rc.Flush()
+	}
+	clearErr := rc.SetWriteDeadline(time.Time{})
+	if writeErr != nil {
+		return fmt.Errorf("write event to client: %w", writeErr)
+	}
+	if clearErr != nil && !errors.Is(clearErr, http.ErrNotSupported) {
+		return fmt.Errorf("clear client write deadline: %w", clearErr)
 	}
 	return nil
 }

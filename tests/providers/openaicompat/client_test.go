@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/redact"
@@ -116,6 +119,146 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 			t.Errorf("upstream Authorization = %q, want configured provider key", auth)
 		}
 	}
+}
+
+func TestClient_ChatTimeoutOnStalledResponse(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		listener := fakenet.Listen()
+		started := make(chan struct{})
+		release := make(chan struct{})
+		server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(started)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		})}
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { close(release); _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		provider, err := openaicompat.New(openaicompat.Options{
+			Name: "groq", BaseURL: "http://127.0.0.1/v1", APIKey: redact.NewSecret(providerKey),
+			Timeout: 5 * time.Second, HTTPClient: client,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			_, err := provider.Chat(t.Context(), providers.ChatRequest{Model: "model", Messages: []providers.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}}})
+			result <- err
+		}()
+		<-started
+		time.Sleep(6 * time.Second)
+		if err := <-result; !errors.Is(err, providers.ErrUpstreamUnavailable) {
+			t.Fatalf("Chat() error = %v, want upstream unavailable", err)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+}
+
+func TestClient_ChatStreamAllowsLongActiveStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		listener := fakenet.Listen()
+		server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for i := 1; i <= 3; i++ {
+				_, _ = fmt.Fprintf(w, "data: {\"n\":%d}\n\n", i)
+				w.(http.Flusher).Flush()
+				if i < 3 {
+					time.Sleep(4 * time.Second)
+				}
+			}
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		})}
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		provider, err := openaicompat.New(openaicompat.Options{
+			Name: "groq", BaseURL: "http://127.0.0.1/v1", APIKey: redact.NewSecret(providerKey),
+			Timeout: 5 * time.Second, HTTPClient: client,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := provider.ChatStream(t.Context(), providers.ChatRequest{Model: "model", Messages: []providers.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		for i := 1; i <= 3; i++ {
+			chunk, err := stream.Recv()
+			if err != nil || string(chunk.Data) != fmt.Sprintf("{\"n\":%d}", i) {
+				t.Fatalf("Recv() = %q, %v; want chunk %d", chunk.Data, err, i)
+			}
+		}
+		if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+			t.Fatalf("Recv() after chunks = %v, want EOF", err)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
+}
+
+func TestClient_ChatStreamTimesOutWhenUpstreamStalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		listener := fakenet.Listen()
+		release := make(chan struct{})
+		server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"n\":1}\n\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		})}
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve(listener) }()
+		t.Cleanup(func() { close(release); _ = server.Close(); _ = listener.Close() })
+		client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx, "", "")
+		}}}
+		provider, err := openaicompat.New(openaicompat.Options{
+			Name: "groq", BaseURL: "http://127.0.0.1/v1", APIKey: redact.NewSecret(providerKey),
+			Timeout: 5 * time.Second, HTTPClient: client,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := provider.ChatStream(t.Context(), providers.ChatRequest{Model: "model", Messages: []providers.Message{{Role: "user", Content: json.RawMessage(`"hello"`)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = stream.Close() }()
+		if chunk, err := stream.Recv(); err != nil || string(chunk.Data) != `{"n":1}` {
+			t.Fatalf("first Recv() = %q, %v; want initial event", chunk.Data, err)
+		}
+		result := make(chan error, 1)
+		go func() { _, err := stream.Recv(); result <- err }()
+		time.Sleep(6 * time.Second)
+		if err := <-result; !errors.Is(err, providers.ErrUpstreamUnavailable) {
+			t.Fatalf("stalled Recv() error = %v, want upstream unavailable", err)
+		}
+		_ = server.Close()
+		_ = listener.Close()
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve() = %v, want http.ErrServerClosed", err)
+		}
+	})
 }
 
 func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
