@@ -1,0 +1,8 @@
+/bin/
+/coverage.out
+/coverage.html
+.env
+.env.*
+*.local.yaml
+/docs/plans/
+/docs/adr/
