@@ -8,3 +8,7 @@ server:
       key: "sk-test-spillway-mock"
 providers:
   mock: {}
+
+tiers:
+  free:
+    models: [mock/echo]

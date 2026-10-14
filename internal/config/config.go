@@ -25,6 +25,13 @@ type Config struct {
 	Server    Server              `yaml:"server"`
 	Logging   Logging             `yaml:"logging"`
 	Providers map[string]Provider `yaml:"providers"`
+	Tiers     map[string]Tier     `yaml:"tiers,omitempty"`
+}
+
+// Tier is an ordered list of model references with an optional spend opt-in.
+type Tier struct {
+	Models     []string `yaml:"models"`
+	AllowSpend bool     `yaml:"allow_spend"`
 }
 
 // Logging configures the program's structured logger.
@@ -64,6 +71,7 @@ type Provider struct {
 	APIKey     redact.Secret `yaml:"api_key,omitempty"`
 	BaseURL    string        `yaml:"base_url,omitempty"`
 	Timeout    time.Duration `yaml:"timeout,omitempty"`
+	FreeTier   bool          `yaml:"free_tier,omitempty"`
 	timeoutSet bool
 }
 
@@ -75,8 +83,19 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 	seen := make(map[string]struct{}, len(n.Content)/2)
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		field, value := n.Content[i], n.Content[i+1]
-		if field.Value != "api_key" && field.Value != "base_url" && field.Value != "timeout" {
+		if field.Value != "api_key" && field.Value != "base_url" && field.Value != "timeout" && field.Value != "free_tier" {
 			return fmt.Errorf("provider config (line %d): unknown field", field.Line)
+		}
+		if field.Value == "free_tier" {
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+				return fmt.Errorf("providers.free_tier (line %d): must be true or false", value.Line)
+			}
+			if _, ok := seen[field.Value]; ok {
+				return fmt.Errorf("providers.free_tier (line %d): duplicate field", field.Line)
+			}
+			seen[field.Value] = struct{}{}
+			p.FreeTier = value.Value == "true"
+			continue
 		}
 		if value.Kind != yaml.ScalarNode || value.Tag == "!!null" || value.Tag != "!!str" {
 			return fmt.Errorf("providers.%s (line %d): must be a string", field.Value, value.Line)
@@ -105,6 +124,9 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes durations in their human-readable YAML form.
 func (p Provider) MarshalYAML() (any, error) {
 	value := map[string]any{"timeout": p.Timeout.String()}
+	if p.FreeTier {
+		value["free_tier"] = true
+	}
 	if !p.APIKey.IsZero() {
 		value["api_key"] = p.APIKey
 	}

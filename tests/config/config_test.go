@@ -237,7 +237,6 @@ func TestParse_Errors(t *testing.T) {
 		{name: "insecure non-loopback base URL", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"http://example.com\"}\n", want: "providers.mock.base_url must use https"},
 		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
 		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
-		{name: "tiers milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ntiers: {}\n", want: `"tiers" is not supported until v0.2`},
 		{name: "router milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {}\n", want: `"router" is not supported until v0.3`},
 		{name: "budgets milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nbudgets: {}\n", want: `"budgets" is not supported until v0.4`},
 		{name: "cache milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {}\n", want: `"cache" is not supported until v0.4`},
@@ -254,6 +253,104 @@ func TestParse_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error = %q, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_TiersValidateZeroSpendEligibility(t *testing.T) {
+	t.Parallel()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n"
+	tests := []struct {
+		name      string
+		providers string
+		tier      string
+		wantError string
+	}{
+		{name: "ollama is free", providers: "  ollama: {}\n", tier: "  cheap:\n    models: [ollama/llama3.2:3b]\n"},
+		{name: "mock is free", providers: "  mock: {}\n", tier: "  cheap:\n    models: [mock/echo]\n"},
+		{name: "openrouter free suffix", providers: "  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n", tier: "  cheap:\n    models: [openrouter/vendor/model:free]\n"},
+		{name: "attested groq", providers: "  groq: {api_key: \"${GROQ_API_KEY}\", free_tier: true}\n", tier: "  cheap:\n    models: [groq/model]\n"},
+		{name: "attested gemini", providers: "  gemini: {api_key: \"${GEMINI_API_KEY}\", free_tier: true}\n", tier: "  cheap:\n    models: [gemini/model]\n"},
+		{name: "spend is allowed", providers: "  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n", tier: "  paid:\n    allow_spend: true\n    models: [openrouter/vendor/model]\n"},
+		{name: "paid openrouter is rejected", providers: "  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n", tier: "  cheap:\n    models: [openrouter/vendor/model]\n", wantError: "tiers.cheap.models[0]: openrouter/vendor/model is not zero-spend eligible"},
+		{name: "paid openrouter can opt in", providers: "  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n", tier: "  cheap:\n    allow_spend: true\n    models: [openrouter/vendor/model]\n"},
+		{name: "unattested groq is rejected", providers: "  groq: {api_key: \"${GROQ_API_KEY}\"}\n", tier: "  cheap:\n    models: [groq/model]\n", wantError: "providers.groq.free_tier: true only if"},
+		{name: "unattested groq can opt in", providers: "  groq: {api_key: \"${GROQ_API_KEY}\"}\n", tier: "  cheap:\n    allow_spend: true\n    models: [groq/model]\n"},
+		{name: "unattested gemini is rejected", providers: "  gemini: {api_key: \"${GEMINI_API_KEY}\"}\n", tier: "  cheap:\n    models: [gemini/model]\n", wantError: "providers.gemini.free_tier: true only if"},
+		{name: "unattested gemini can opt in", providers: "  gemini: {api_key: \"${GEMINI_API_KEY}\"}\n", tier: "  cheap:\n    allow_spend: true\n    models: [gemini/model]\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.ParseWithEnv([]byte(base+tt.providers+"tiers:\n"+tt.tier), func(name string) (string, bool) {
+				return "sk-test-" + strings.ToLower(name), true
+			})
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("ParseWithEnv: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Errorf("ParseWithEnv error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestParse_FreeTierOnlyAppliesToGroqAndGemini(t *testing.T) {
+	t.Parallel()
+	for _, provider := range []string{"openrouter", "ollama", "mock"} {
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+			input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  " + provider + ": {free_tier: true}\n"
+			if provider == "openrouter" {
+				input = strings.Replace(input, "{free_tier: true}", "{api_key: \"${OPENROUTER_API_KEY}\", free_tier: true}", 1)
+			}
+			_, err := config.ParseWithEnv([]byte(input), func(string) (string, bool) { return "sk-test-openrouter", true })
+			if err == nil || !strings.Contains(err.Error(), "free_tier is only supported for groq and gemini") {
+				t.Errorf("ParseWithEnv error = %v, want unsupported free_tier diagnostic", err)
+			}
+		})
+	}
+}
+
+func TestParse_TierShapeValidation(t *testing.T) {
+	t.Parallel()
+	const base = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	tests := []struct{ tier, want string }{
+		{"  auto:\n    models: [mock/echo]\n", "tiers.auto is reserved"},
+		{"  Upper:\n    models: [mock/echo]\n", "tiers.Upper.name must match"},
+		{"  empty:\n    models: []\n", "tiers.empty.models must contain 1 to 16"},
+		{"  many:\n    models: [" + strings.TrimSuffix(strings.Repeat("mock/echo, ", 17), ", ") + "]\n", "tiers.many.models must contain 1 to 16"},
+		{"  bad:\n    models: [broken]\n", "tiers.bad.models[0]: model reference must be provider/model"},
+		{"  missing:\n    models: [groq/model]\n", "tiers.missing.models[0]: provider groq is not configured"},
+		{"  duplicate:\n    models: [mock/echo, mock/echo]\n", "tiers.duplicate.models[1] duplicates"},
+		{"  free: [mock/echo]\n", "tiers.free.models (line"},
+		{"  unknown:\n    models: [mock/echo]\n    fallback: true\n", "tiers.unknown (line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Parse([]byte(base + "tiers:\n" + tt.tier))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Parse error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestExamples_ConfigsValidate(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"config.yaml", "config.mock.yaml"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.LoadWithEnv(filepath.Join("..", "..", "examples", path), func(name string) (string, bool) {
+				return "sk-test-" + strings.ToLower(name), true
+			})
+			if err != nil {
+				t.Fatalf("LoadWithEnv: %v", err)
 			}
 		})
 	}
@@ -439,8 +536,8 @@ func TestParse_EnvironmentReferenceErrorsNamePath(t *testing.T) {
 
 func TestParse_FutureSectionErrorPrecedesExpansion(t *testing.T) {
 	t.Parallel()
-	_, err := config.ParseWithEnv([]byte("tiers: \"${UNSET}\"\n"), func(string) (string, bool) { return "", false })
-	if err == nil || !strings.Contains(err.Error(), `"tiers" is not supported until v0.2`) {
+	_, err := config.ParseWithEnv([]byte("router: \"${UNSET}\"\n"), func(string) (string, bool) { return "", false })
+	if err == nil || !strings.Contains(err.Error(), `"router" is not supported until v0.3`) {
 		t.Errorf("ParseWithEnv error = %v, want milestone guidance", err)
 	}
 }

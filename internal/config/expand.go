@@ -109,7 +109,7 @@ func rejectFutureSections(root *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i]
-		milestone := map[string]string{"tiers": "v0.2", "router": "v0.3", "budgets": "v0.4", "cache": "v0.4"}[key.Value]
+		milestone := map[string]string{"router": "v0.3", "budgets": "v0.4", "cache": "v0.4"}[key.Value]
 		if milestone != "" {
 			return fmt.Errorf("%q is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
 		}
@@ -121,7 +121,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -172,13 +172,41 @@ func rejectUnknownFields(root *yaml.Node) error {
 				if value.Kind != yaml.MappingNode {
 					return fmt.Errorf("providers.%s (line %d): must be a mapping", key.Value, value.Line)
 				}
-				if err := rejectFields(value, "providers."+key.Value, "api_key", "base_url", "timeout"); err != nil {
+				if err := rejectFields(value, "providers."+key.Value, "api_key", "base_url", "timeout", "free_tier"); err != nil {
 					return err
+				}
+				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && freeTier.Tag != "!!bool" {
+					return fmt.Errorf("providers.%s.free_tier (line %d): must be true or false", key.Value, freeTier.Line)
+				}
+				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && key.Value != "groq" && key.Value != "gemini" {
+					return fmt.Errorf("providers.%s.free_tier is only supported for groq and gemini; OpenRouter is checked per model and local providers are always free", key.Value)
 				}
 				apiKey := mappingValue(value, "api_key")
 				if key.Value != "mock" && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
 					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s_API_KEY}\"", key.Value, apiKey.Line, strings.ToUpper(key.Value))
 				}
+			}
+		}
+	}
+	tiers := mappingValue(root, "tiers")
+	if tiers != nil {
+		if tiers.Kind != yaml.MappingNode {
+			return fmt.Errorf("tiers (line %d): must be a mapping", tiers.Line)
+		}
+		for i := 0; i+1 < len(tiers.Content); i += 2 {
+			name, tier := tiers.Content[i], tiers.Content[i+1]
+			path := "tiers." + name.Value
+			if tier.Kind != yaml.MappingNode {
+				return fmt.Errorf("%s.models (line %d): use mapping form with a models: field and optional allow_spend field", path, tier.Line)
+			}
+			if err := rejectFields(tier, path, "models", "allow_spend"); err != nil {
+				return err
+			}
+			if spend := mappingValue(tier, "allow_spend"); spend != nil && spend.Tag != "!!bool" {
+				return fmt.Errorf("%s.allow_spend (line %d): must be true or false", path, spend.Line)
+			}
+			if models := mappingValue(tier, "models"); models != nil && models.Kind != yaml.SequenceNode {
+				return fmt.Errorf("%s.models (line %d): must be a list", path, models.Line)
 			}
 		}
 	}

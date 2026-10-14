@@ -101,6 +101,31 @@ func TestRun_CheckValidRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestRun_CheckPrintsTierAndFreeTierWithoutKeys(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  api_keys: [\"${LOCAL_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n    free_tier: true\ntiers:\n  cheap:\n    models: [groq/model]\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"LOCAL_KEY": "sk-test-local-check-tier", "GROQ_API_KEY": "sk-test-groq-check-tier"}
+		value, ok := values[name]
+		return value, ok
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, lookup)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
+	}
+	for _, want := range []string{"tiers:", "cheap:", "models:", "allow_spend: false", "free_tier: true", "[REDACTED]"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("check output = %q, want %q", stdout.String(), want)
+		}
+	}
+	for _, secret := range []string{"sk-test-local-check-tier", "sk-test-groq-check-tier"} {
+		if strings.Contains(stdout.String()+stderr.String(), secret) {
+			t.Errorf("check output contains secret %q", secret)
+		}
+	}
+}
+
 func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  mock: {}\n")

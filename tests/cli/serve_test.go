@@ -243,6 +243,41 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-local-attestation]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n    free_tier: true\n  gemini:\n    api_key: \"${GEMINI_API_KEY}\"\n    free_tier: true\n")
+	lookup := func(name string) (string, bool) {
+		return "sk-test-" + strings.ToLower(name), true
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		_ = pw.Close()
+	}()
+
+	select {
+	case <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+	if !strings.Contains(logs.String(), `msg="free-tier providers are user-attested" providers="[gemini groq]"`) {
+		t.Errorf("serve logs = %q, want sorted attested provider list", logs.String())
+	}
+	if strings.Contains(logs.String(), "sk-test-GROQ_API_KEY") || strings.Contains(logs.String(), "sk-test-GEMINI_API_KEY") {
+		t.Errorf("serve logs contain provider key: %s", logs.String())
+	}
+}
+
 func TestRun_ServeGroqEndToEnd(t *testing.T) {
 	t.Parallel()
 	const providerKey = "sk-test-groq-cli"

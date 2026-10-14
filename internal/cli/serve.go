@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,6 +47,14 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
 	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, nil), scrubber))
+	attested := make([]string, 0)
+	for name, provider := range cfg.Providers {
+		if provider.FreeTier {
+			attested = append(attested, name)
+		}
+	}
+	slices.Sort(attested)
+	logger.InfoContext(ctx, "free-tier providers are user-attested", "providers", attested)
 	handler, err := newHandler(cfg, logger)
 	if err != nil {
 		report(stderr, "spillway: %v\n", err)

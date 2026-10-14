@@ -11,11 +11,13 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/Polqt/spillway/internal/providers"
 )
 
-// localKeyName keeps client_app values comparable without case folding and
-// short enough not to flood a log line.
-var localKeyName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+// configName keeps identifiers comparable without case folding and short
+// enough to use in paths and log lines.
+var configName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
 // knownProviders lists the provider names this release can build.
 var knownProviders = []string{"gemini", "groq", "mock", "ollama", "openrouter"}
@@ -30,7 +32,70 @@ func (c Config) validate() error {
 	if !slices.Contains([]string{"debug", "info", "warn", "error"}, c.Logging.Level) {
 		return fmt.Errorf("logging.level %q must be debug, info, warn or error", c.Logging.Level)
 	}
-	return validateProviders(c.Providers)
+	if err := validateProviders(c.Providers); err != nil {
+		return err
+	}
+	return validateTiers(c.Tiers, c.Providers)
+}
+
+func validateTiers(tiers map[string]Tier, configured map[string]Provider) error {
+	names := make([]string, 0, len(tiers))
+	for name := range tiers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		path := "tiers." + name
+		if !configName.MatchString(name) {
+			return fmt.Errorf("%s.name must match [a-z0-9-]{1,64}", path)
+		}
+		if name == "auto" {
+			return fmt.Errorf("%s is reserved", path)
+		}
+		tier := tiers[name]
+		if len(tier.Models) < 1 || len(tier.Models) > 16 {
+			return fmt.Errorf("%s.models must contain 1 to 16 model references", path)
+		}
+		seen := make(map[string]struct{}, len(tier.Models))
+		for i, model := range tier.Models {
+			modelPath := fmt.Sprintf("%s.models[%d]", path, i)
+			ref, err := providers.ParseModelRef(model)
+			if err != nil {
+				return fmt.Errorf("%s: model reference must be provider/model", modelPath)
+			}
+			if _, exists := configured[ref.Provider]; !exists {
+				return fmt.Errorf("%s: provider %s is not configured", modelPath, ref.Provider)
+			}
+			if _, duplicate := seen[model]; duplicate {
+				return fmt.Errorf("%s duplicates an earlier model reference", modelPath)
+			}
+			seen[model] = struct{}{}
+			if tier.AllowSpend || isZeroSpendEligible(ref, configured[ref.Provider]) {
+				continue
+			}
+			fix := fmt.Sprintf("set %s.allow_spend: true", path)
+			if ref.Provider == "groq" || ref.Provider == "gemini" {
+				fix = fmt.Sprintf("set providers.%s.free_tier: true only if its account or project has no paid plan, or %s", ref.Provider, fix)
+			} else {
+				fix = "use a local model or OpenRouter :free model, or " + fix
+			}
+			return fmt.Errorf("%s: %s is not zero-spend eligible: %s (ADR 0005)", modelPath, model, fix)
+		}
+	}
+	return nil
+}
+
+func isZeroSpendEligible(ref providers.ModelRef, provider Provider) bool {
+	switch ref.Provider {
+	case "ollama", "mock":
+		return true
+	case "openrouter":
+		return strings.HasSuffix(ref.Model, ":free")
+	case "groq", "gemini":
+		return provider.FreeTier
+	default:
+		return false
+	}
 }
 
 func validateListen(listen string) error {
@@ -74,7 +139,7 @@ func validateLocalKeys(keys LocalKeys) error {
 	keyAt := make(map[string]int, len(keys))
 	for i, k := range keys {
 		path := localKeyPath(i)
-		if !localKeyName.MatchString(k.Name) {
+		if !configName.MatchString(k.Name) {
 			return fmt.Errorf("%s.name %q must be 1 to 64 characters of a-z, 0-9 and -", path, k.Name)
 		}
 		if j, dup := nameAt[k.Name]; dup {

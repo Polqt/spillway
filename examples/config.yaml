@@ -17,3 +17,7 @@ providers:
     api_key: "${GEMINI_API_KEY}"
   ollama:
     base_url: "http://localhost:11434/v1"
+
+tiers:
+  free:
+    models: [ollama/llama3.2:3b]
