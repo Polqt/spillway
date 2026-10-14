@@ -69,11 +69,26 @@ func (c *Client) ChatStream(ctx context.Context, req providers.ChatRequest) (pro
 func classifyError(_ int, body []byte) (error, bool) {
 	var payload []struct {
 		Error struct {
-			Status string `json:"status"`
+			Status  string `json:"status"`
+			Details []struct {
+				Type       string `json:"@type"`
+				RetryDelay string `json:"retryDelay"`
+			} `json:"details"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(body, &payload) != nil || len(payload) != 1 || payload[0].Error.Status != "RESOURCE_EXHAUSTED" {
 		return nil, false
 	}
-	return providers.RetryAfterError{Kind: providers.ErrRateLimited}, true
+	var after time.Duration
+	for _, detail := range payload[0].Error.Details {
+		if detail.Type != "type.googleapis.com/google.rpc.RetryInfo" {
+			continue
+		}
+		parsed, err := time.ParseDuration(detail.RetryDelay)
+		if err == nil {
+			after = providers.ClampRetryAfter(parsed)
+		}
+		break
+	}
+	return providers.RetryAfterError{After: after, Kind: providers.ErrRateLimited}, true
 }

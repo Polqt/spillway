@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -849,6 +850,24 @@ func TestChat_ProviderFailureIsInternalError(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "boom") {
 		t.Errorf("log lacks the error:\n%s", e.logs)
+	}
+}
+
+func TestChat_PaymentRequiredMapsToInsufficientQuota(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, fmt.Errorf("upstream message %s: %w", keyCursor, providers.RetryAfterError{After: 12 * time.Second, Kind: providers.ErrPaymentRequired})
+	}
+
+	rec := e.do(t, request{auth: "Bearer " + keyCI, body: `{"model":"fake/x","messages":[{"role":"user","content":"hi"}]}`})
+
+	assertError(t, rec, http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota")
+	if got := rec.Header().Get("Retry-After"); got != "12" {
+		t.Errorf("Retry-After = %q, want 12", got)
+	}
+	if strings.Contains(rec.Body.String(), keyCursor) {
+		t.Errorf("response exposes provider key: %s", rec.Body)
 	}
 }
 

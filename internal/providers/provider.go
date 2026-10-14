@@ -67,6 +67,20 @@ type RetryAfterError struct {
 	Kind  error
 }
 
+// ClampRetryAfter bounds a provider retry delay to the supported cooldown range.
+func ClampRetryAfter(after time.Duration) time.Duration {
+	if after <= 0 {
+		return 0
+	}
+	if after < time.Second {
+		return time.Second
+	}
+	if after > 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return after
+}
+
 func (e RetryAfterError) Error() string {
 	return fmt.Sprintf("%v: retry after %s", e.Kind, e.After)
 }

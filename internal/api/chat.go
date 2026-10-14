@@ -155,6 +155,8 @@ func writeProviderError(w http.ResponseWriter, r *http.Request, ref providers.Mo
 // records it.
 func providerError(ref providers.ModelRef, err error) (int, errorDetail) {
 	switch {
+	case errors.Is(err, providers.ErrPaymentRequired):
+		return http.StatusTooManyRequests, errorDetail{Message: fmt.Sprintf("Provider %q has insufficient quota; add credit or use another model.", ref.Provider), Type: "insufficient_quota", Code: "insufficient_quota"}
 	case errors.Is(err, providers.ErrModelNotFound):
 		return http.StatusNotFound, errorDetail{
 			Message: fmt.Sprintf("Model %q not found on provider %q.", ref.String(), ref.Provider),

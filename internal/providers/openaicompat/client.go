@@ -242,6 +242,12 @@ func (c *Client) responseError(resp *http.Response) error {
 		message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
 	}
 	switch {
+	case resp.StatusCode == http.StatusPaymentRequired:
+		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if after > 0 {
+			return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrPaymentRequired}, message)
+		}
+		return fmt.Errorf("%w: %w", providers.ErrPaymentRequired, message)
 	case resp.StatusCode == http.StatusTooManyRequests:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrRateLimited}, message)
@@ -252,6 +258,10 @@ func (c *Client) responseError(resp *http.Response) error {
 	case resp.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("%w: %w", providers.ErrModelNotFound, message)
 	case resp.StatusCode >= 500:
+		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if after > 0 {
+			return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrUpstreamUnavailable}, message)
+		}
 		return fmt.Errorf("%w: %w", providers.ErrUpstreamUnavailable, message)
 	default:
 		return fmt.Errorf("%w: %w", providers.ErrBadRequest, message)
@@ -282,11 +292,11 @@ func errorMessage(body []byte) string {
 }
 
 func retryAfter(value string, now time.Time) time.Duration {
-	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds > 0 {
-		return time.Duration(seconds) * time.Second
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil && seconds > 0 {
+		return providers.ClampRetryAfter(time.Duration(min(seconds, int64((24*time.Hour)/time.Second))) * time.Second)
 	}
 	if at, err := http.ParseTime(value); err == nil && at.After(now) {
-		return at.Sub(now)
+		return providers.ClampRetryAfter(at.Sub(now))
 	}
 	return 0
 }

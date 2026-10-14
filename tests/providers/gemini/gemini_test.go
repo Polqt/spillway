@@ -98,6 +98,47 @@ func TestProvider_ResourceExhaustedMapsToRateLimited(t *testing.T) {
 	}
 }
 
+func TestProvider_ResourceExhaustedRetryInfo(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantAfter time.Duration
+	}{
+		{name: "RetryInfo", body: "resource-exhausted-retry.json", wantAfter: 34 * time.Second},
+		{name: "subsecond RetryInfo clamps", body: "resource-exhausted-subsecond-retry.json", wantAfter: time.Second},
+		{name: "missing detail", body: "resource-exhausted.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fixture(t, tt.body)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write(body)
+			}))
+			defer srv.Close()
+			p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Chat(t.Context(), providers.ChatRequest{Model: "gemini-2.5-flash", RawBody: []byte(`{"model":"gemini-2.5-flash","messages":[]}`)})
+			if !errors.Is(err, providers.ErrRateLimited) {
+				t.Fatalf("Chat() error = %v, want ErrRateLimited", err)
+			}
+			var retry providers.RetryAfterError
+			if tt.wantAfter == 0 {
+				if !errors.As(err, &retry) || retry.After != 0 {
+					t.Errorf("retry = %#v, want no retry time", retry)
+				}
+			} else if !errors.As(err, &retry) || retry.After != tt.wantAfter {
+				t.Errorf("retry = %#v, want %s", retry, tt.wantAfter)
+			}
+			if strings.Contains(err.Error(), providerKey) {
+				t.Errorf("error exposes provider key: %v", err)
+			}
+		})
+	}
+}
+
 func TestProvider_TransportErrorDoesNotExposeKey(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

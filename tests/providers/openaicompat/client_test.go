@@ -452,6 +452,58 @@ func TestClient_MapsStatusAndScrubsProviderKey(t *testing.T) {
 	}
 }
 
+func TestClient_MapsPaymentRequiredAndRetryAfter(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		retry     string
+		body      string
+		wantKind  error
+		wantAfter time.Duration
+	}{
+		{name: "OpenRouter credits", status: http.StatusPaymentRequired, retry: "12", body: "openrouter-payment-credits.json", wantKind: providers.ErrPaymentRequired, wantAfter: 12 * time.Second},
+		{name: "OpenRouter in-flight budget", status: http.StatusPaymentRequired, retry: "12", body: "openrouter-payment-budget.json", wantKind: providers.ErrPaymentRequired, wantAfter: 12 * time.Second},
+		{name: "503 with retry", status: http.StatusServiceUnavailable, retry: "12", wantKind: providers.ErrUpstreamUnavailable, wantAfter: 12 * time.Second},
+		{name: "503 without retry", status: http.StatusServiceUnavailable, wantKind: providers.ErrUpstreamUnavailable},
+		{name: "zero", status: http.StatusPaymentRequired, retry: "0", wantKind: providers.ErrPaymentRequired},
+		{name: "negative", status: http.StatusPaymentRequired, retry: "-2", wantKind: providers.ErrPaymentRequired},
+		{name: "garbage", status: http.StatusPaymentRequired, retry: "later", wantKind: providers.ErrPaymentRequired},
+		{name: "clamped", status: http.StatusPaymentRequired, retry: "999999999", wantKind: providers.ErrPaymentRequired, wantAfter: 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"error":{"message":"payment required"}}`)
+			if tt.body != "" {
+				body = fixture(t, tt.body)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.retry != "" {
+					w.Header().Set("Retry-After", tt.retry)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write(body)
+			}))
+			defer srv.Close()
+
+			_, err := client(t, srv.URL).Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+			if !errors.Is(err, tt.wantKind) {
+				t.Fatalf("Chat() error = %v, want %v", err, tt.wantKind)
+			}
+			var retry providers.RetryAfterError
+			if tt.wantAfter == 0 {
+				if errors.As(err, &retry) && retry.After != 0 {
+					t.Errorf("retry = %s, want none", retry.After)
+				}
+			} else if !errors.As(err, &retry) || retry.After != tt.wantAfter {
+				t.Errorf("retry = %#v, want %s", retry, tt.wantAfter)
+			}
+			if strings.Contains(err.Error(), providerKey) {
+				t.Errorf("error exposes provider key: %v", err)
+			}
+		})
+	}
+}
+
 func TestClient_ChatStreamSurfacesUpstreamFailureAfterChunk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		conn, rw, err := w.(http.Hijacker).Hijack()
