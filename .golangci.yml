@@ -1,0 +1,27 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - noctx
+    - sloglint
+    - staticcheck
+    - unused
+  settings:
+    sloglint:
+      # Stable snake_case keys as key-value pairs (docs/CODING_STANDARDS.md, Logging).
+      kv-only: true
+      key-naming-case: snake
+      # Libraries take a logger; the package default logger is never used.
+      no-global: all
+
+formatters:
+  enable:
+    - gofmt

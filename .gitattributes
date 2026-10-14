@@ -1,0 +1,2 @@
+# LF everywhere, so gofmt and lint results do not depend on the platform.
+* text=auto eol=lf
