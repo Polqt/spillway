@@ -72,6 +72,11 @@ docs/adr/                        architecture decision records
 A new provider that speaks the OpenAI API is a preset in `openaicompat`, not a new package.
 A new deliverable is a directory under `apps/` named for the binary it builds; anything it shares with other apps goes in `internal/`.
 
+## Comments
+
+- Keep code comments brief and precise: one short sentence where one will do, saying why, not what.
+- No restating the code, no narrating history or the ticket, no filler.
+
 ## Testing
 
 The full rules are in `docs/CODING_STANDARDS.md`. The ones most often missed:
