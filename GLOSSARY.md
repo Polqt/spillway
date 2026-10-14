@@ -1,0 +1,52 @@
+# Spillway
+
+A self-hosted gateway that gives client apps one OpenAI-compatible endpoint and sends each request on to a provider the user has configured.
+
+## Language
+
+### Providers and models
+
+**Provider**:
+One configured upstream endpoint that serves models, such as Groq, Gemini or a local Ollama.
+_Avoid_: vendor, backend, upstream
+
+**Model reference**:
+How a client names a model: `provider/model`, for example `groq/llama-3.1-8b-instant`.
+_Avoid_: model name, model id
+
+**Upstream model**:
+The model id a provider itself understands: a model reference without its provider prefix, such as `llama-3.1-8b-instant`.
+_Avoid_: raw model
+
+**Virtual model**:
+A model reference Spillway resolves itself instead of passing to a provider: `auto` or `spillway/<tier>`.
+_Avoid_: alias, meta-model
+
+**Tier**:
+A user-named, ordered list of model references, such as `cheap`, that a client can request as `spillway/<tier>`.
+_Avoid_: class, bucket
+
+**Candidate**:
+A model in the requested tier that is still eligible for one request after quota, budget and health are considered.
+_Avoid_: option, target
+
+### Keys
+
+**Provider key**:
+The user's own credential for one provider.
+_Avoid_: API key, upstream key
+
+**Local key**:
+The named credential a client app presents to Spillway; its name identifies that client app.
+_Avoid_: Spillway key, server key, API key
+
+**Client app**:
+A program that sends requests to Spillway, identified by the name of the local key it uses.
+_Avoid_: project, consumer, caller
+
+### Delivery
+
+**Spillover**:
+Sending a request to its next candidate, in tier order, before any part of the response has reached the client.
+Once the client has received any of the response, a failure ends it with an error instead.
+_Avoid_: fallback, failover, retry, chain

@@ -1,4 +1,4 @@
-# Spillway — Project Context
+# Spillway - Project Context
 
 > A self-hosted, single-binary LLM gateway that gives developers one OpenAI-compatible endpoint, routes each prompt to the cheapest model that's good enough, and spills over to the next provider when a quota runs out.
 
@@ -16,7 +16,7 @@ Spillway runs on the developer's own machine or server as one binary. Their app 
 
 - **Unified API**: one OpenAI-compatible endpoint for every provider.
 - **Smart routing**: picks the cheapest model capable of handling each prompt.
-- **Automatic fallback**: when a provider is rate-limited, out of quota, or down, the request spills over to the next provider in the chain.
+- **Automatic spillover**: when a provider is rate-limited, out of quota, or down, the request spills over to its next candidate in the tier.
 - **Quota awareness**: tracks each key's limits and routes *before* hitting a 429.
 - **Caching, budgets, and a dashboard**: see usage, cost, and routing decisions.
 
@@ -24,7 +24,7 @@ Spillway runs on the developer's own machine or server as one binary. Their app 
 
 **Principles**
 - **Self-hosted first.** Everything runs locally. No Spillway cloud, no telemetry by default.
-- **Bring your own keys (BYOK).** Each user supplies their own API keys, one per provider. Keys never leave their machine.
+- **Bring your own keys (BYOK).** Each user supplies their own provider keys, one per provider. Keys never leave their machine.
 - **Single binary.** Download, add config, run. No external services required (Ollama is optional).
 - **Drop-in.** Existing OpenAI-SDK code works by changing only `base_url`.
 - **Legitimate use only.** Spillway maximizes each provider's own legitimate free tier and pricing.
@@ -61,9 +61,9 @@ client app (OpenAI SDK)
 │                 SSE streaming, OpenAI request/response schema       │
 │ Router          rules → embedding classifier → LLM judge → cascade │
 │ Quota tracker   per-key RPM/TPM/daily limits, 429 + retry-after     │
-│ Fallback chain  ordered providers per tier, circuit breakers        │
+│ Spillover       ordered candidates per tier, circuit breakers       │
 │ Cache           exact-match (hash) + optional semantic cache        │
-│ Budgets         per-day/month spend caps, per-project limits        │
+│ Budgets         per-day/month spend caps, per-client-app limits     │
 │ Adapters        gemini, groq, mistral, openrouter, anthropic,       │
 │                 openai, ollama (each translates to/from OpenAI fmt) │
 │ Store           SQLite: usage logs, cache, quota state, decisions   │
@@ -72,7 +72,7 @@ client app (OpenAI SDK)
 ```
 
 ### Request lifecycle
-1. Receive an OpenAI-format request. Authenticate it with a local Spillway API key.
+1. Receive an OpenAI-format request. Authenticate it with a local key, which also identifies the client app.
 2. Check the cache; return immediately on a hit.
 3. **Route**: determine the required capabilities and difficulty tier, then pick a candidate list.
 4. **Filter** candidates by quota headroom, budget, and circuit-breaker state.
@@ -84,9 +84,9 @@ client app (OpenAI SDK)
 
 The router is layered so that most requests never need an LLM call to be routed.
 
-1. **Rules (~0 ms).** Pinned model (`model: "gpt-4o"` passes through as-is), plus the required capabilities: vision, tools, JSON mode, and context length versus token count. The `model: "auto"` value or a tier alias (`"spillway/cheap"`, `"spillway/smart"`) enables routing.
+1. **Rules (~0 ms).** A model reference (`model: "groq/llama-3.1-8b-instant"`) passes through as-is, plus the required capabilities: vision, tools, JSON mode, and context length versus token count. A virtual model (`"auto"`, or a tier such as `"spillway/cheap"`) enables routing.
 2. **Embedding classifier (~5–20 ms).** Embed the prompt, then run kNN against labeled examples (`simple`, `coding`, `reasoning`, `creative`, `long-context`) to get a tier and a confidence score.
-3. **LLM judge (fallback only).** If confidence is below the threshold, ask a small local Llama via Ollama for a difficulty score from 1 to 5. Cache decisions by prompt hash.
+3. **LLM judge (low confidence only).** If confidence is below the threshold, ask a small local Llama via Ollama for a difficulty score from 1 to 5. Cache decisions by prompt hash.
 4. **Cascade (optional, per config).** Try the cheap tier first. Validate the response (JSON validity, refusal detection, length sanity). Escalate one tier if it fails.
 
 Every decision records a human-readable `reason` (e.g., `"rule: needs vision"`, `"classifier: simple (0.91)"`) that the dashboard shows and that is returned in the `x-spillway-route` response header.
@@ -98,7 +98,8 @@ Prior art worth reading: LMSYS **RouteLLM**, **LiteLLM** (provider adapters), **
 ```yaml
 server:
   listen: "127.0.0.1:8080"
-  api_keys: ["${SPILLWAY_KEY}"]   # keys local clients use
+  api_keys:                        # local keys; required, even on loopback (ADR 0003)
+    - { name: my-app, key: "${SPILLWAY_KEY}" }
 
 providers:
   gemini:     { api_key: "${GEMINI_API_KEY}" }
@@ -141,7 +142,7 @@ Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`,
 
 ## 9. Security
 
-- Bind to `127.0.0.1` by default. Exposing Spillway on a network requires explicit config plus API keys.
+- Bind to `127.0.0.1` by default. Every listen address, loopback included, requires at least one local key, and on loopback requests with a foreign `Host` are rejected (ADR 0003).
 - Provider keys come from env vars, referenced from `config.yaml` as `${VAR}`. They are never logged and are redacted in errors.
 - Encrypted at-rest key storage (encrypted file or OS keychain) is deferred until after v1.0 and needs an ADR first, because its key-management design is not settled.
 - Prompt/response logging is **off by default**. Metadata (tokens, cost, latency, route) is logged.
@@ -193,8 +194,8 @@ A provider that speaks the OpenAI API is a preset in `openaicompat`, not a new p
 ## 11. Milestones
 
 1. **v0.1 Proxy.** OpenAI-compatible API with streaming. Adapters for OpenAI-compatible providers (Groq, OpenRouter, Ollama) plus Gemini. A config loader.
-2. **v0.2 Fallback.** Tiers, an ordered fallback chain, 429/5xx handling, quota tracking, and circuit breakers.
-3. **v0.3 Rules router.** Capability detection, `auto` and tier aliases, and route reasons in headers.
+2. **v0.2 Spillover.** User-named tiers, spillover through candidates in tier order, quota tracking, and circuit breakers.
+3. **v0.3 Rules router.** Capability detection, `auto` and tier virtual models, and route reasons in headers.
 4. **v0.4 Observability.** SQLite usage logs, budgets, exact cache, and the embedded dashboard.
 5. **v0.5 Smart routing.** The embedding classifier, the Llama judge via Ollama, and the cascade mode.
 6. **v1.0.** GoReleaser binaries, a Docker image, docs, and `spillway init` for interactive setup.

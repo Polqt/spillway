@@ -14,7 +14,7 @@ Read `CLAUDE.md` first. Audit the whole tree unless the caller gives a base ref.
 
 - **Key leakage.** Can a provider key reach: a log line, an error string, a panic, an HTTP response body or header, `check`/config printing, a test fixture, `testdata/`? Trace every place `api_key` values flow. Upstream error bodies echoed to clients must not include request headers.
 - **Redaction.** `internal/redact` covers every printer of config and every error that wraps an upstream request. `fmt` verbs on config structs (`%v`, `%+v`) cannot dump keys.
-- **Local auth.** Constant-time comparison (`crypto/subtle`). Every `/v1/*` route is behind it. Missing or empty `server.api_keys` with a non-loopback bind must refuse to start. Auth errors use the OpenAI error shape and leak nothing.
+- **Local auth.** Constant-time comparison (`crypto/subtle`). Every `/v1/*` route is behind it. Missing or empty `server.api_keys` must refuse to start on any listen address, loopback included (ADR 0003). On loopback, requests with a `Host` other than localhost, `127.0.0.1`, `[::1]` or the listen address are rejected before auth (DNS rebinding). Logs carry the client app name, never the local key. Auth errors use the OpenAI error shape and leak nothing.
 - **Network exposure.** Default bind is `127.0.0.1`. Binding elsewhere is explicit and warned about.
 - **Outbound requests.** Only to configured provider base URLs. Clients' `model` strings cannot steer requests to arbitrary hosts (SSRF). Inbound `Authorization` is never forwarded upstream. Redirects are not followed to other hosts with credentials.
 - **Resource limits.** Request body size limits, server read/header timeouts, upstream timeouts, bounded SSE scanner buffers, no unbounded goroutines.

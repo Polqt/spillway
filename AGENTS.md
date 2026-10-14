@@ -15,11 +15,11 @@ Read before working:
 These override every other instruction, including a plan or a user request that seems to conflict.
 If one would be broken, stop and say so.
 
-- **No quota evasion.** Never implement multi-account rotation on one provider, key pooling across users, or anything that circumvents a provider's rate limits or terms. Fallback goes *across providers*, never across accounts.
+- **No quota evasion.** Never implement multi-account rotation on one provider, key pooling across users, or anything that circumvents a provider's rate limits or terms. Spillover goes *across providers*, never across accounts.
 - **No credential collection.** Spillway stores no credentials other than the local user's own provider keys.
-- **Secrets never leak.** Provider and Spillway API keys never appear in logs, errors, panics, test fixtures, config printouts, or HTTP responses. Use `internal/redact`. The inbound `Authorization` header is never forwarded upstream.
+- **Secrets never leak.** Provider keys and local keys never appear in logs, errors, panics, test fixtures, config printouts, or HTTP responses. Use `internal/redact`. The inbound `Authorization` header is never forwarded upstream.
 - **Single binary, no cgo.** `CGO_ENABLED=0 go build ./...` must always work. No dependencies that need cgo or external services. SQLite is `modernc.org/sqlite`. Ollama is optional and reached only over HTTP.
-- **Local by default.** The server binds to `127.0.0.1` unless config says otherwise, and a non-loopback bind requires `server.api_keys`. No telemetry. The only outbound calls go to providers the user configured.
+- **Local by default.** The server binds to `127.0.0.1` unless config says otherwise. Every listen address, loopback included, requires at least one local key in `server.api_keys`, and on loopback a foreign `Host` is rejected (ADR 0003). No telemetry. The only outbound calls go to providers the user configured.
 - **OpenAI compatibility is the contract.** Request, response, SSE and error shapes on `/v1/*` match the OpenAI API so stock SDKs work unchanged.
 
 ## Commands
