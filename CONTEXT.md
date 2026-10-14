@@ -152,7 +152,10 @@ Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`,
 
 ```
 spillway/
-├── cmd/spillway/main.go        # CLI entry: serve, init, check, version
+├── apps/
+│   └── spillway/
+│       ├── main.go             # binary entry point, calls cli.Run
+│       └── web/                # dashboard (embedded via go:embed)
 ├── internal/
 │   ├── api/                    # OpenAI-compatible handlers, SSE
 │   ├── router/                 # rules, classifier, judge, cascade
@@ -164,8 +167,9 @@ spillway/
 │   ├── cache/
 │   ├── budget/
 │   ├── store/                  # SQLite access + migrations
-│   └── config/
-├── web/                        # dashboard (embedded via go:embed)
+│   ├── config/
+│   └── cli/                    # subcommands serve, init, check, version; wiring
+├── tests/                      # all tests, mirroring internal/ (ADR 0004), plus e2e/
 ├── examples/                   # config samples, client snippets
 └── .goreleaser.yaml
 ```

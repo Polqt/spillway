@@ -1,10 +1,12 @@
-package main
+package cli_test
 
 import (
 	"bytes"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Polqt/spillway/internal/cli"
 )
 
 func noEnv(string) (string, bool) { return "", false }
@@ -13,7 +15,7 @@ func TestRun_Version(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
 
-	code := run(t.Context(), []string{"version"}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"version"}, &stdout, &stderr, noEnv)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
@@ -34,7 +36,7 @@ func TestRun_VersionWriteFails(t *testing.T) {
 	t.Parallel()
 	var stderr bytes.Buffer
 
-	code := run(t.Context(), []string{"version"}, failingWriter{}, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"version"}, failingWriter{}, &stderr, noEnv)
 
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
@@ -58,7 +60,7 @@ func TestRun_UsageError(t *testing.T) {
 			t.Parallel()
 			var stdout, stderr bytes.Buffer
 
-			code := run(t.Context(), tt.args, &stdout, &stderr, noEnv)
+			code := cli.Run(t.Context(), tt.args, &stdout, &stderr, noEnv)
 
 			if code != 2 {
 				t.Errorf("exit code = %d, want 2", code)

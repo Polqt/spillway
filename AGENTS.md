@@ -25,14 +25,14 @@ If one would be broken, stop and say so.
 ## Commands
 
 ```bash
-make build   # CGO_ENABLED=0 go build -o bin/spillway ./cmd/spillway
+make build   # CGO_ENABLED=0 go build -o bin/spillway ./apps/spillway
 make test    # go test -race -count=1 ./...
 make lint    # gofmt check + golangci-lint (config in .golangci.yml)
 make check   # lint + test; must pass before any task is done
 make run     # build and serve with examples/config.yaml
 make mock    # build and serve with examples/config.mock.yaml (no real keys needed)
 make vuln    # govulncheck
-make cover   # coverage report to coverage.html
+make cover   # coverage report to coverage.html (-coverpkg=./..., since tests sit outside their packages)
 ```
 
 - Go 1.26+ (`go` directive in `go.mod`), the oldest supported release; the local toolchain is newer.
@@ -44,9 +44,12 @@ If `make check` fails twice on the same problem, stop patching and use `/diagnos
 ## Layout
 
 Packages are added milestone by milestone (`CONTEXT.md` section 11). Create a package only when its milestone starts.
+Deliverables live under `apps/<name>/` and all tests under `tests/` (ADR 0004).
 
 ```
-cmd/spillway/                    CLI entry: serve, check, version (v0.1); init (v1.0)
+apps/spillway/                   binary entry point; main.go only calls cli.Run          v0.1
+apps/spillway/web/               embedded dashboard package (go:embed), part of the binary v0.4
+internal/cli/                    subcommands serve, check, version (v0.1), init (v1.0); wiring  v0.1
 internal/api/                    OpenAI-compatible handlers, SSE, local auth             v0.1
 internal/config/                 YAML config, ${ENV} expansion, validation               v0.1
 internal/redact/                 secret type and scrubbing helpers                       v0.1
@@ -59,19 +62,22 @@ internal/router/                 rules, embedding classifier, LLM judge, cascade
 internal/store/                  SQLite access and migrations                           v0.4
 internal/cache/                  exact and semantic cache                               v0.4
 internal/budget/                 spend caps                                             v0.4
-web/                             embedded dashboard (go:embed)                          v0.4
 examples/                        config samples and client snippets
 docs/plans/                      milestone plans
+tests/<package>/                 tests for internal/<package>, fixtures in testdata/     v0.1
+tests/e2e/                       cross-package end-to-end tests                          v0.1
 docs/adr/                        architecture decision records
 ```
 
 A new provider that speaks the OpenAI API is a preset in `openaicompat`, not a new package.
+A new deliverable is a directory under `apps/` named for the binary it builds; anything it shares with other apps goes in `internal/`.
 
 ## Testing
 
 The full rules are in `docs/CODING_STANDARDS.md`. The ones most often missed:
 
-- Provider adapters are tested against fixtures in `testdata/` via `httptest.Server`. Tests never call live APIs. Fixtures hold fake keys only (`sk-test-...`).
+- Every test lives under `tests/`, mirroring the package it covers (`internal/config` is tested in `tests/config/`). No `_test.go` file goes next to production code (ADR 0004).
+- Provider adapters are tested against fixtures in `tests/<package>/testdata/` via `httptest.Server`. Tests never call live APIs. Fixtures hold fake keys only (`sk-test-...`).
 - Streaming has tests for partial chunks, client disconnect, and upstream errors mid-stream.
 - Time-dependent code uses `testing/synctest`, never `time.Sleep`.
 - Router changes assert both the chosen model and the `reason` string.

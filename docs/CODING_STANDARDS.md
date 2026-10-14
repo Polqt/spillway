@@ -9,7 +9,7 @@ Anything `make lint` already enforces is not repeated here.
 - A package owns one concept and is named for it (`quota`, `redact`), never `util`, `common` or `helpers`.
 - Prefer deep packages: a small exported surface with real work behind it. Unexport until something outside needs it.
 - Accept interfaces, return concrete types. Define an interface in the package that consumes it, with only the methods that consumer calls. `providers.Provider` is the one shared interface.
-- No global mutable state and no `init()` side effects. Wire dependencies in `cmd/spillway` and pass them through constructors.
+- No global mutable state and no `init()` side effects. Wire dependencies in `internal/cli` and pass them through constructors.
 - Constructors validate their inputs and return an error; a constructed value is always usable.
 - Zero values should be useful or impossible to misuse. Use `New...` when they are not.
 - Give domain concepts their own types (`ModelID`, `redact.Secret`) instead of bare strings when mixing them up would be a bug.
@@ -56,8 +56,8 @@ Anything `make lint` already enforces is not repeated here.
 ## Testing
 
 - Table-driven tests named `TestThing_Behavior`, with `t.Run` subtests and `t.Parallel()` where safe.
-- Test through the package's exported API. Black-box `package foo_test` is preferred.
-- HTTP adapters: `httptest.Server` replaying fixtures from `testdata/`. Handlers: `httptest.NewRecorder` or a real `httptest.Server` for streaming.
+- Tests live under `tests/`, mirroring the package they cover, as `package foo_test` (ADR 0004). They test through the package's exported API only.
+- HTTP adapters: `httptest.Server` replaying fixtures from `tests/<package>/testdata/`. Handlers: `httptest.NewRecorder` or a real `httptest.Server` for streaming.
 - Time-dependent code (timeouts, retry-after, circuit breakers) is tested with `testing/synctest`, never `time.Sleep`.
 - Use `t.Context()` for contexts in tests and `t.TempDir()`/`t.Setenv()` for files and env.
 - Compare structs with `go-cmp` only if the standard library gets painful; plain `if got != want` first.

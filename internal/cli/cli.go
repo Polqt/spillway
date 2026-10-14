@@ -1,15 +1,16 @@
-// Command spillway is a self-hosted, OpenAI-compatible LLM gateway.
-package main
+// Package cli implements the spillway command line: subcommand dispatch,
+// and the wiring from config to providers and the HTTP server.
+package cli
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"runtime"
 )
 
-// version is set at build time with -ldflags "-X main.version=...".
+// version is set at build time with
+// -ldflags "-X github.com/Polqt/spillway/internal/cli.version=...".
 var version = "dev"
 
 const usage = `usage: spillway <command>
@@ -18,13 +19,9 @@ commands:
   version   print the version and exit
 `
 
-func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr, os.LookupEnv))
-}
-
-// run executes one CLI invocation and returns the process exit code:
+// Run executes one CLI invocation and returns the process exit code:
 // 0 on success, 1 on failure, 2 on a usage error.
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	if len(args) == 0 {
 		report(stderr, "%s", usage)
 		return 2

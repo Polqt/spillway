@@ -7,7 +7,7 @@ TOOL    := $(GO) tool -modfile=tools/go.mod
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
 VERSION ?= dev
-LDFLAGS := -s -w -X main.version=$(VERSION)
+LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
@@ -15,7 +15,7 @@ RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
 build: export CGO_ENABLED=0
 build:
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/spillway
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./apps/spillway
 
 test:
 	$(GO) test $(RACE) -count=1 ./...
@@ -40,6 +40,8 @@ mock: build
 vuln:
 	$(TOOL) govulncheck ./...
 
+# Tests live in tests/, outside the packages they cover, so coverage must be
+# attributed across packages with -coverpkg.
 cover:
-	$(GO) test -count=1 -coverprofile=coverage.out ./...
+	$(GO) test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
