@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl-ollama-fixture","object":"chat.completion.chunk","created":1720000000,"model":"llama3.2:3b","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+data: [DONE]

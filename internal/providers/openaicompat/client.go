@@ -54,7 +54,7 @@ func New(o Options) (*Client, error) {
 	if u.Scheme != "https" && (u.Scheme != "http" || !loopback(u.Hostname())) {
 		return nil, errors.New("openaicompat: base URL must use https unless the host is loopback")
 	}
-	if o.APIKey.IsZero() {
+	if o.APIKey.IsZero() && o.Name != "ollama" {
 		return nil, errors.New("openaicompat: API key is required")
 	}
 	if o.Timeout <= 0 {
@@ -188,7 +188,9 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.key.Reveal())
+	if !c.key.IsZero() {
+		req.Header.Set("Authorization", "Bearer "+c.key.Reveal())
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

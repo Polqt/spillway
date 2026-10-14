@@ -118,6 +118,9 @@ func validateProviders(ps map[string]Provider) error {
 		if requiresKey && p.APIKey.IsZero() {
 			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s_API_KEY}\"", name, strings.ToUpper(name))
 		}
+		if name == "ollama" && !p.APIKey.IsZero() {
+			return errors.New("providers.ollama.api_key is not supported; remove it")
+		}
 		if name == "mock" && !p.APIKey.IsZero() {
 			return errors.New("providers.mock.api_key is not supported; remove it")
 		}

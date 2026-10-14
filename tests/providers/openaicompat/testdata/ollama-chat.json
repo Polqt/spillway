@@ -1,0 +1,1 @@
+{"id":"chatcmpl-ollama-fixture","object":"chat.completion","created":1720000000,"model":"llama3.2:3b","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}

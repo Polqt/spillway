@@ -41,6 +41,25 @@ func client(t *testing.T, endpoint string) *openaicompat.Client {
 	return c
 }
 
+func TestNew_RequiresKeyExceptForOllama(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"groq", "openrouter"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := openaicompat.New(openaicompat.Options{
+				Name: name, BaseURL: "http://127.0.0.1:11434/v1", Timeout: time.Second,
+			})
+			if err == nil || !strings.Contains(err.Error(), "API key is required") {
+				t.Errorf("New() error = %v, want API key requirement", err)
+			}
+		})
+	}
+	if _, err := openaicompat.New(openaicompat.Options{
+		Name: "ollama", BaseURL: "http://127.0.0.1:11434/v1", Timeout: time.Second,
+	}); err != nil {
+		t.Errorf("New() without Ollama key = %v, want success", err)
+	}
+}
+
 func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 	modelFixture, chatFixture, streamFixture := fixture(t, "models.json"), fixture(t, "chat.json"), fixture(t, "stream.sse")
 	var authValues []string
@@ -96,6 +115,104 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 		if auth != "Bearer "+providerKey {
 			t.Errorf("upstream Authorization = %q, want configured provider key", auth)
 		}
+	}
+}
+
+func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		apiKey     redact.Secret
+		wantAuth   string
+		modelsFile string
+		chatFile   string
+		streamFile string
+	}{
+		{
+			name: "openrouter", model: "meta-llama/llama-3.1-8b-instruct:free",
+			apiKey: redact.NewSecret("sk-test-openrouter-fixture"), wantAuth: "Bearer sk-test-openrouter-fixture",
+			modelsFile: "openrouter-models.json", chatFile: "openrouter-chat.json", streamFile: "openrouter-stream.sse",
+		},
+		{
+			name: "ollama", model: "llama3.2:3b",
+			modelsFile: "ollama-models.json", chatFile: "ollama-chat.json", streamFile: "ollama-stream.sse",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			modelsFixture := fixture(t, tt.modelsFile)
+			chatFixture := fixture(t, tt.chatFile)
+			streamFixture := fixture(t, tt.streamFile)
+			var gotModel string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got, want := r.Header.Get("Authorization"), tt.wantAuth; got != want {
+					t.Errorf("Authorization = %q, want %q", got, want)
+				}
+				switch r.URL.Path {
+				case "/v1/models":
+					_, _ = w.Write(modelsFixture)
+				case "/v1/chat/completions":
+					body, _ := io.ReadAll(r.Body)
+					var request struct {
+						Model string `json:"model"`
+					}
+					if err := json.Unmarshal(body, &request); err != nil {
+						t.Errorf("decode model from request: %v", err)
+					}
+					gotModel = request.Model
+					if r.Header.Get("Accept") == "text/event-stream" {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write(streamFixture)
+						return
+					}
+					_, _ = w.Write(chatFixture)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			c, err := openaicompat.New(openaicompat.Options{
+				Name: tt.name, BaseURL: srv.URL + "/v1", APIKey: tt.apiKey, Timeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			models, err := c.Models(t.Context())
+			if err != nil || len(models) != 1 || models[0].ID != tt.model {
+				t.Fatalf("Models() = %+v, %v; want model %q", models, err, tt.model)
+			}
+			chat, err := c.Chat(t.Context(), providers.ChatRequest{
+				Model: tt.model, RawBody: []byte(`{"model":"` + tt.name + `/` + tt.model + `","messages":[{"role":"user","content":"hi"}]}`),
+			})
+			if err != nil || string(chat.Body) != string(chatFixture) {
+				t.Fatalf("Chat() = %s, %v; want fixture verbatim", chat.Body, err)
+			}
+			if gotModel != tt.model {
+				t.Errorf("upstream model = %q, want %q", gotModel, tt.model)
+			}
+			stream, err := c.ChatStream(t.Context(), providers.ChatRequest{
+				Model: tt.model, RawBody: []byte(`{"model":"` + tt.name + `/` + tt.model + `","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			var chunks []string
+			for {
+				chunk, err := stream.Recv()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Recv() error = %v", err)
+				}
+				chunks = append(chunks, string(chunk.Data))
+			}
+			if len(chunks) != 1 || !strings.Contains(chunks[0], `"content":"ok"`) {
+				t.Errorf("stream chunks = %q; want recorded fixture chunk", chunks)
+			}
+		})
 	}
 }
 

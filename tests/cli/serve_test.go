@@ -303,6 +303,120 @@ func TestRun_ServeGroqEndToEnd(t *testing.T) {
 	<-logs.done
 }
 
+func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
+	t.Parallel()
+	const openrouterKey = "sk-test-openrouter-cli"
+	const openrouterModel = "meta-llama/llama-3.1-8b-instruct:free"
+	const ollamaModel = "llama3.2:3b"
+	gotModels := map[string]string{}
+	gotAuth := map[string]string{}
+	var gotMu sync.Mutex
+	newUpstream := func(name, model string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMu.Lock()
+			gotAuth[name] = r.Header.Get("Authorization")
+			gotMu.Unlock()
+			switch r.URL.Path {
+			case "/v1/models":
+				_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"`+model+`","object":"model","owned_by":"fixture"}]}`)
+			case "/v1/chat/completions":
+				body, _ := io.ReadAll(r.Body)
+				var request struct {
+					Model string `json:"model"`
+				}
+				if err := json.Unmarshal(body, &request); err != nil {
+					t.Errorf("decode %s chat request: %v", name, err)
+				}
+				gotMu.Lock()
+				gotModels[name] = request.Model
+				gotMu.Unlock()
+				_, _ = io.WriteString(w, `{"id":"chatcmpl-`+name+`","object":"chat.completion","created":1,"model":"`+model+`","choices":[{"index":0,"message":{"role":"assistant","content":"`+name+` wired"},"finish_reason":"stop"}]}`)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	}
+	openrouter := newUpstream("openrouter", openrouterModel)
+	defer openrouter.Close()
+	ollama := newUpstream("ollama", ollamaModel)
+	defer ollama.Close()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  openrouter:\n    api_key: \"${OPENROUTER_API_KEY}\"\n    base_url: \""+openrouter.URL+"/v1\"\n  ollama:\n    base_url: \""+ollama.URL+"\"\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"SPILLWAY_KEY": e2eKey, "OPENROUTER_API_KEY": openrouterKey}
+		value, ok := values[name]
+		return value, ok
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		_ = pw.Close()
+	}()
+	var base string
+	select {
+	case addr := <-logs.addr:
+		base = "http://" + addr
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+
+	modelsReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelsReq.Header.Set("Authorization", "Bearer "+e2eKey)
+	modelsResp, err := http.DefaultClient.Do(modelsReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelBody, err := io.ReadAll(modelsResp.Body)
+	_ = modelsResp.Body.Close()
+	if err != nil || modelsResp.StatusCode != http.StatusOK {
+		t.Fatalf("models response = %d %s, %v", modelsResp.StatusCode, modelBody, err)
+	}
+	for _, modelRef := range []string{"openrouter/" + openrouterModel, "ollama/" + ollamaModel} {
+		if !strings.Contains(string(modelBody), modelRef) {
+			t.Errorf("model list %s does not contain %q", modelBody, modelRef)
+		}
+	}
+
+	for name, model := range map[string]string{"openrouter": openrouterModel, "ollama": ollamaModel} {
+		body := `{"model":"` + name + `/` + model + `","messages":[{"role":"user","content":"hi"}]}`
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/chat/completions", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+e2eKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chatBody, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(chatBody), name+" wired") {
+			t.Errorf("%s chat = %d %s, %v", name, resp.StatusCode, chatBody, err)
+		}
+	}
+	gotMu.Lock()
+	defer gotMu.Unlock()
+	if gotModels["openrouter"] != openrouterModel || gotAuth["openrouter"] != "Bearer "+openrouterKey {
+		t.Errorf("OpenRouter request model/auth = %q/%q", gotModels["openrouter"], gotAuth["openrouter"])
+	}
+	if gotModels["ollama"] != ollamaModel || gotAuth["ollama"] != "" {
+		t.Errorf("Ollama request model/auth = %q/%q", gotModels["ollama"], gotAuth["ollama"])
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("exit code after cancel = %d, want 0", code)
+	}
+	<-logs.done
+}
+
 type reply struct {
 	status int
 	header http.Header

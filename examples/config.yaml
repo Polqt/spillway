@@ -1,5 +1,5 @@
 # Copy this file and set the referenced environment variables before use.
-# Remove providers you do not use; every configured provider key is required.
+# Remove providers you do not use; Ollama runs locally and needs no provider key.
 server:
   listen: "127.0.0.1:8080"
   api_keys:
@@ -16,4 +16,4 @@ providers:
   gemini:
     api_key: "${GEMINI_API_KEY}"
   ollama:
-    base_url: "http://localhost:11434"
+    base_url: "http://localhost:11434/v1"

@@ -1,0 +1,1 @@
+{"id":"chatcmpl-openrouter-fixture","object":"chat.completion","created":1720000000,"model":"meta-llama/llama-3.1-8b-instruct:free","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}

@@ -259,6 +259,16 @@ func TestParse_Errors(t *testing.T) {
 	}
 }
 
+func TestParse_OllamaRejectsProviderKey(t *testing.T) {
+	t.Parallel()
+	_, err := config.ParseWithEnv([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama:\n    api_key: \"${OLLAMA_API_KEY}\"\n"), func(name string) (string, bool) {
+		return "sk-test-ollama-key", name == "OLLAMA_API_KEY"
+	})
+	if err == nil || !strings.Contains(err.Error(), "providers.ollama.api_key is not supported") {
+		t.Fatalf("ParseWithEnv error = %v, want Ollama api_key rejection", err)
+	}
+}
+
 func TestConfig_FmtNeverRevealsSecrets(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci, {name: cursor, key: sk-test-local-cursor}]\nproviders:\n  mock: {}\n"))

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Polqt/spillway/internal/api"
@@ -78,10 +79,19 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 				return nil, fmt.Errorf("build provider mock: %w", err)
 			}
 			ps = append(ps, p)
-		case "groq":
+		case "groq", "openrouter", "ollama":
 			baseURL := cfg.Providers[name].BaseURL
 			if baseURL == "" {
-				baseURL = "https://api.groq.com/openai/v1"
+				switch name {
+				case "groq":
+					baseURL = "https://api.groq.com/openai/v1"
+				case "openrouter":
+					baseURL = "https://openrouter.ai/api/v1"
+				case "ollama":
+					baseURL = "http://localhost:11434/v1"
+				}
+			} else if name == "ollama" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
+				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 			}
 			p, err := openaicompat.New(openaicompat.Options{
 				Name: name, BaseURL: baseURL, APIKey: cfg.Providers[name].APIKey, Timeout: cfg.Providers[name].Timeout,
