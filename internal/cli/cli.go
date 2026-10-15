@@ -19,6 +19,8 @@ commands:
   serve     serve the OpenAI-compatible API (flags: -config path, default config.yaml)
   check     validate config and print it with secrets redacted (flags: -config path)
   catalog   suggest model declarations and pricing from configured providers (flags: -config path)
+  eval      run a paired routing evaluation against an OpenAI-compatible endpoint
+  eval-score summarize a completed blinded evaluation score sheet
   version   print the version and exit
 `
 
@@ -36,6 +38,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		return check(args[1:], stdout, stderr, lookupEnv)
 	case "catalog":
 		return catalogCommand(ctx, args[1:], stdout, stderr, lookupEnv)
+	case "eval":
+		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
+	case "eval-score":
+		return evalScoreCommand(args[1:], stdout, stderr)
 	case "version":
 		_, err := fmt.Fprintf(stdout, "spillway %s %s %s/%s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 		if err != nil {

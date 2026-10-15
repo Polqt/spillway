@@ -1,0 +1,7 @@
+{
+  "mock/echo": {
+    "free": true,
+    "input_usd_per_mtok": 0,
+    "output_usd_per_mtok": 0
+  }
+}

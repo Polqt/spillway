@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "prompts": [
+    {"id":"code-001","category":"coding","difficulty":"simple","prompt":"Write a Go function that returns the larger of two integers.","settings":{"temperature":0,"max_tokens":128}},
+    {"id":"code-002","category":"coding","difficulty":"moderate","prompt":"Explain why this Go function can race and show a minimal fix: a goroutine writes a map while the caller reads it.","settings":{"temperature":0,"max_tokens":256}},
+    {"id":"reason-001","category":"reasoning","difficulty":"simple","prompt":"A train travels 120 km in 2 hours. What is its average speed? Show the calculation.","settings":{"temperature":0,"max_tokens":128}},
+    {"id":"reason-002","category":"reasoning","difficulty":"hard","prompt":"A service retries a request up to three times with exponential backoff. Explain how to avoid retrying a non-idempotent operation twice after an ambiguous timeout.","settings":{"temperature":0,"max_tokens":256}},
+    {"id":"writing-001","category":"writing","difficulty":"simple","prompt":"Rewrite this note in a concise, friendly tone: The report is late. Send it today.","settings":{"temperature":0,"max_tokens":128}},
+    {"id":"summarize-001","category":"summarization","difficulty":"moderate","prompt":"Summarize in two bullet points: A small team moved its weekly release from Friday to Wednesday. The change gives them two days to respond to production problems before the weekend. They will review incident rates after six weeks.","settings":{"temperature":0,"max_tokens":128}}
+  ]
+}

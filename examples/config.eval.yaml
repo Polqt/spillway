@@ -1,0 +1,14 @@
+# Evaluation-only server config. It uses the offline fake provider and keeps
+# evaluation metadata out of a usage database by omitting store:.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - name: evaluation
+      key: "sk-test-spillway-evaluation"
+providers:
+  mock: {}
+tiers:
+  demo:
+    models: [mock/echo]
+router:
+  auto: [demo]
