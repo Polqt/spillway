@@ -129,6 +129,8 @@ type ChatChunk struct {
 	Data json.RawMessage
 	// Usage is set when the chunk carries token accounting.
 	Usage *Usage
+	// ReportedCost is the provider-reported USD amount from usage.cost.
+	ReportedCost json.RawMessage
 }
 
 // Delta is the input for NewChatChunk: one step of a synthesised stream.

@@ -29,9 +29,99 @@ type Config struct {
 	Tiers     map[string]Tier     `yaml:"tiers,omitempty"`
 	// Models declares capabilities per model reference; it is the only
 	// capability source (ADR 0007).
-	Models map[string]ModelDeclaration `yaml:"models,omitempty"`
-	Router Router                      `yaml:"router,omitempty"`
-	Store  *Store                      `yaml:"store,omitempty"`
+	Models  map[string]ModelDeclaration `yaml:"models,omitempty"`
+	Router  Router                      `yaml:"router,omitempty"`
+	Store   *Store                      `yaml:"store,omitempty"`
+	Pricing map[string]Price            `yaml:"pricing,omitempty"`
+}
+
+// Price contains declared USD per million tokens in integer micro-USD.
+type Price struct {
+	InputMicroUSDPerMillion  int64 `yaml:"-"`
+	OutputMicroUSDPerMillion int64 `yaml:"-"`
+}
+
+// UnmarshalYAML decodes explicit decimal USD-per-million prices without floats.
+func (p *Price) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("pricing entry (line %d): must be a mapping", n.Line)
+	}
+	seen := make(map[string]bool, 2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		if key.Value != "input_usd_per_mtok" && key.Value != "output_usd_per_mtok" {
+			return fmt.Errorf("pricing entry (line %d): unknown field %q", key.Line, key.Value)
+		}
+		if seen[key.Value] {
+			return fmt.Errorf("pricing.%s (line %d): duplicate field", key.Value, key.Line)
+		}
+		seen[key.Value] = true
+		micro, err := parsePrice(value)
+		if err != nil {
+			return fmt.Errorf("pricing.%s (line %d): must be a decimal from 0 to 10000 with at most 6 fractional digits", key.Value, value.Line)
+		}
+		if key.Value == "input_usd_per_mtok" {
+			p.InputMicroUSDPerMillion = micro
+		} else {
+			p.OutputMicroUSDPerMillion = micro
+		}
+	}
+	if !seen["input_usd_per_mtok"] || !seen["output_usd_per_mtok"] {
+		return errors.New("pricing entry must include input_usd_per_mtok and output_usd_per_mtok")
+	}
+	return nil
+}
+
+// MarshalYAML writes prices as exact decimal YAML scalars.
+func (p Price) MarshalYAML() (any, error) {
+	return map[string]*yaml.Node{
+		"input_usd_per_mtok":  priceNode(p.InputMicroUSDPerMillion),
+		"output_usd_per_mtok": priceNode(p.OutputMicroUSDPerMillion),
+	}, nil
+}
+
+func priceNode(micro int64) *yaml.Node {
+	whole, fraction := micro/1_000_000, micro%1_000_000
+	value := strconv.FormatInt(whole, 10)
+	if fraction != 0 {
+		value += "." + strings.TrimRight(fmt.Sprintf("%06d", fraction), "0")
+	}
+	tag := "!!int"
+	if fraction != 0 {
+		tag = "!!float"
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value}
+}
+
+func parsePrice(n *yaml.Node) (int64, error) {
+	if n.Kind != yaml.ScalarNode || (n.Tag != "!!int" && n.Tag != "!!float" && n.Tag != "!!str") {
+		return 0, errors.New("not a decimal")
+	}
+	value := n.Value
+	if value == "" || strings.ContainsAny(value, "eE_+-") {
+		return 0, errors.New("invalid decimal")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && (len(parts[1]) == 0 || len(parts[1]) > 6)) {
+		return 0, errors.New("invalid decimal")
+	}
+	whole, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || whole > 10000 {
+		return 0, errors.New("out of range")
+	}
+	fraction := int64(0)
+	if len(parts) == 2 {
+		fractionText := parts[1] + strings.Repeat("0", 6-len(parts[1]))
+		fraction, err = strconv.ParseInt(fractionText, 10, 64)
+		if err != nil {
+			return 0, errors.New("invalid fraction")
+		}
+	}
+	valueMicro := whole*1_000_000 + fraction
+	if valueMicro > 10_000_000_000 {
+		return 0, errors.New("out of range")
+	}
+	return valueMicro, nil
 }
 
 // Store configures the opt-in local usage database.

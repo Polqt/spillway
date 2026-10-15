@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/router"
 	"github.com/Polqt/spillway/internal/store"
 )
 
@@ -15,16 +18,31 @@ import (
 // one access log line written when the request ends. It never holds a key,
 // a header value or a body.
 type requestRecord struct {
-	clientApp string
-	provider  string
-	model     string
-	tier      string
-	route     string
-	attempts  int
-	stream    bool
-	err       error
-	usage     store.Request
-	attemptAt time.Time
+	clientApp             string
+	provider              string
+	model                 string
+	tier                  string
+	route                 string
+	attempts              int
+	stream                bool
+	err                   error
+	usage                 store.Request
+	attemptAt             time.Time
+	pricer                attemptPricer
+	estimatedPromptTokens int64
+	reportedCost          json.RawMessage
+	totalUsageSource      string
+}
+
+type attemptPricer interface {
+	Estimate(providers.ModelRef, int64, int64, json.RawMessage) budget.Cost
+}
+
+func (rec *requestRecord) configure(pricer attemptPricer, body []byte) {
+	rec.pricer = pricer
+	if requirements, err := router.Detect(body); err == nil {
+		rec.estimatedPromptTokens = int64(requirements.EstimatedTokens) * 2
+	}
 }
 
 func (rec *requestRecord) setProvider(ref providers.ModelRef) {
@@ -37,6 +55,10 @@ func (rec *requestRecord) beginTier(tier string) {
 
 func (rec *requestRecord) beginAttempt(ref providers.ModelRef) {
 	rec.attempts++
+	rec.usage.PromptTokens = 0
+	rec.usage.CompletionTokens = 0
+	rec.usage.UsageSource = "none"
+	rec.reportedCost = nil
 	if len(rec.usage.Attempts) >= 16 {
 		return
 	}
@@ -51,7 +73,41 @@ func (rec *requestRecord) endAttempt(outcome string) {
 	attempt := &rec.usage.Attempts[len(rec.usage.Attempts)-1]
 	attempt.Outcome = outcome
 	attempt.LatencyMS = time.Since(rec.attemptAt).Milliseconds()
+	if outcome != "success" && rec.usage.UsageSource != "reported" && rec.usage.UsageSource != "estimated" {
+		rec.usage.PromptTokens = rec.estimatedPromptTokens
+		rec.usage.UsageSource = "estimated"
+	}
+	attempt.PromptTokens = rec.usage.PromptTokens
+	attempt.CompletionTokens = rec.usage.CompletionTokens
+	attempt.UsageSource = rec.usage.UsageSource
+	if rec.pricer != nil {
+		cost := rec.pricer.Estimate(providers.ModelRef{Provider: attempt.Provider, Model: attempt.Model}, attempt.PromptTokens, attempt.CompletionTokens, rec.reportedCost)
+		attempt.CostMicroUSD, attempt.CostSource = cost.MicroUSD, cost.Source
+		rec.usage.CostMicroUSD = saturatingAdd(rec.usage.CostMicroUSD, cost.MicroUSD)
+		if rec.usage.CostSource == "" {
+			rec.usage.CostSource = cost.Source
+		} else if rec.usage.CostSource != cost.Source {
+			rec.usage.CostSource = "mixed"
+		}
+	}
+	rec.usage.PromptTokens = attempt.PromptTokens
+	rec.usage.CompletionTokens = attempt.CompletionTokens
+	rec.usage.UsageSource = attempt.UsageSource
+	if rec.totalUsageSource == "" || attempt.UsageSource == "estimated" {
+		rec.totalUsageSource = attempt.UsageSource
+	} else if rec.totalUsageSource != attempt.UsageSource {
+		rec.totalUsageSource = "estimated"
+	}
 	rec.attemptAt = time.Time{}
+}
+
+const maxInt64 = int64(^uint64(0) >> 1)
+
+func saturatingAdd(a, b int64) int64 {
+	if b > 0 && a > maxInt64-b {
+		return maxInt64
+	}
+	return a + b
 }
 
 func (rec *requestRecord) setStream() {
@@ -111,6 +167,9 @@ func accessLog(logger *slog.Logger, recorder interface {
 		}
 		if recorder != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions" {
 			usage := rec.usage
+			if rec.totalUsageSource != "" {
+				usage.UsageSource = rec.totalUsageSource
+			}
 			usage.At = start
 			usage.ClientApp = rec.clientApp
 			usage.Route = rec.route
@@ -122,6 +181,9 @@ func accessLog(logger *slog.Logger, recorder interface {
 			usage.LatencyMS = time.Since(start).Milliseconds()
 			if usage.UsageSource == "" {
 				usage.UsageSource = "none"
+			}
+			if usage.CostSource == "" {
+				usage.CostSource = "none"
 			}
 			if usage.ErrorKind == "" && sw.status >= http.StatusBadRequest {
 				usage.ErrorKind = "request_error"

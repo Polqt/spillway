@@ -132,7 +132,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store", "pricing"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -227,7 +227,39 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if err := checkRouterShape(mappingValue(root, "router")); err != nil {
 		return err
 	}
-	return checkStoreShape(mappingValue(root, "store"))
+	if err := checkStoreShape(mappingValue(root, "store")); err != nil {
+		return err
+	}
+	return checkPricingShape(mappingValue(root, "pricing"))
+}
+
+func checkPricingShape(pricing *yaml.Node) error {
+	if pricing == nil {
+		return nil
+	}
+	if pricing.Kind != yaml.MappingNode {
+		return fmt.Errorf("pricing (line %d): must be a mapping", pricing.Line)
+	}
+	for i := 0; i+1 < len(pricing.Content); i += 2 {
+		ref, entry := pricing.Content[i], pricing.Content[i+1]
+		path := "pricing." + ref.Value
+		if entry.Kind != yaml.MappingNode {
+			return fmt.Errorf("%s (line %d): must be a mapping", path, entry.Line)
+		}
+		if err := rejectFields(entry, path, "input_usd_per_mtok", "output_usd_per_mtok"); err != nil {
+			return err
+		}
+		for _, name := range []string{"input_usd_per_mtok", "output_usd_per_mtok"} {
+			value := mappingValue(entry, name)
+			if value == nil {
+				return fmt.Errorf("%s.%s is required; set both input_usd_per_mtok and output_usd_per_mtok", path, name)
+			}
+			if value.Kind != yaml.ScalarNode || (value.Tag != "!!int" && value.Tag != "!!float" && value.Tag != "!!str") {
+				return fmt.Errorf("%s.%s (line %d): must be a decimal number", path, name, value.Line)
+			}
+		}
+	}
+	return nil
 }
 
 func checkStoreShape(store *yaml.Node) error {

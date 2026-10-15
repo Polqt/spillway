@@ -152,7 +152,8 @@ func (c *Client) Chat(ctx context.Context, chat providers.ChatRequest) (provider
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return providers.ChatResponse{}, c.responseError(resp)
+		data, err := c.responseErrorBody(resp)
+		return providers.ChatResponse{Body: responseUsageOnly(data)}, err
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
@@ -252,6 +253,11 @@ func (c *Client) transportError(action string, err error) error {
 }
 
 func (c *Client) responseError(resp *http.Response) error {
+	_, err := c.responseErrorBody(resp)
+	return err
+}
+
+func (c *Client) responseErrorBody(resp *http.Response) ([]byte, error) {
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes+int64(len(c.key.Reveal()))))
 	if c.classifyError != nil {
 		if kind, ok := c.classifyError(resp.StatusCode, body); ok {
@@ -259,7 +265,7 @@ func (c *Client) responseError(resp *http.Response) error {
 			if readErr != nil {
 				message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
 			}
-			return fmt.Errorf("%w: %w", kind, message)
+			return body, fmt.Errorf("%w: %w", kind, message)
 		}
 	}
 	detail := c.clean.Scrub(errorMessage(body))
@@ -274,27 +280,43 @@ func (c *Client) responseError(resp *http.Response) error {
 	case resp.StatusCode == http.StatusPaymentRequired:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		if after > 0 {
-			return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrPaymentRequired}, message)
+			return body, fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrPaymentRequired}, message)
 		}
-		return fmt.Errorf("%w: %w", providers.ErrPaymentRequired, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrPaymentRequired, message)
 	case resp.StatusCode == http.StatusTooManyRequests:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
-		return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrRateLimited}, message)
+		return body, fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrRateLimited}, message)
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("%w: %w", providers.ErrUnauthorized, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrUnauthorized, message)
 	case resp.StatusCode == http.StatusBadRequest:
-		return fmt.Errorf("%w: %w", providers.ErrBadRequest, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrBadRequest, message)
 	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%w: %w", providers.ErrModelNotFound, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrModelNotFound, message)
 	case resp.StatusCode >= 500:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		if after > 0 {
-			return fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrUpstreamUnavailable}, message)
+			return body, fmt.Errorf("%w: %w", providers.RetryAfterError{After: after, Kind: providers.ErrUpstreamUnavailable}, message)
 		}
-		return fmt.Errorf("%w: %w", providers.ErrUpstreamUnavailable, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrUpstreamUnavailable, message)
 	default:
-		return fmt.Errorf("%w: %w", providers.ErrBadRequest, message)
+		return body, fmt.Errorf("%w: %w", providers.ErrBadRequest, message)
 	}
+}
+
+func responseUsageOnly(body []byte) []byte {
+	var response struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(body, &response) != nil || len(response.Usage) == 0 || string(response.Usage) == "null" {
+		return nil
+	}
+	encoded, err := json.Marshal(struct {
+		Usage json.RawMessage `json:"usage"`
+	}{Usage: response.Usage})
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func errorMessage(body []byte) string {
@@ -446,12 +468,22 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 			return providers.ChatChunk{}, s.streamError(streamErrorKind(upstreamError.Code), errorMessage(data))
 		}
 		var chunk struct {
-			Usage *providers.Usage `json:"usage"`
+			Usage *struct {
+				PromptTokens     int             `json:"prompt_tokens"`
+				CompletionTokens int             `json:"completion_tokens"`
+				TotalTokens      int             `json:"total_tokens"`
+				Cost             json.RawMessage `json:"cost"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal(data, &chunk); err != nil {
 			return providers.ChatChunk{}, fmt.Errorf("%s: decode stream chunk: %w", s.name, err)
 		}
-		return providers.ChatChunk{Data: append(json.RawMessage(nil), data...), Usage: chunk.Usage}, nil
+		result := providers.ChatChunk{Data: append(json.RawMessage(nil), data...)}
+		if chunk.Usage != nil {
+			result.Usage = &providers.Usage{PromptTokens: chunk.Usage.PromptTokens, CompletionTokens: chunk.Usage.CompletionTokens, TotalTokens: chunk.Usage.TotalTokens}
+			result.ReportedCost = chunk.Usage.Cost
+		}
+		return result, nil
 	}
 	if err := s.scanner.Err(); err != nil {
 		if s.idleTimedOut.Load() {

@@ -54,20 +54,22 @@ func (rec *requestRecord) setError(err error) {
 	rec.usage.ErrorKind = candidateErrorKind(err)
 }
 
-func recordResponseUsage(body []byte, usage *store.Request) {
+func recordResponseUsage(body []byte, rec *requestRecord) {
 	var response struct {
 		Usage *struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
+			PromptTokens     int64           `json:"prompt_tokens"`
+			CompletionTokens int64           `json:"completion_tokens"`
+			Cost             json.RawMessage `json:"cost"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal(body, &response) != nil || response.Usage == nil {
-		usage.UsageSource = "none"
+		rec.usage.UsageSource = "none"
 		return
 	}
-	usage.PromptTokens = response.Usage.PromptTokens
-	usage.CompletionTokens = response.Usage.CompletionTokens
-	usage.UsageSource = "reported"
+	rec.usage.PromptTokens = response.Usage.PromptTokens
+	rec.usage.CompletionTokens = response.Usage.CompletionTokens
+	rec.usage.UsageSource = "reported"
+	rec.reportedCost = response.Usage.Cost
 }
 
 func setPlanErrorKind(err error) string {

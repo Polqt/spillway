@@ -46,7 +46,28 @@ func (c Config) validate() error {
 	if err := validateRouter(c.Router, c.Tiers); err != nil {
 		return err
 	}
-	return validateStore(c.Store)
+	if err := validateStore(c.Store); err != nil {
+		return err
+	}
+	return validatePricing(c.Pricing, c.Providers)
+}
+
+func validatePricing(pricing map[string]Price, configured map[string]Provider) error {
+	refs := make([]string, 0, len(pricing))
+	for ref := range pricing {
+		refs = append(refs, ref)
+	}
+	slices.Sort(refs)
+	for _, value := range refs {
+		ref, err := providers.ParseModelRef(value)
+		if err != nil || !printableModelRef(value) {
+			return fmt.Errorf("pricing.%s: must be a printable provider/model reference", value)
+		}
+		if _, ok := configured[ref.Provider]; !ok {
+			return fmt.Errorf("pricing.%s: provider %s is not configured", value, ref.Provider)
+		}
+	}
+	return nil
 }
 
 func validateStore(s *Store) error {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/api"
+	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/gemini"
@@ -207,6 +208,7 @@ func newHandler(cfg config.Config, logger *slog.Logger, usageStore *store.Store)
 		AllowedHosts:  allowedHosts,
 		Logger:        logger,
 		UsageRecorder: usageRecorder,
+		CostEstimator: budget.NewPricer(cfg),
 		Now:           now,
 	})
 }

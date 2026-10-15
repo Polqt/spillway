@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/api"
+	"github.com/Polqt/spillway/internal/budget"
+	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
@@ -82,11 +84,11 @@ func TestChat_RecordsUsageAndRoutingMetadata(t *testing.T) {
 		errorKind  string
 	}{
 		{body: echoBody, status: http.StatusOK, route: "direct", model: "mock/echo", provider: "mock", attempts: 1, usage: "reported", prompt: 2, completion: 4},
-		{body: `{"model":"spillway/demo","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusOK, route: "tier demo; candidate 2/2", model: "spillway/demo", provider: "mock", attempts: 2, usage: "reported", prompt: 1, completion: 3},
+		{body: `{"model":"spillway/demo","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusOK, route: "tier demo; candidate 2/2", model: "spillway/demo", provider: "mock", attempts: 2, usage: "estimated", prompt: 1, completion: 3},
 		{body: `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusOK, route: "auto; tier auto-tier; candidate 1/1", model: "auto", provider: "mock", attempts: 1, usage: "reported", prompt: 1, completion: 3},
 		{body: `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"x"}}]}`, status: http.StatusBadRequest, route: "auto; needs tools; no capable model", model: "auto", usage: "none", errorKind: "no_capable_model"},
-		{body: `{"model":"spillway/exhausted","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusServiceUnavailable, route: "tier exhausted; exhausted (1 eligible)", model: "spillway/exhausted", attempts: 1, usage: "none", errorKind: "no_candidate_available"},
-		{body: `{"model":"bad/request","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusBadRequest, route: "direct", model: "bad/request", provider: "bad", attempts: 1, usage: "none", errorKind: "bad_request"},
+		{body: `{"model":"spillway/exhausted","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusServiceUnavailable, route: "tier exhausted; exhausted (1 eligible)", model: "spillway/exhausted", attempts: 1, usage: "estimated", prompt: 2, errorKind: "no_candidate_available"},
+		{body: `{"model":"bad/request","messages":[{"role":"user","content":"hello"}]}`, status: http.StatusBadRequest, route: "direct", model: "bad/request", provider: "bad", attempts: 1, usage: "estimated", prompt: 2, errorKind: "bad_request"},
 		{body: `{"model":"plain/model","messages":[{"role":"user","content":"distinctive-prompt-should-not-persist"}]}`, status: http.StatusOK, route: "direct", model: "plain/model", provider: "plain", attempts: 1, usage: "none"},
 	}
 	for _, test := range requests {
@@ -177,6 +179,140 @@ func TestChat_RecordsUsageAndRoutingMetadata(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestChat_PriceFailedAttemptsAndSumRequestCost(t *testing.T) {
+	tests := []struct {
+		name           string
+		providerBody   []byte
+		wantCost       int64
+		wantCostSource string
+		wantUsage      string
+		useAdapter     bool
+	}{
+		{name: "failed paid attempt without usage is estimated", wantCost: 6, wantCostSource: "mixed", wantUsage: "estimated"},
+		{name: "failed paid attempt with OpenRouter usage uses reported cost", providerBody: readOpenRouterCostFixture(t), wantCost: 124, wantCostSource: "mixed", wantUsage: "reported", useAdapter: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "usage.db")
+			usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = usageStore.Close() }()
+			freeProvider, err := mock.New(mock.Options{Now: time.Now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var paid providers.Provider
+			if tt.useAdapter {
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write(tt.providerBody)
+				}))
+				t.Cleanup(upstream.Close)
+				paid, err = openaicompat.New(openaicompat.Options{
+					Name: "openrouter", BaseURL: upstream.URL, APIKey: redact.NewSecret("sk-test-provider"), Timeout: time.Second,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				paid = &costTestProvider{name: "openrouter", body: tt.providerBody, err: providers.ErrUpstreamUnavailable}
+			}
+			set, err := providers.NewSet(paid, freeProvider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			estimator := budget.NewPricer(config.Config{
+				Providers: map[string]config.Provider{"openrouter": {}, "mock": {}},
+				Pricing:   map[string]config.Price{"openrouter/anthropic/claude-sonnet-4.5": {InputMicroUSDPerMillion: 3_000_000, OutputMicroUSDPerMillion: 15_000_000}},
+			})
+			handler, err := api.NewHandler(api.Options{
+				Providers: set,
+				Tiers: map[string][]providers.ModelRef{"demo": {
+					{Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"},
+					{Provider: "mock", Model: "echo"},
+				}},
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}}, Logger: slog.New(slog.DiscardHandler),
+				UsageRecorder: usageStore, CostEstimator: estimator,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := sendUsageStreamRequest(t.Context(), t, handler, `{"model":"spillway/demo","messages":[{"role":"user","content":"hello"}]}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			reader, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reader.Close() }()
+			var cost int64
+			var source, usageSource string
+			if err := reader.QueryRowContext(t.Context(), "SELECT cost_micro_usd, cost_source, usage_source FROM requests").Scan(&cost, &source, &usageSource); err != nil {
+				t.Fatal(err)
+			}
+			if cost != tt.wantCost || source != tt.wantCostSource || usageSource != tt.wantUsage {
+				t.Errorf("request cost = %d/%s usage=%s, want %d/%s usage=%s", cost, source, usageSource, tt.wantCost, tt.wantCostSource, tt.wantUsage)
+			}
+			rows, err := reader.QueryContext(t.Context(), "SELECT provider, cost_micro_usd, cost_source, usage_source FROM attempts ORDER BY id")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+			var provider string
+			var failedCost int64
+			var failedSource, failedUsage string
+			if !rows.Next() || rows.Scan(&provider, &failedCost, &failedSource, &failedUsage) != nil {
+				t.Fatal("missing failed paid attempt")
+			}
+			wantAttemptSource := "declared"
+			if tt.useAdapter {
+				wantAttemptSource = "reported"
+			}
+			if provider != "openrouter" || failedCost != tt.wantCost || failedSource != wantAttemptSource {
+				t.Errorf("failed attempt = %s %d/%s, want openrouter %d/%s", provider, failedCost, failedSource, tt.wantCost, wantAttemptSource)
+			}
+			if !rows.Next() {
+				t.Fatal("missing successful free attempt")
+			}
+			var freeCost int64
+			var freeSource string
+			if err := rows.Scan(&provider, &freeCost, &freeSource, &failedUsage); err != nil {
+				t.Fatal(err)
+			}
+			if provider != "mock" || freeCost != 0 || freeSource != "free" {
+				t.Errorf("free attempt = %s %d/%s, want mock 0/free", provider, freeCost, freeSource)
+			}
+		})
+	}
+}
+
+func readOpenRouterCostFixture(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/openrouter-cost-response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+type costTestProvider struct {
+	name string
+	body []byte
+	err  error
+}
+
+func (p *costTestProvider) Name() string                                    { return p.name }
+func (*costTestProvider) Models(context.Context) ([]providers.Model, error) { return nil, nil }
+func (p *costTestProvider) Chat(context.Context, providers.ChatRequest) (providers.ChatResponse, error) {
+	return providers.ChatResponse{Body: p.body}, p.err
+}
+func (*costTestProvider) ChatStream(context.Context, providers.ChatRequest) (providers.Stream, error) {
+	return nil, providers.ErrUpstreamUnavailable
 }
 
 func expectedModel(provider, requested string) string {
@@ -468,6 +604,43 @@ func TestStream_MidstreamErrorRecordsEstimatedUsage(t *testing.T) {
 	}
 }
 
+func TestStream_MidstreamFailurePricesRelayedCompletion(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	provider := &usageStreamProvider{stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &usageTestStream{
+			chunks: []providers.ChatChunk{{Data: json.RawMessage(`{"choices":[{"delta":{"content":"1234567"}}]}`)}},
+			endErr: providers.ErrUpstreamUnavailable,
+		}, nil
+	}}
+	pricer := budget.NewPricer(config.Config{
+		Providers: map[string]config.Provider{"capture": {}},
+		Pricing:   map[string]config.Price{"capture/model": {InputMicroUSDPerMillion: 3_000_000, OutputMicroUSDPerMillion: 15_000_000}},
+	})
+	handler := newUsageStreamHandler(t, provider, usageStore, pricer)
+	rec := sendUsageStreamRequest(t.Context(), t, handler, `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"code":"upstream_unavailable"`) {
+		t.Fatalf("stream response = %d %s; want mid-stream error", rec.Code, rec.Body)
+	}
+	reader, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	var prompt, completion, cost int64
+	var usageSource, costSource string
+	if err := reader.QueryRowContext(t.Context(), "SELECT prompt_tokens, completion_tokens, usage_source, cost_micro_usd, cost_source FROM requests").Scan(&prompt, &completion, &usageSource, &cost, &costSource); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 2 || completion != 3 || usageSource != "estimated" || cost != 51 || costSource != "declared" {
+		t.Errorf("recorded stream failure = %d/%d usage=%s cost=%d/%s; want 2/3 estimated cost=51/declared", prompt, completion, usageSource, cost, costSource)
+	}
+}
+
 func TestStream_ClientDisconnectRecordsEstimatedUsage(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
 	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
@@ -533,7 +706,7 @@ func TestStream_StoreOffDoesNotChangeRequestOrChunks(t *testing.T) {
 	}
 }
 
-func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore *store.Store) http.Handler {
+func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore *store.Store, estimators ...*budget.Pricer) http.Handler {
 	t.Helper()
 	set, err := providers.NewSet(provider)
 	if err != nil {
@@ -545,9 +718,19 @@ func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore
 	if usageStore != nil {
 		recorder = usageStore
 	}
+	var estimator *budget.Pricer
+	if len(estimators) > 0 {
+		estimator = estimators[0]
+	}
+	var costEstimator interface {
+		Estimate(providers.ModelRef, int64, int64, json.RawMessage) budget.Cost
+	}
+	if estimator != nil {
+		costEstimator = estimator
+	}
 	handler, err := api.NewHandler(api.Options{
 		Providers: set, LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
-		Logger: slog.New(slog.DiscardHandler), UsageRecorder: recorder,
+		Logger: slog.New(slog.DiscardHandler), UsageRecorder: recorder, CostEstimator: costEstimator,
 	})
 	if err != nil {
 		t.Fatal(err)

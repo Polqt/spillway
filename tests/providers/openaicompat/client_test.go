@@ -551,6 +551,30 @@ func TestClient_MapsStatusAndScrubsProviderKey(t *testing.T) {
 	}
 }
 
+func TestClient_FailedChatReturnsUsageOnlyForCostAccounting(t *testing.T) {
+	body := fixture(t, "openrouter-error-with-usage.json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	response, err := client(t, srv.URL).Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+	if !errors.Is(err, providers.ErrUpstreamUnavailable) {
+		t.Fatalf("Chat error = %v, want upstream unavailable", err)
+	}
+	if strings.Contains(string(response.Body), "full-body-marker") || strings.Contains(string(response.Body), "upstream failed") {
+		t.Fatalf("accounting body retained provider error details: %s", response.Body)
+	}
+	var result struct {
+		Usage struct {
+			Cost json.RawMessage `json:"cost"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(response.Body, &result); err != nil || string(result.Usage.Cost) != "0.000123456789" {
+		t.Fatalf("accounting usage cost = %s, %v; want OpenRouter cost", result.Usage.Cost, err)
+	}
+}
+
 func TestClient_MapsPaymentRequiredAndRetryAfter(t *testing.T) {
 	tests := []struct {
 		name      string

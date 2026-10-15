@@ -72,6 +72,7 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 		if captureUsage && chunk.Usage != nil {
 			usage := *chunk.Usage
 			reported = &usage
+			rec.reportedCost = chunk.ReportedCost
 		}
 		choices, contentBytes := streamChunkDeltaBytes(chunk.Data)
 		if stripUsage && chunk.Usage != nil {

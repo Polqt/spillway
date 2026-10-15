@@ -54,6 +54,61 @@ func TestParse_StoreConfig(t *testing.T) {
 	}
 }
 
+func TestParse_PricingValidationAndRedactedOutput(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.ParseWithEnv([]byte(strings.TrimSpace(`server:
+  api_keys: [sk-test-local-ci]
+providers:
+  openrouter: {api_key: "${OPENROUTER_API_KEY}"}
+pricing:
+  openrouter/anthropic/claude: {input_usd_per_mtok: 3.000001, output_usd_per_mtok: 15}
+`)), func(name string) (string, bool) {
+		if name == "OPENROUTER_API_KEY" {
+			return "sk-test-openrouter", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	price := cfg.Pricing["openrouter/anthropic/claude"]
+	if price.InputMicroUSDPerMillion != 3_000_001 || price.OutputMicroUSDPerMillion != 15_000_000 {
+		t.Fatalf("price = %+v, want integer micro-USD per million", price)
+	}
+	var output strings.Builder
+	if err := cfg.WriteRedacted(&output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "input_usd_per_mtok: 3.000001") || !strings.Contains(output.String(), "output_usd_per_mtok: 15") {
+		t.Errorf("check output omitted exact declared prices:\n%s", output.String())
+	}
+}
+
+func TestParse_PricingRejectsInvalidEntries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ pricing, want string }{
+		{"openrouter/model: {input_usd_per_mtok: 1}", "pricing.openrouter/model.output_usd_per_mtok is required"},
+		{"unknown/model: {input_usd_per_mtok: 1, output_usd_per_mtok: 2}", "provider unknown is not configured"},
+		{"openrouter/model: {input_usd_per_mtok: -1, output_usd_per_mtok: 2}", "decimal from 0 to 10000"},
+		{"openrouter/model: {input_usd_per_mtok: 10000.000001, output_usd_per_mtok: 2}", "decimal from 0 to 10000"},
+		{"openrouter/model: {input_usd_per_mtok: 1.0000001, output_usd_per_mtok: 2}", "decimal from 0 to 10000"},
+	} {
+		t.Run(tt.pricing, func(t *testing.T) {
+			t.Parallel()
+			data := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\npricing:\n  " + tt.pricing + "\n"
+			_, err := config.ParseWithEnv([]byte(data), func(name string) (string, bool) {
+				if name == "OPENROUTER_API_KEY" {
+					return "sk-test-openrouter", true
+				}
+				return "", false
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Parse error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_StoreConfigExpandsEnvironment(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "usage.db")

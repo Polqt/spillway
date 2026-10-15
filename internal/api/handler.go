@@ -58,6 +58,7 @@ type Options struct {
 	UsageRecorder interface {
 		Record(context.Context, store.Request) error
 	}
+	CostEstimator attemptPricer
 	// Now supplies the clock used to format cooldown retry times.
 	Now               func() time.Time
 	BodyReadTimeout   time.Duration
@@ -105,7 +106,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
-		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil,
+		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator,
 	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.

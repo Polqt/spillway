@@ -28,6 +28,7 @@ type chatHandler struct {
 	bodyReadTimeout    time.Duration
 	chunkWriteTimeout  time.Duration
 	captureStreamUsage bool
+	pricer             attemptPricer
 }
 
 // chatBody is the part of a chat request Spillway acts on. Model is a
@@ -45,6 +46,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordFrom(r.Context()).setRequestedModel(*body.Model)
+	recordFrom(r.Context()).configure(h.pricer, body.RawBody)
 	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
 	if err != nil {
 		rec := recordFrom(r.Context())
@@ -90,14 +92,15 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec.beginAttempt(ref)
 	resp, err := provider.Chat(r.Context(), req)
 	if err != nil {
+		recordResponseUsage(resp.Body, rec)
 		rec.setError(err)
 		rec.endAttempt(candidateErrorKind(err))
 		writeProviderError(w, r, ref, err)
 		return
 	}
+	recordResponseUsage(resp.Body, rec)
 	rec.usage.ErrorKind = ""
 	rec.endAttempt("success")
-	recordResponseUsage(resp.Body, &rec.usage)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp.Body)
 }
@@ -200,9 +203,9 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		} else {
 			resp, chatErr := provider.Chat(r.Context(), req)
 			if chatErr == nil {
+				recordResponseUsage(resp.Body, rec)
 				rec.usage.ErrorKind = ""
 				rec.endAttempt("success")
-				recordResponseUsage(resp.Body, &rec.usage)
 				if h.tracker != nil {
 					h.tracker.Observe(ref, nil, resp.RateLimit)
 				}
@@ -213,6 +216,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 				_, _ = w.Write(resp.Body)
 				return
 			}
+			recordResponseUsage(resp.Body, rec)
 			err = chatErr
 		}
 		if err != nil {
