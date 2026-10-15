@@ -120,7 +120,7 @@ func rejectFutureSections(root *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i]
-		milestone := map[string]string{"budgets": "v0.4", "cache": "v0.4"}[key.Value]
+		milestone := map[string]string{"cache": "v0.4"}[key.Value]
 		if milestone != "" {
 			return fmt.Errorf("%q is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
 		}
@@ -132,7 +132,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store", "pricing"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store", "pricing", "budgets"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -230,7 +230,32 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if err := checkStoreShape(mappingValue(root, "store")); err != nil {
 		return err
 	}
-	return checkPricingShape(mappingValue(root, "pricing"))
+	if err := checkPricingShape(mappingValue(root, "pricing")); err != nil {
+		return err
+	}
+	return checkBudgetsShape(mappingValue(root, "budgets"))
+}
+
+func checkBudgetsShape(budgets *yaml.Node) error {
+	if budgets == nil {
+		return nil
+	}
+	if budgets.Kind != yaml.MappingNode {
+		return fmt.Errorf("budgets (line %d): must be a mapping", budgets.Line)
+	}
+	for i := 0; i+1 < len(budgets.Content); i += 2 {
+		key, value := budgets.Content[i], budgets.Content[i+1]
+		if key.Value == "on_exceed" {
+			return errors.New("removed: budgets always stop paid models and never free ones (ADR 0010)")
+		}
+		if key.Value != "daily_usd" && key.Value != "monthly_usd" {
+			return fmt.Errorf("budgets (line %d): unknown field %q", key.Line, key.Value)
+		}
+		if value.Kind != yaml.ScalarNode || (value.Tag != "!!int" && value.Tag != "!!float" && value.Tag != "!!str") {
+			return fmt.Errorf("budgets.%s (line %d): must be a decimal number", key.Value, value.Line)
+		}
+	}
+	return nil
 }
 
 func checkPricingShape(pricing *yaml.Node) error {

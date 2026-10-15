@@ -58,6 +58,32 @@ func TestOpen_CreatesCurrentSchemaWithPrivateFile(t *testing.T) {
 	}
 }
 
+func TestStore_SpendSinceSumsPersistedRequestCosts(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.April, 2, 12, 0, 0, 0, time.UTC)
+	s, err := store.Open(t.Context(), store.Options{Path: filepath.Join(t.TempDir(), "usage.db"), Retention: 90 * 24 * time.Hour, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, request := range []store.Request{
+		{At: now.Add(-48 * time.Hour), CostMicroUSD: 900},
+		{At: now.Add(-time.Hour), CostMicroUSD: 1234},
+		{At: now, CostMicroUSD: 5678},
+	} {
+		if err := s.Record(t.Context(), request); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	got, err := s.SpendSince(t.Context(), now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("SpendSince: %v", err)
+	}
+	if got != 6912 {
+		t.Errorf("SpendSince = %d micro-USD, want 6912", got)
+	}
+}
+
 func TestOpen_RefusesNewerSchemaAndInvalidPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -27,6 +27,15 @@ func NewPricer(cfg config.Config) *Pricer {
 	return &Pricer{pricing: cfg.Pricing, providers: cfg.Providers}
 }
 
+// HasPrice reports whether ref is free or has a declared paid-model price.
+func (p *Pricer) HasPrice(ref providers.ModelRef) bool {
+	if config.IsZeroSpendEligible(ref, p.providers[ref.Provider]) {
+		return true
+	}
+	_, ok := p.pricing[ref.Provider+"/"+ref.Model]
+	return ok
+}
+
 // Estimate applies free, reported, declared, then unknown source precedence.
 func (p *Pricer) Estimate(ref providers.ModelRef, promptTokens, completionTokens int64, reportedCost json.RawMessage) Cost {
 	provider := p.providers[ref.Provider]

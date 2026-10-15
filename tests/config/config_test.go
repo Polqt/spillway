@@ -54,6 +54,59 @@ func TestParse_StoreConfig(t *testing.T) {
 	}
 }
 
+func TestParse_BudgetsValidationAndRedactedOutput(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "usage.db")
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: " + path + "\n  retention: 35d\nbudgets:\n  daily_usd: 0.025001\n  monthly_usd: 10\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Budgets.DailyMicroUSD != 25_001 || cfg.Budgets.MonthlyMicroUSD != 10_000_000 {
+		t.Fatalf("Budgets = %+v, want integer micro-USD", cfg.Budgets)
+	}
+	var output strings.Builder
+	if err := cfg.WriteRedacted(&output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "daily_usd: 0.025001") || !strings.Contains(output.String(), "monthly_usd: 10") {
+		t.Errorf("check output omitted budgets:\n%s", output.String())
+	}
+}
+
+func TestParse_BudgetsFailClosedValidation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	for _, tt := range []struct{ name, config, want string }{
+		{"requires store", "budgets: {daily_usd: 1}\n", "budgets need store.path"},
+		{"requires positive limit", "store: {path: '" + filepath.Join(dir, "db") + "'}\nbudgets: {}\n", "at least one positive"},
+		{"daily retention", "store: {path: '" + filepath.Join(dir, "db") + "', retention: 1d}\nbudgets: {daily_usd: 1}\n", "at least 2d"},
+		{"monthly retention", "store: {path: '" + filepath.Join(dir, "db") + "', retention: 30d}\nbudgets: {monthly_usd: 1}\n", "at least 35d"},
+		{"removed on exceed", "store: {path: '" + filepath.Join(dir, "db") + "', retention: 35d}\nbudgets: {daily_usd: 1, on_exceed: block}\n", "removed: budgets always stop paid models and never free ones (ADR 0010)"},
+		{"zero limit", "store: {path: '" + filepath.Join(dir, "db") + "'}\nbudgets: {daily_usd: 0}\n", "positive decimal"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Parse([]byte(base + tt.config))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Parse error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_BudgetRequiresPricesForPaidSpendTier(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\nstore: {path: '" + filepath.Join(dir, "usage.db") + "', retention: 35d}\nbudgets: {monthly_usd: 5}\ntiers:\n  paid:\n    allow_spend: true\n    models: [openrouter/vendor/model]\n"
+	_, err := config.ParseWithEnv([]byte(data), func(name string) (string, bool) {
+		return map[string]string{"OPENROUTER_API_KEY": "sk-test-openrouter"}[name], name == "OPENROUTER_API_KEY"
+	})
+	if err == nil || !strings.Contains(err.Error(), "add pricing.openrouter/vendor/model") {
+		t.Errorf("Parse error = %v, want pricing fix", err)
+	}
+}
+
 func TestParse_PricingValidationAndRedactedOutput(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.ParseWithEnv([]byte(strings.TrimSpace(`server:
@@ -349,7 +402,6 @@ func TestParse_Errors(t *testing.T) {
 		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
 		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
 		{name: "router mode milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.mode is not supported until v0.5"},
-		{name: "budgets milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nbudgets: {}\n", want: `"budgets" is not supported until v0.4`},
 		{name: "cache milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {}\n", want: `"cache" is not supported until v0.4`},
 		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  mock: {}\n", want: "server.listen must be host:port"},
 		{name: "port out of range", yaml: "server:\n  listen: \"127.0.0.1:70000\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},
@@ -790,11 +842,11 @@ func TestParse_EnvironmentReferenceErrorsNamePath(t *testing.T) {
 	}
 }
 
-func TestParse_FutureSectionErrorPrecedesExpansion(t *testing.T) {
+func TestParse_BudgetShapeErrorPrecedesExpansion(t *testing.T) {
 	t.Parallel()
 	_, err := config.ParseWithEnv([]byte("budgets: \"${UNSET}\"\n"), func(string) (string, bool) { return "", false })
-	if err == nil || !strings.Contains(err.Error(), `"budgets" is not supported until v0.4`) {
-		t.Errorf("ParseWithEnv error = %v, want milestone guidance", err)
+	if err == nil || !strings.Contains(err.Error(), "budgets") || !strings.Contains(err.Error(), "must be a mapping") {
+		t.Errorf("ParseWithEnv error = %v, want budgets shape error", err)
 	}
 }
 

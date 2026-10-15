@@ -49,7 +49,43 @@ func (c Config) validate() error {
 	if err := validateStore(c.Store); err != nil {
 		return err
 	}
-	return validatePricing(c.Pricing, c.Providers)
+	if err := validatePricing(c.Pricing, c.Providers); err != nil {
+		return err
+	}
+	return validateBudgets(c)
+}
+
+func validateBudgets(c Config) error {
+	if c.Budgets == nil {
+		return nil
+	}
+	if c.Store == nil {
+		return errors.New("budgets need store.path so spend survives restarts")
+	}
+	if c.Budgets.DailyMicroUSD <= 0 && c.Budgets.MonthlyMicroUSD <= 0 {
+		return errors.New("budgets: set at least one positive daily_usd or monthly_usd limit")
+	}
+	if c.Budgets.MonthlyMicroUSD > 0 && c.Store.Retention < 35*24*time.Hour {
+		return errors.New("store.retention must be at least 35d with budgets.monthly_usd; increase retention to preserve the full budget period")
+	}
+	if c.Budgets.DailyMicroUSD > 0 && c.Store.Retention < 2*24*time.Hour {
+		return errors.New("store.retention must be at least 2d with budgets.daily_usd; increase retention to preserve the full budget period")
+	}
+	for _, tier := range c.Tiers {
+		if !tier.AllowSpend {
+			continue
+		}
+		for _, model := range tier.Models {
+			ref, _ := providers.ParseModelRef(model)
+			if IsZeroSpendEligible(ref, c.Providers[ref.Provider]) {
+				continue
+			}
+			if _, ok := c.Pricing[model]; !ok {
+				return fmt.Errorf("budgets require a price for paid model %s; add pricing.%s", model, model)
+			}
+		}
+	}
+	return nil
 }
 
 func validatePricing(pricing map[string]Price, configured map[string]Provider) error {

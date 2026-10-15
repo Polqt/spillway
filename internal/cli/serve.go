@@ -72,7 +72,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	}
 	slices.Sort(attested)
 	logger.InfoContext(ctx, "free-tier providers are user-attested", "providers", attested)
-	handler, err := newHandler(cfg, logger, usageStore)
+	handler, err := newHandler(ctx, cfg, logger, usageStore)
 	if err != nil {
 		report(stderr, "spillway: %v\n", err)
 		return 1
@@ -96,7 +96,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 }
 
 // newHandler wires the configured providers and local keys into the API.
-func newHandler(cfg config.Config, logger *slog.Logger, usageStore *store.Store) (http.Handler, error) {
+func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usageStore *store.Store) (http.Handler, error) {
 	var ps []providers.Provider
 	for name := range cfg.Providers {
 		switch name {
@@ -189,6 +189,13 @@ func newHandler(cfg config.Config, logger *slog.Logger, usageStore *store.Store)
 			return nil, fmt.Errorf("build quota tracker: %w", err)
 		}
 	}
+	var budgetGate *budget.Gate
+	if cfg.Budgets != nil {
+		budgetGate, err = budget.NewGate(ctx, budget.GateOptions{Limits: *cfg.Budgets, Providers: cfg.Providers, Store: usageStore, Now: now})
+		if err != nil {
+			return nil, fmt.Errorf("build budget gate: %w", err)
+		}
+	}
 	var allowedHosts []string
 	if cfg.Server.Loopback() {
 		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
@@ -209,6 +216,7 @@ func newHandler(cfg config.Config, logger *slog.Logger, usageStore *store.Store)
 		Logger:        logger,
 		UsageRecorder: usageRecorder,
 		CostEstimator: budget.NewPricer(cfg),
+		BudgetGate:    budgetGate,
 		Now:           now,
 	})
 }

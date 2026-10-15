@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
@@ -59,6 +60,7 @@ type Options struct {
 		Record(context.Context, store.Request) error
 	}
 	CostEstimator attemptPricer
+	BudgetGate    *budget.Gate
 	// Now supplies the clock used to format cooldown retry times.
 	Now               func() time.Time
 	BodyReadTimeout   time.Duration
@@ -106,7 +108,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
-		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator,
+		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator, gate: o.BudgetGate,
 	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.

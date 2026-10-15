@@ -260,6 +260,35 @@ func (s *Store) RecordFailures() int64 {
 	return s.recordFailures.Load()
 }
 
+// SpendSince returns recorded request costs at or after the UTC timestamp.
+func (s *Store) SpendSince(ctx context.Context, since time.Time) (int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT cost_micro_usd FROM requests WHERE at_ns >= ?`, since.UTC().UnixNano())
+	if err != nil {
+		return 0, fmt.Errorf("query usage spend: %w", err)
+	}
+	var total int64
+	for rows.Next() {
+		var cost int64
+		if err := rows.Scan(&cost); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("read usage spend: %w", err)
+		}
+		if cost > 0 && total > int64(^uint64(0)>>1)-cost {
+			total = int64(^uint64(0) >> 1)
+		} else {
+			total += cost
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("read usage spend: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close usage spend query: %w", err)
+	}
+	return total, nil
+}
+
 func (s *Store) prune(ctx context.Context) error {
 	cutoff := s.now().Add(-s.retention).UTC().UnixNano()
 	if _, err := s.db.ExecContext(ctx, "DELETE FROM requests WHERE at_ns < ?", cutoff); err != nil {

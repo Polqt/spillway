@@ -33,6 +33,89 @@ type Config struct {
 	Router  Router                      `yaml:"router,omitempty"`
 	Store   *Store                      `yaml:"store,omitempty"`
 	Pricing map[string]Price            `yaml:"pricing,omitempty"`
+	Budgets *Budgets                    `yaml:"budgets,omitempty"`
+}
+
+// Budgets configures soft local spend caps in integer micro-USD.
+type Budgets struct {
+	DailyMicroUSD   int64 `yaml:"daily_usd,omitempty"`
+	MonthlyMicroUSD int64 `yaml:"monthly_usd,omitempty"`
+}
+
+// UnmarshalYAML decodes exact decimal USD budget limits.
+func (b *Budgets) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("budgets (line %d): must be a mapping", n.Line)
+	}
+	seen := make(map[string]bool, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		if key.Value != "daily_usd" && key.Value != "monthly_usd" {
+			if key.Value == "on_exceed" {
+				return errors.New("removed: budgets always stop paid models and never free ones (ADR 0010)")
+			}
+			return fmt.Errorf("budgets (line %d): unknown field %q", key.Line, key.Value)
+		}
+		if seen[key.Value] {
+			return fmt.Errorf("budgets.%s (line %d): duplicate field", key.Value, key.Line)
+		}
+		seen[key.Value] = true
+		micro, err := parseBudget(value)
+		if err != nil {
+			return fmt.Errorf("budgets.%s (line %d): must be a positive decimal with at most 6 fractional digits", key.Value, value.Line)
+		}
+		if key.Value == "daily_usd" {
+			b.DailyMicroUSD = micro
+		} else {
+			b.MonthlyMicroUSD = micro
+		}
+	}
+	return nil
+}
+
+// MarshalYAML writes exact decimal USD budget limits.
+func (b Budgets) MarshalYAML() (any, error) {
+	values := make(map[string]*yaml.Node, 2)
+	if b.DailyMicroUSD != 0 {
+		values["daily_usd"] = priceNode(b.DailyMicroUSD)
+	}
+	if b.MonthlyMicroUSD != 0 {
+		values["monthly_usd"] = priceNode(b.MonthlyMicroUSD)
+	}
+	return values, nil
+}
+
+func parseBudget(n *yaml.Node) (int64, error) {
+	if n.Kind != yaml.ScalarNode || (n.Tag != "!!int" && n.Tag != "!!float" && n.Tag != "!!str") {
+		return 0, errors.New("not a decimal")
+	}
+	value := n.Value
+	if value == "" || strings.ContainsAny(value, "eE_+-") {
+		return 0, errors.New("invalid budget")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && (len(parts[1]) == 0 || len(parts[1]) > 6)) {
+		return 0, errors.New("invalid budget")
+	}
+	whole, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || whole > int64(^uint64(0)>>1)/1_000_000 {
+		return 0, errors.New("invalid budget")
+	}
+	fraction := int64(0)
+	if len(parts) == 2 {
+		fraction, err = strconv.ParseInt(parts[1]+strings.Repeat("0", 6-len(parts[1])), 10, 64)
+		if err != nil {
+			return 0, errors.New("invalid budget")
+		}
+	}
+	if whole == 0 && fraction == 0 {
+		return 0, errors.New("invalid budget")
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	if whole > maxInt64/1_000_000 || (whole == maxInt64/1_000_000 && fraction > maxInt64%1_000_000) {
+		return 0, errors.New("invalid budget")
+	}
+	return whole*1_000_000 + fraction, nil
 }
 
 // Price contains declared USD per million tokens in integer micro-USD.

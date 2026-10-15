@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/router"
 )
@@ -29,6 +30,7 @@ type chatHandler struct {
 	chunkWriteTimeout  time.Duration
 	captureStreamUsage bool
 	pricer             attemptPricer
+	gate               *budget.Gate
 }
 
 // chatBody is the part of a chat request Spillway acts on. Model is a
@@ -46,7 +48,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordFrom(r.Context()).setRequestedModel(*body.Model)
-	recordFrom(r.Context()).configure(h.pricer, body.RawBody)
+	recordFrom(r.Context()).configure(h.pricer, body.RawBody, h.gate, h.now)
 	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
 	if err != nil {
 		rec := recordFrom(r.Context())
@@ -64,6 +66,20 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ref, provider, ok := h.resolve(w, *body.Model)
 	if !ok {
 		return
+	}
+	if h.gate != nil {
+		priceLookup, ok := h.pricer.(interface{ HasPrice(providers.ModelRef) bool })
+		if !ok || !priceLookup.HasPrice(ref) {
+			recordFrom(r.Context()).usage.ErrorKind = "model_price_unknown"
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("No price is configured for %s; add pricing.%s.", ref.String(), ref.String()), typeInvalidRequest, "model_price_unknown")
+			return
+		}
+		if allowed, reset := h.gate.Allow(ref); !allowed {
+			recordFrom(r.Context()).usage.ErrorKind = "budget_exceeded"
+			setBudgetRetry(w, reset, h.now())
+			writeError(w, http.StatusTooManyRequests, budgetMessage(reset, h.now()), typeAPI, "insufficient_quota")
+			return
+		}
 	}
 
 	rec := recordFrom(r.Context())
@@ -156,6 +172,16 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			if available, until, reason := h.tracker.Available(ref); !available {
 				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until}
 				rec.addSkip(ref, fixedSkipReason(reason))
+				failures = append(failures, failure)
+				eligibleFailures = append(eligibleFailures, failure)
+				continue
+			}
+		}
+		if h.gate != nil {
+			if allowed, reset := h.gate.Allow(ref); !allowed {
+				reason := budgetReason(reset, h.now())
+				failure := candidateFailure{ref: ref, reason: reason, until: reset}
+				rec.addSkip(ref, reason)
 				failures = append(failures, failure)
 				eligibleFailures = append(eligibleFailures, failure)
 				continue
@@ -255,13 +281,69 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
 	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
-		rec.usage.ErrorKind = "rate_limit_exceeded"
+		if allBudgetBlocked(eligibleFailures) {
+			rec.usage.ErrorKind = "budget_exceeded"
+		} else {
+			rec.usage.ErrorKind = "rate_limit_exceeded"
+		}
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, message, typeAPI, "rate_limit_exceeded")
 		return
 	}
 	rec.usage.ErrorKind = "no_candidate_available"
 	writeError(w, http.StatusServiceUnavailable, message, typeAPI, "no_candidate_available")
+}
+
+func allBudgetBlocked(failures []candidateFailure) bool {
+	if len(failures) == 0 {
+		return false
+	}
+	for _, failure := range failures {
+		if !strings.HasPrefix(failure.reason, "budget exceeded") {
+			return false
+		}
+	}
+	return true
+}
+
+func budgetReason(reset, now time.Time) string {
+	return "budget exceeded (resets in " + resetDuration(reset, now) + ")"
+}
+
+func budgetMessage(reset, now time.Time) string {
+	return "Spend budget exceeded; paid models are available again in " + resetDuration(reset, now) + "."
+}
+
+func resetDuration(reset, now time.Time) string {
+	remaining := reset.Sub(now)
+	if remaining < 0 {
+		remaining = 0
+	}
+	minutes := int((remaining + time.Second*30) / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours, leftoverMinutes := minutes/60, minutes%60
+	if hours < 24 {
+		if leftoverMinutes == 0 {
+			return fmt.Sprintf("%dh", hours)
+		}
+		return fmt.Sprintf("%dh%dm", hours, leftoverMinutes)
+	}
+	days, leftoverHours := hours/24, hours%24
+	return fmt.Sprintf("%dd%dh", days, leftoverHours)
+}
+
+func setBudgetRetry(w http.ResponseWriter, reset, now time.Time) {
+	remaining := reset.Sub(now)
+	seconds := int((remaining + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 }
 
 func cooldownReason(reason string, until, now time.Time) string {

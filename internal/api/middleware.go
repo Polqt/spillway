@@ -29,6 +29,8 @@ type requestRecord struct {
 	usage                 store.Request
 	attemptAt             time.Time
 	pricer                attemptPricer
+	gate                  *budget.Gate
+	now                   func() time.Time
 	estimatedPromptTokens int64
 	reportedCost          json.RawMessage
 	totalUsageSource      string
@@ -38,8 +40,10 @@ type attemptPricer interface {
 	Estimate(providers.ModelRef, int64, int64, json.RawMessage) budget.Cost
 }
 
-func (rec *requestRecord) configure(pricer attemptPricer, body []byte) {
+func (rec *requestRecord) configure(pricer attemptPricer, body []byte, gate *budget.Gate, now func() time.Time) {
 	rec.pricer = pricer
+	rec.gate = gate
+	rec.now = now
 	if requirements, err := router.Detect(body); err == nil {
 		rec.estimatedPromptTokens = int64(requirements.EstimatedTokens) * 2
 	}
@@ -88,6 +92,13 @@ func (rec *requestRecord) endAttempt(outcome string) {
 			rec.usage.CostSource = cost.Source
 		} else if rec.usage.CostSource != cost.Source {
 			rec.usage.CostSource = "mixed"
+		}
+		if rec.gate != nil {
+			at := time.Now()
+			if rec.now != nil {
+				at = rec.now()
+			}
+			rec.gate.Charge(at, cost.MicroUSD)
 		}
 	}
 	rec.usage.PromptTokens = attempt.PromptTokens
