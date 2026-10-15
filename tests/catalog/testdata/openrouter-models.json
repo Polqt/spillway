@@ -1,0 +1,1 @@
+{"data":[{"id":"vendor/vision:free","pricing":{"prompt":"0.00000002","completion":"0.000002"},"supported_parameters":["tools","json_schema","response_format"],"architecture":{"input_modalities":["text","image"]},"context_length":131072}]}

@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,5 +182,37 @@ func TestRun_CheckMissingFlagValue(t *testing.T) {
 	code := cli.Run(t.Context(), []string{"check", "-config"}, &stdout, &stderr, noEnv)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRun_CatalogUsesConfiguredProviderAndSkipsMock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer sk-test-groq-catalog" {
+			t.Errorf("catalog request = %s %s authorization=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"llama-test","context_window":32768}]}`))
+	}))
+	defer server.Close()
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-local-catalog]\nproviders:\n  groq:\n    api_key: ${GROQ_API_KEY}\n    base_url: "+server.URL+"\n    free_tier: true\n  mock: {}\ntiers:\n  free:\n    models: [groq/llama-test, mock/echo]\n")
+	lookup := func(name string) (string, bool) {
+		if name == "GROQ_API_KEY" {
+			return "sk-test-groq-catalog", true
+		}
+		return "", false
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"catalog", "-config", path}, &stdout, &stderr, lookup)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{"models:", "context_window: 32768", "mock skipped"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout missing %q: %s", want, stdout.String())
+		}
+	}
+	for _, secret := range []string{"sk-test-local-catalog", "sk-test-groq-catalog"} {
+		if strings.Contains(stdout.String()+stderr.String(), secret) {
+			t.Errorf("catalog leaked %q", secret)
+		}
 	}
 }
