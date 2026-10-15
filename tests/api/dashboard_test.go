@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/config"
@@ -60,12 +61,48 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 			{Name: "app", Key: redact.NewSecret(chatOnlyKey)},
 		},
 		AllowedHosts: api.LoopbackHosts("127.0.0.1"), Logger: slog.New(slog.DiscardHandler),
-		UsageRecorder: db, DashboardStore: db, Tracker: tracker, BudgetGate: gate, Now: func() time.Time { return now },
+		UsageRecorder: db, DashboardStore: db, Dashboard: web.Handler(), Tracker: tracker, BudgetGate: gate, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler, db, now
+}
+
+func TestDashboardPage_HostCheckedButUnauthenticated(t *testing.T) {
+	handler, db, now := dashboardEnv(t)
+	const shellMarker = "dashboard-shell-private-model-marker"
+	if err := db.Record(t.Context(), store.Request{
+		At: now, ClientApp: "dashboard-shell-private-client-marker", RequestedModel: shellMarker,
+		Route: "dashboard-shell-private-route-marker", Status: http.StatusOK, UsageSource: "reported", CostSource: "declared",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		path string
+		host string
+		want int
+	}{
+		{name: "shell", path: "/dashboard", host: "127.0.0.1", want: http.StatusOK},
+		{name: "stylesheet", path: "/dashboard.css", host: "127.0.0.1", want: http.StatusOK},
+		{name: "script", path: "/dashboard.js", host: "127.0.0.1", want: http.StatusOK},
+		{name: "foreign host", path: "/dashboard", host: "attacker.example", want: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := dashboardRequest(t, handler, test.path, "", test.host)
+			if response.Code != test.want {
+				t.Fatalf("GET %s status = %d, want %d: %s", test.path, response.Code, test.want, response.Body)
+			}
+			if test.path == "/dashboard" {
+				for _, marker := range []string{shellMarker, "dashboard-shell-private-client-marker", "dashboard-shell-private-route-marker"} {
+					if strings.Contains(response.Body.String(), marker) {
+						t.Errorf("unauthenticated dashboard shell contains stored usage marker %q", marker)
+					}
+				}
+			}
+		})
+	}
 }
 
 func dashboardRequest(t *testing.T, handler http.Handler, path, key, host string) *httptest.ResponseRecorder {

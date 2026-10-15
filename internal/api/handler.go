@@ -70,6 +70,7 @@ type Options struct {
 		Record(context.Context, store.Request) error
 	}
 	DashboardStore dashboardStore // Reads usage history for dashboard endpoints.
+	Dashboard      http.Handler   // Serves the static dashboard shell and assets.
 	CostEstimator  attemptPricer
 	BudgetGate     *budget.Gate
 	ExactCache     *cache.Cache
@@ -108,6 +109,14 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	if o.Dashboard != nil {
+		mux.Handle("GET /dashboard", o.Dashboard)
+		mux.Handle("GET /dashboard.css", o.Dashboard)
+		mux.Handle("GET /dashboard.js", o.Dashboard)
+		mux.Handle("/dashboard", methodNotAllowed("GET, HEAD"))
+		mux.Handle("/dashboard.css", methodNotAllowed("GET, HEAD"))
+		mux.Handle("/dashboard.js", methodNotAllowed("GET, HEAD"))
+	}
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) { serveUsage(w, r, o) })
 	mux.HandleFunc("GET /api/decisions", func(w http.ResponseWriter, r *http.Request) { serveDecisions(w, r, o) })
 	mux.HandleFunc("GET /api/budget", func(w http.ResponseWriter, r *http.Request) { serveBudget(w, r, o) })

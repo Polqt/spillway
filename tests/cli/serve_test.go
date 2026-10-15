@@ -291,7 +291,7 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-no-store]\nproviders:\n  mock: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [{name: admin, key: sk-test-no-store, dashboard: true}]\nproviders:\n  mock: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -304,10 +304,29 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, &stdout, pw, noEnv)
 		_ = pw.Close()
 	}()
+	var base string
 	select {
-	case <-logs.addr:
+	case addr := <-logs.addr:
+		base = "http://" + addr
 	case code := <-exit:
 		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/api/quotas", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-test-no-store")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || string(body) != "{\"candidates\":[]}\n" {
+		t.Fatalf("GET /api/quotas = %d %s, want empty candidates", response.StatusCode, body)
 	}
 	cancel()
 	if code := <-exit; code != 0 {

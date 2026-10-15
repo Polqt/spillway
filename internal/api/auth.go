@@ -53,11 +53,11 @@ func (a *authenticator) match(token string) (string, bool, bool) {
 	return a.names[idx], dashboard == 1, true
 }
 
-// middleware requires "Authorization: Bearer <local key>" on every path
-// except /healthz and records the client app for the access log.
+// middleware requires "Authorization: Bearer <local key>" on API paths and
+// records the client app for the access log. The static shell carries no data.
 func (a *authenticator) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/dashboard" || r.URL.Path == "/dashboard.css" || r.URL.Path == "/dashboard.js" {
 			next.ServeHTTP(w, r)
 			return
 		}

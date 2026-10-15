@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/cache"
@@ -214,21 +215,25 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 	if usageStore != nil {
 		usageRecorder = usageStore
 	}
-	return api.NewHandler(api.Options{
+	options := api.Options{
 		Providers:      set,
 		Router:         planner,
 		Tiers:          tiers,
-		Tracker:        tracker,
 		LocalKeys:      keys,
 		AllowedHosts:   allowedHosts,
 		Logger:         logger,
 		UsageRecorder:  usageRecorder,
 		DashboardStore: usageStore,
+		Dashboard:      web.Handler(),
 		CostEstimator:  budget.NewPricer(cfg),
 		BudgetGate:     budgetGate,
 		ExactCache:     exactCache,
 		Now:            now,
-	})
+	}
+	if tracker != nil {
+		options.Tracker = tracker
+	}
+	return api.NewHandler(options)
 }
 
 // serveUntilDone serves on ln until ctx is cancelled, then shuts down

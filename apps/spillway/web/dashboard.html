@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Spillway dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+  <script src="/dashboard.js" defer="defer"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true">S</span> Spillway <span class="brand-label">LOCAL GATEWAY</span></a>
+    <div class="connection"><span id="connection-dot" class="connection-dot" aria-hidden="true"></span><span id="connection-label">Not connected</span></div>
+  </header>
+  <main class="page">
+    <section class="intro">
+      <div><p class="eyebrow">OBSERVABILITY</p><h1>Your gateway, at a glance.</h1><p class="intro-copy">Usage, routing decisions, and provider cooldowns from this Spillway instance.</p></div>
+      <time id="updated-at" class="updated-at">Waiting for a dashboard key</time>
+    </section>
+
+    <section id="access-panel" class="access-panel" aria-labelledby="access-title">
+      <div><h2 id="access-title">Connect your dashboard</h2><p>Enter a local key marked <code>dashboard: true</code> in your Spillway config.</p></div>
+      <form id="key-form" class="key-form" method="post">
+        <label class="visually-hidden" for="dashboard-key">Dashboard key</label>
+        <input id="dashboard-key" type="password" autocomplete="current-password" placeholder="Paste dashboard key" required="required" />
+        <button type="submit">Connect</button>
+      </form>
+      <p id="access-message" class="access-message" role="status"></p>
+    </section>
+
+    <div id="dashboard-content" hidden="hidden">
+      <section class="budget-grid" aria-label="Estimated spend">
+        <article class="budget-card budget-today">
+          <div class="card-heading"><div><p class="eyebrow">TODAY <span class="utc-note">UTC</span></p><h2>Estimated spend</h2></div><span class="card-icon" aria-hidden="true">↗</span></div>
+          <p id="today-spend" class="spend-value">est. $0.00</p>
+          <div class="meter"><span id="today-meter"></span></div>
+          <p id="today-budget" class="budget-caption">No daily budget configured</p>
+        </article>
+        <article class="budget-card budget-month">
+          <div class="card-heading"><div><p class="eyebrow">THIS MONTH <span class="utc-note">UTC</span></p><h2>Estimated spend</h2></div><span class="card-icon" aria-hidden="true">◷</span></div>
+          <p id="month-spend" class="spend-value">est. $0.00</p>
+          <div class="meter"><span id="month-meter"></span></div>
+          <p id="month-budget" class="budget-caption">No monthly budget configured</p>
+        </article>
+      </section>
+
+      <section class="section-block">
+        <div class="section-title"><div><p class="eyebrow">WHERE IT WENT</p><h2>Usage totals</h2></div><span class="estimate-tag">All costs are estimates</span></div>
+        <div class="usage-grid">
+          <article class="panel"><h3>By provider</h3><div id="provider-totals" class="totals-list"><p class="empty">No provider usage in this period.</p></div></article>
+          <article class="panel"><h3>By model</h3><div id="model-totals" class="totals-list"><p class="empty">No model usage in this period.</p></div></article>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-title"><div><p class="eyebrow">WHY THIS MODEL</p><h2>Recent decisions</h2></div><span id="decision-count" class="subtle-label">Latest requests</span></div>
+        <div id="decisions" class="panel decision-list"><p class="empty">No recent decisions yet.</p></div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-title"><div><p class="eyebrow">PROVIDER HEALTH</p><h2>Current cooldowns</h2></div><span id="cooldown-count" class="subtle-label">All candidates ready</span></div>
+        <div id="cooldowns" class="panel cooldown-list"><p class="empty">No active cooldowns.</p></div>
+      </section>
+      <p class="footnote">Spend is estimated from provider usage or declared token prices. Actual provider billing may differ. <a href="#limitations">Read about cost limitations</a></p>
+      <details id="limitations" class="footnote"><summary>About spend estimates</summary><p>Token counts or provider-reported costs may be incomplete, and declared prices may differ from your provider's current billing. Compare these estimates with your provider's billing records.</p></details>
+    </div>
+    <footer><span>Spillway runs on your machine.</span><button id="disconnect" class="text-button" type="button" hidden="hidden">Disconnect</button></footer>
+  </main>
+</body>
+</html>
