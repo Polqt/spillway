@@ -97,3 +97,40 @@ _Avoid_: verified free tier
 The state where every candidate in a tier is unavailable or failed for a request.
 Spillway reports each candidate and its reason in an OpenAI-shaped error.
 _Avoid_: tier failure
+
+### v0.4 observability and cost control
+
+**Usage record**:
+Metadata for one chat request and its provider attempts, including the route, token counts, cost source and cache outcome.
+It never contains prompt or response text, keys, header values or provider error text (ADR 0009).
+_Avoid_: request log
+
+**Paid model**:
+A model that ADR 0005 cannot identify as zero-spend eligible from local config.
+Paid models can be priced and stopped by a budget; free models are never blocked (ADR 0010).
+_Avoid_: billable model
+
+**Cost estimate**:
+An approximate USD cost in integer micro-USD, based on reported or estimated token usage and configured prices, or provider-reported cost.
+It may differ from provider billing (ADR 0010).
+_Avoid_: actual cost
+
+**Budget**:
+A local daily or monthly soft cap on estimated paid-model spend recorded by one Spillway process.
+It can overshoot for in-flight requests and does not include spend outside that process (ADR 0010).
+_Avoid_: hard cap
+
+**Cache hit**:
+A response served from the opt-in, in-memory exact cache for the same client app and byte-identical request body.
+It costs zero and disappears when Spillway restarts (ADR 0011).
+_Avoid_: cached completion
+
+**Dashboard key**:
+A local key marked `dashboard: true` that grants read access to `/api/*` usage data.
+Chat-only keys do not grant dashboard access (ADR 0012).
+_Avoid_: admin key
+
+**Catalog**:
+Provider-published model metadata printed by the explicit `spillway catalog` command as a suggestion for the user's config.
+It is advisory and never changes runtime routing or pricing by itself (ADR 0013).
+_Avoid_: discovered model config

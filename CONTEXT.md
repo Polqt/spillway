@@ -62,11 +62,11 @@ client app (OpenAI SDK)
 │ Router          rules → embedding classifier → LLM judge → cascade │
 │ Quota tracker   per-key RPM/TPM/daily limits, 429 + retry-after     │
 │ Spillover       ordered candidates per tier, circuit breakers       │
-│ Cache           exact-match (hash) + optional semantic cache        │
-│ Budgets         per-day/month spend caps, per-client-app limits     │
+│ Cache           opt-in in-memory exact response cache               │
+│ Budgets         local daily and monthly spend caps                  │
 │ Adapters        gemini, groq, mistral, openrouter, anthropic,       │
 │                 openai, ollama (each translates to/from OpenAI fmt) │
-│ Store           SQLite: usage logs, cache, quota state, decisions   │
+│ Store           SQLite: usage metadata, attempts and decisions     │
 │ Dashboard       embedded UI: usage, cost, routing explanations      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -99,6 +99,13 @@ Every chat response includes an `x-spillway-route` reason, such as `direct`, `ti
 
 The embedding classifier, LLM judge and cascade are planned for v0.5.
 
+In v0.4, an opt-in SQLite store records usage metadata only; prompts, responses, headers, keys and provider error text are never written to disk (ADR 0009).
+The optional exact cache is memory-only, byte-exact and isolated by client app; it caches non-streaming successful responses and disappears on restart (ADR 0011).
+Cost is an estimate based on provider-reported usage or conservative token estimates and user-declared prices; failed paid attempts without usage are charged their estimated prompt cost (ADR 0010).
+Daily and monthly budgets are soft caps on estimated spend observed by this Spillway process, stop paid models only and may overshoot for requests already in flight (ADR 0010).
+The embedded dashboard shell is static, while its data APIs require a local key marked `dashboard: true` (ADR 0012).
+`spillway catalog` prints advisory suggestions and does not affect runtime routing or pricing (ADR 0013).
+
 ## 7. Configuration (example)
 
 ```yaml
@@ -106,6 +113,7 @@ server:
   listen: "127.0.0.1:8080"
   api_keys:                        # local keys; required, even on loopback (ADR 0003)
     - { name: my-app, key: "${SPILLWAY_KEY}" }
+    - { name: dashboard, key: "${SPILLWAY_ADMIN_KEY}", dashboard: true }
 
 providers:
   gemini:     { api_key: "${GEMINI_API_KEY}", free_tier: true }
@@ -130,14 +138,20 @@ models:
 router:
   auto: [free, smart]  # zero-spend tiers first; only listed tiers can spend
 
+store:
+  path: ./spillway.db
+  retention: 90d
+
+pricing:
+  openrouter/anthropic/claude-sonnet-4.5: { input_usd_per_mtok: 3.00, output_usd_per_mtok: 15.00 }
+
 budgets:
   monthly_usd: 5.00
-  on_exceed: cheap_only    # cheap_only | block
 
 cache:
   exact: true
-  semantic: false
   ttl: 24h
+  max_mb: 64
 ```
 
 Capability declarations are a user-maintained statement of what each model supports; an empty list means text only.
@@ -145,7 +159,16 @@ List every supported capability explicitly and update declarations when a model'
 Only `tools`, `vision`, `json_mode` and `structured_outputs` are accepted.
 `context_window` is optional and filters a model only when the conservative request-size estimate exceeds it.
 Direct model references bypass these checks.
-Provider catalog discovery and pricing are planned for v0.4; classifiers and `router.mode` are planned for v0.5.
+`store:` is opt-in and requires an existing directory for `store.path`; retention defaults to 90 days.
+Budgets require `store:` so observed spend survives restarts, and the store retention must cover the configured period.
+`pricing:` gives USD per million input and output tokens; every paid model in an `allow_spend` tier must be priced when a budget is configured.
+Unpriced direct paid models fail closed while a budget is enabled.
+`on_exceed` is removed: reached budgets stop paid models and continue serving free models.
+The exact cache is opt-in, in memory, per client app, and bounded by `cache.max_mb`; temperature is ignored for identical request bodies.
+Semantic caching is not supported.
+The mock provider is always treated as free, even when a price is declared for its model.
+Catalog output is partial: Gemini has no supported catalog fields, and Groq publishes only context length.
+Provider catalog discovery is advisory and does not change runtime routing or pricing; classifiers and `router.mode` are planned for v0.5.
 
 ## 8. API Surface
 
@@ -153,8 +176,11 @@ Provider catalog discovery and pricing are planned for v0.4; classifiers and `ro
 - `POST /v1/embeddings`
 - `GET  /v1/models`: configured provider models, `spillway/<tier>` virtual models and `auto` when `router.auto` is configured.
 - `GET  /healthz`
-- `GET  /dashboard`: the embedded UI.
+- `GET  /dashboard`: the embedded static dashboard shell.
 - `GET  /api/usage`, `/api/decisions`, `/api/quotas`: JSON endpoints that back the dashboard.
+- `GET  /api/budget`: current local daily and monthly budget status.
+- Dashboard data APIs require a key marked `dashboard: true`.
+- `spillway catalog`: explicit advisory provider catalog suggestions; it writes no config and changes no routing.
 
 Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`, `x-spillway-cache`.
 
@@ -164,6 +190,9 @@ Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`,
 - Provider keys come from env vars, referenced from `config.yaml` as `${VAR}`. They are never logged and are redacted in errors.
 - Encrypted at-rest key storage (encrypted file or OS keychain) is deferred until after v1.0 and needs an ADR first, because its key-management design is not settled.
 - Prompt/response logging is **off by default**. Metadata (tokens, cost, latency, route) is logged.
+- The opt-in SQLite store contains sensitive usage metadata, is created with owner-only permissions and supports one Spillway process per file.
+- Budgets cover only estimated spend recorded by this process; external provider usage and concurrent in-flight overshoot are not included.
+- Cached responses live only in process memory; a cache hit costs zero and may serve the same answer despite a changed temperature.
 - No outbound calls other than to the providers the user has configured.
 
 ## 10. Suggested Repo Layout
@@ -218,7 +247,7 @@ A provider that speaks the OpenAI API is a preset in `openaicompat`, not a new p
 1. **v0.1 Proxy.** OpenAI-compatible API with streaming. Adapters for OpenAI-compatible providers (Groq, OpenRouter, Ollama) plus Gemini. A config loader.
 2. **v0.2 Spillover.** User-named tiers exposed as `spillway/<tier>` virtual models, spillover through candidates in tier order, quota tracking, and circuit breakers.
 3. **v0.3 Rules router.** Request requirement detection, user-declared capability filtering for virtual models, free-first `auto` chains, and `x-spillway-route` reasons.
-4. **v0.4 Observability.** SQLite usage logs, budgets, exact cache, and the embedded dashboard.
+4. **v0.4 Observability.** Opt-in SQLite usage records, estimated costs, local soft budgets, in-memory exact cache, dashboard APIs and page, and advisory `spillway catalog` suggestions.
 5. **v0.5 Smart routing.** The embedding classifier, the Llama judge via Ollama, and the cascade mode.
 6. **v1.0.** GoReleaser binaries, a Docker image, docs, and `spillway init` for interactive setup.
 

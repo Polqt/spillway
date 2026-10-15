@@ -1,0 +1,29 @@
+# Local-only paid-model fixture for docs/v0.4-manual-verification.md.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - name: demo
+      key: "sk-test-spillway-manual"
+    - name: dashboard
+      key: "sk-test-spillway-manual-dashboard"
+      dashboard: true
+
+providers:
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    base_url: "http://127.0.0.1:8090/v1"
+
+store:
+  path: ./spillway-paid-manual.db
+  retention: 90d
+
+pricing:
+  openrouter/manual-fixture: { input_usd_per_mtok: 0.50, output_usd_per_mtok: 0.50 }
+
+budgets:
+  monthly_usd: 0.000002
+
+cache:
+  exact: true
+  ttl: 1h
+  max_mb: 16

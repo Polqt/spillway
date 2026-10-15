@@ -667,10 +667,16 @@ func TestExamples_MockConfigValidates(t *testing.T) {
 		t.Errorf("Listen = %q, want 127.0.0.1:8080", cfg.Server.Listen)
 	}
 	keys := cfg.Server.APIKeys
-	if len(keys) != 1 || keys[0].Name != "demo" || !strings.HasPrefix(keys[0].Key.Reveal(), "sk-test-") {
-		t.Errorf("api_keys = %v, want one clearly fake sk-test- key named demo", keys)
+	if len(keys) != 2 || keys[0].Name != "demo" || !strings.HasPrefix(keys[0].Key.Reveal(), "sk-test-") || keys[1].Name != "dashboard" || !keys[1].Dashboard {
+		t.Errorf("api_keys = %v, want fake demo and dashboard keys with dashboard access enabled", keys)
 	}
 	if _, ok := cfg.Providers["mock"]; !ok || len(cfg.Providers) != 1 {
 		t.Errorf("providers = %v, want only mock", cfg.Providers)
+	}
+	if cfg.Store == nil || cfg.Store.Path != "./spillway-mock.db" || cfg.Budgets == nil || cfg.Budgets.MonthlyMicroUSD <= 0 || cfg.Cache == nil || !cfg.Cache.Exact {
+		t.Errorf("v0.4 config = store:%+v budgets:%+v cache:%+v, want all observability features enabled", cfg.Store, cfg.Budgets, cfg.Cache)
+	}
+	if _, ok := cfg.Pricing["mock/echo"]; !ok {
+		t.Errorf("pricing = %v, want a mock/echo example price", cfg.Pricing)
 	}
 }

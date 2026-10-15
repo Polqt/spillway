@@ -223,7 +223,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			if allowed, reset := h.gate.Allow(ref); !allowed {
 				reason := budgetReason(reset, h.now())
 				failure := candidateFailure{ref: ref, reason: reason, until: reset}
-				rec.addSkip(ref, reason)
+				rec.addSkip(ref, fixedSkipReason(reason))
 				failures = append(failures, failure)
 				eligibleFailures = append(eligibleFailures, failure)
 				continue

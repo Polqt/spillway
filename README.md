@@ -51,6 +51,45 @@ For requests that need capabilities, `auto` skips undeclared models; an explicit
 Direct model references pass through without capability checks.
 The `x-spillway-route` response header explains which route and candidate served the request.
 
+## Usage, cost, budgets and dashboard
+
+SQLite usage history is opt-in through `store.path`; it records request metadata, not prompts, responses, keys, headers or provider error text.
+The database still reveals usage patterns and should be treated as sensitive; only one Spillway process may use a database file at a time.
+
+Cost figures are estimates, not provider invoices.
+Spillway uses provider-reported usage when available and otherwise uses conservative token estimates with prices from `pricing:`.
+Prices can become stale, and cached-input discounts, reasoning tokens, image and audio pricing, per-request fees, minimum charges, taxes and currency conversion are not modelled.
+Provider billing, balances and plan status are invisible to Spillway.
+Groq and Gemini models configured with `free_tier: true` are counted as free based on the user's attestation, even if billing later becomes enabled.
+Providers may ignore injected stream usage requests, and disconnects or mid-stream failures can leave usage estimated.
+Failed paid attempts without reported usage are charged the estimated prompt cost; this can overcount a request rejected before processing or undercount hidden output generated before failure.
+
+Daily and monthly budgets are soft caps on paid-model spend observed by this Spillway process.
+Requests already in flight can overshoot a cap; spend made by other tools, machines or Spillway processes is not counted, and deleting the database resets the recorded spend.
+Budgets never block free models.
+The in-memory exact cache is opt-in, per client app and byte-exact; it ignores temperature, can return a stale or non-deterministic answer until expiry, and is cleared on restart.
+Catalog suggestions are advisory, may be incomplete or stale, and never affect routing or pricing until reviewed and copied into config.
+Gemini has no supported catalog fields, and Groq catalog data includes only context length.
+
+The mock setup enables all v0.4 features for local exploration.
+Mock models are always treated as free, so the sample price is illustrative and cannot exhaust its budget.
+Paid-budget behavior is covered by the offline cross-feature test with a fake paid provider.
+
+Use the `dashboard` key from `examples/config.mock.yaml` at `http://127.0.0.1:8080/dashboard`.
+The `demo` key can call chat endpoints but cannot read dashboard APIs.
+
+```shell
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-test-spillway-mock" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mock/echo","messages":[{"role":"user","content":"Cache me"}]}'
+```
+
+Repeat the identical curl request to see `x-spillway-cache: hit`.
+For streaming usage capture, send `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"Stream this"}]}` and inspect `/api/decisions` with the dashboard key.
+Run `spillway catalog -config examples/config.mock.yaml` to see the mock-provider skip note.
+The database at `./spillway-mock.db` retains usage and budget totals after restart; the response cache does not.
+
 ## Provider data terms
 
 Free pricing does not guarantee that a provider will not use prompts to improve or train its models.

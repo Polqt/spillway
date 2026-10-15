@@ -38,7 +38,7 @@ func fixedSkipReason(reason string) string {
 		return "context_too_small"
 	case reason == "cooling":
 		return "cooldown"
-	case reason == "budget exceeded":
+	case strings.HasPrefix(reason, "budget exceeded"):
 		return "budget_exceeded"
 	default:
 		return "unavailable"
