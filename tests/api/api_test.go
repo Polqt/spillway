@@ -981,6 +981,67 @@ func TestChat_TierCooldownHandlesConcurrentRequests(t *testing.T) {
 	wg.Wait()
 }
 
+func TestChat_TierGroqQuotaHintSkipsUntilReset(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		firstSuccesses := 0
+		first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+			hint := providers.RateLimit{}
+			firstSuccesses++
+			if firstSuccesses == 1 {
+				hint = providers.RateLimit{Known: true, RemainingRequests: 0, ResetRequests: 2*time.Minute + 59*time.Second + 560*time.Millisecond}
+			}
+			return providers.ChatResponse{Body: json.RawMessage(`{"model":"first"}`), RateLimit: hint}, nil
+		}}
+		second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+			return providers.ChatResponse{Body: json.RawMessage(`{"model":"second"}`)}, nil
+		}}
+		set, err := providers.NewSet(first, second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs := []providers.ModelRef{{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}
+		tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: refs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := api.NewHandler(api.Options{
+			Providers: set,
+			Tracker:   tracker,
+			LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+			Logger:    slog.New(slog.DiscardHandler),
+			Tiers:     map[string][]providers.ModelRef{"demo": refs},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := func() *httptest.ResponseRecorder {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			return rec
+		}
+		if rec := request(); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"model":"first"`) {
+			t.Fatalf("first response = %d %s", rec.Code, rec.Body)
+		}
+		<-time.After(179*time.Second + 559*time.Millisecond)
+		if rec := request(); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"model":"second"`) {
+			t.Fatalf("cooldown response = %d %s; want second candidate before reset", rec.Code, rec.Body)
+		}
+		if first.calls.Load() != 1 {
+			t.Fatalf("first candidate calls before reset = %d, want 1", first.calls.Load())
+		}
+		<-time.After(time.Millisecond)
+		if rec := request(); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"model":"first"`) {
+			t.Fatalf("reset response = %d %s; want first candidate at reset", rec.Code, rec.Body)
+		}
+		if first.calls.Load() != 2 {
+			t.Fatalf("first candidate calls after reset = %d, want 2", first.calls.Load())
+		}
+	})
+}
+
 func TestChat_TierUnknownNamesConfiguredTiersAndAutoStaysUnavailable(t *testing.T) {
 	t.Parallel()
 	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})

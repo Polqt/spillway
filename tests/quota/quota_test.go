@@ -67,6 +67,83 @@ func TestTracker_RetryAfterAndBackoffExpireAtExpectedTime(t *testing.T) {
 	}
 }
 
+func TestTracker_GroqQuotaHintsCoolUntilMatchingReset(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		hint     providers.RateLimit
+		cooldown time.Duration
+	}{
+		{
+			name:     "requests",
+			hint:     providers.RateLimit{Known: true, RemainingRequests: 0, ResetRequests: 2*time.Minute + 59*time.Second + 560*time.Millisecond},
+			cooldown: 2*time.Minute + 59*time.Second + 560*time.Millisecond,
+		},
+		{
+			name:     "tokens",
+			hint:     providers.RateLimit{Known: true, RemainingTokens: 0, ResetTokens: 7*time.Second + 660*time.Millisecond},
+			cooldown: 7*time.Second + 660*time.Millisecond,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ref := providers.ModelRef{Provider: "groq", Model: "llama-3.1-8b-instant"}
+				tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: []providers.ModelRef{ref}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tracker.Observe(ref, nil, tt.hint)
+				if available, until, _ := tracker.Available(ref); available || !until.Equal(time.Now().Add(tt.cooldown)) {
+					t.Fatalf("Available() = %v, %v; want cooldown for %s", available, until, tt.cooldown)
+				}
+				<-time.After(tt.cooldown - time.Nanosecond)
+				if available, _, _ := tracker.Available(ref); available {
+					t.Fatal("candidate available before quota reset")
+				}
+				<-time.After(time.Nanosecond)
+				if available, _, _ := tracker.Available(ref); !available {
+					t.Fatal("candidate unavailable at quota reset")
+				}
+			})
+		})
+	}
+}
+
+func TestTracker_GroqQuotaHintsIgnoreUsableOrUnknownLimits(t *testing.T) {
+	t.Parallel()
+	ref := providers.ModelRef{Provider: "groq", Model: "llama-3.1-8b-instant"}
+	tracker, err := quota.New(quota.Options{Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hint := range []providers.RateLimit{
+		{},
+		{Known: true, RemainingRequests: 1, ResetRequests: time.Minute},
+		{Known: true, RemainingTokens: 1, ResetTokens: time.Minute},
+		{Known: true, RemainingRequests: 0},
+	} {
+		tracker.Observe(ref, nil, hint)
+		if available, _, _ := tracker.Available(ref); !available {
+			t.Fatalf("hint %+v cooled a candidate without a usable exhausted reset", hint)
+		}
+	}
+}
+
+func TestTracker_GroqQuotaHintsClampResetTo24Hours(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	ref := providers.ModelRef{Provider: "groq", Model: "llama-3.1-8b-instant"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(ref, nil, providers.RateLimit{Known: true, RemainingRequests: 0, ResetRequests: 48 * time.Hour})
+	if available, until, _ := tracker.Available(ref); available || !until.Equal(now.Add(24*time.Hour)) {
+		t.Fatalf("Available() = %v, %v; want 24h clamped cooldown", available, until)
+	}
+}
+
 func TestTracker_ProviderFailuresShareCooldownAcrossConfiguredCandidates(t *testing.T) {
 	now := time.Now()
 	groqOne := providers.ModelRef{Provider: "groq", Model: "one"}

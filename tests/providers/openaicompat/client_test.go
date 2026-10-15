@@ -122,6 +122,84 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 	}
 }
 
+func TestClient_ChatAndStreamExposeRateLimitHeaders(t *testing.T) {
+	t.Parallel()
+	chatFixture, streamFixture := fixture(t, "chat.json"), fixture(t, "stream.sse")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-ratelimit-remaining-requests", "0")
+		w.Header().Set("x-ratelimit-reset-requests", "2m59.56s")
+		w.Header().Set("x-ratelimit-remaining-tokens", "0")
+		w.Header().Set("x-ratelimit-reset-tokens", "7.66s")
+		if r.Header.Get("Accept") == "text/event-stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write(streamFixture)
+			return
+		}
+		_, _ = w.Write(chatFixture)
+	}))
+	defer srv.Close()
+
+	c := client(t, srv.URL)
+	chat, err := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRateLimit(t, chat.RateLimit)
+
+	stream, err := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[],"stream":true}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	rateLimiter, ok := stream.(interface{ RateLimit() providers.RateLimit })
+	if !ok {
+		t.Fatal("stream does not expose quota hints")
+	}
+	assertRateLimit(t, rateLimiter.RateLimit())
+}
+
+func TestClient_ChatIgnoresInvalidOrIncompleteRateLimitHeaders(t *testing.T) {
+	t.Parallel()
+	chatFixture := fixture(t, "chat.json")
+	tests := []struct {
+		name          string
+		headers       map[string]string
+		wantKnown     bool
+		wantRemaining int
+	}{
+		{name: "remaining without reset", headers: map[string]string{"x-ratelimit-remaining-requests": "0"}},
+		{name: "invalid remaining", headers: map[string]string{"x-ratelimit-remaining-requests": "bad", "x-ratelimit-reset-requests": "2m"}},
+		{name: "invalid reset", headers: map[string]string{"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "bad"}},
+		{name: "negative remaining", headers: map[string]string{"x-ratelimit-remaining-requests": "-1", "x-ratelimit-reset-requests": "2m"}},
+		{name: "remaining above zero", headers: map[string]string{"x-ratelimit-remaining-requests": "3", "x-ratelimit-reset-requests": "2m"}, wantKnown: true, wantRemaining: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for name, value := range tt.headers {
+					w.Header().Set(name, value)
+				}
+				_, _ = w.Write(chatFixture)
+			}))
+			defer srv.Close()
+			chat, err := client(t, srv.URL).Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if chat.RateLimit.Known != tt.wantKnown || chat.RateLimit.RemainingRequests != tt.wantRemaining {
+				t.Fatalf("RateLimit = %+v, want known=%v remaining requests=%d", chat.RateLimit, tt.wantKnown, tt.wantRemaining)
+			}
+		})
+	}
+}
+
+func assertRateLimit(t *testing.T, got providers.RateLimit) {
+	t.Helper()
+	if !got.Known || got.RemainingRequests != 0 || got.RemainingTokens != 0 || got.ResetRequests != 179*time.Second+560*time.Millisecond || got.ResetTokens != 7*time.Second+660*time.Millisecond {
+		t.Fatalf("RateLimit = %+v, want known zero counts with resets 2m59.56s and 7.66s", got)
+	}
+}
+
 func TestClient_ChatTimeoutOnStalledResponse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		listener := fakenet.Listen()

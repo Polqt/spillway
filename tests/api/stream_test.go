@@ -404,6 +404,52 @@ func TestStream_TierMidStreamFailuresOpenCircuit(t *testing.T) {
 	}
 }
 
+func TestStream_TierSuccessAppliesQuotaHint(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &quotaHintStream{
+			trackedStream: trackedStream{chunks: []string{`{"model":"first"}`}},
+			hint:          providers.RateLimit{Known: true, RemainingRequests: 0, ResetRequests: 2*time.Minute + 59*time.Second + 560*time.Millisecond},
+		}, nil
+	}}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []providers.ModelRef{{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tracker:   tracker,
+		Now:       func() time.Time { return now },
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers:     map[string][]providers.ModelRef{"demo": refs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := serveTierStream(t, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"model":"first"`) {
+		t.Fatalf("first stream response = %d %s", rec.Code, rec.Body)
+	}
+	if available, until, _ := tracker.Available(refs[0]); available || !until.Equal(now.Add(2*time.Minute+59*time.Second+560*time.Millisecond)) {
+		t.Fatalf("first candidate = %v, %v; want quota cooldown until 2m59.56s", available, until)
+	}
+	if rec := serveTierStream(t, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"model":"second"`) {
+		t.Fatalf("spillover stream response = %d %s; want second candidate", rec.Code, rec.Body)
+	}
+	if first.calls.Load() != 1 || second.calls.Load() != 1 {
+		t.Fatalf("provider calls = %d/%d, want 1/1", first.calls.Load(), second.calls.Load())
+	}
+}
+
 func TestStream_TierExhaustionIsPlainHTTPError(t *testing.T) {
 	t.Parallel()
 	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
@@ -467,6 +513,13 @@ type trackedStream struct {
 	closed      func()
 	index       int
 }
+
+type quotaHintStream struct {
+	trackedStream
+	hint providers.RateLimit
+}
+
+func (s *quotaHintStream) RateLimit() providers.RateLimit { return s.hint }
 
 func (s *trackedStream) Recv() (providers.ChatChunk, error) {
 	if s.index < len(s.chunks) {

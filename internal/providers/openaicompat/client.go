@@ -161,7 +161,7 @@ func (c *Client) Chat(ctx context.Context, chat providers.ChatRequest) (provider
 	if len(data) > maxResponseBytes {
 		return providers.ChatResponse{}, fmt.Errorf("%s: chat response exceeds limit", c.name)
 	}
-	return providers.ChatResponse{Body: data}, nil
+	return providers.ChatResponse{Body: data, RateLimit: rateLimit(resp.Header)}, nil
 }
 
 // ChatStream starts an SSE chat completion stream.
@@ -196,7 +196,36 @@ func (c *Client) ChatStream(ctx context.Context, chat providers.ChatRequest) (pr
 		return nil, c.responseError(resp)
 	}
 	timeout.Stop()
-	return &sseStream{body: resp.Body, cancel: cancel, scanner: newScanner(resp.Body), clean: c.clean, name: c.name, idleTimeout: c.timeout}, nil
+	return &sseStream{
+		body: resp.Body, cancel: cancel, scanner: newScanner(resp.Body), clean: c.clean,
+		name: c.name, idleTimeout: c.timeout, rateLimit: rateLimit(resp.Header),
+	}, nil
+}
+
+func rateLimit(header http.Header) providers.RateLimit {
+	requests, resetRequests, requestsKnown := rateLimitPair(
+		header.Get("x-ratelimit-remaining-requests"), header.Get("x-ratelimit-reset-requests"),
+	)
+	tokens, resetTokens, tokensKnown := rateLimitPair(
+		header.Get("x-ratelimit-remaining-tokens"), header.Get("x-ratelimit-reset-tokens"),
+	)
+	return providers.RateLimit{
+		RemainingRequests: requests, RemainingTokens: tokens,
+		ResetRequests: resetRequests, ResetTokens: resetTokens,
+		Known: requestsKnown || tokensKnown,
+	}
+}
+
+func rateLimitPair(remainingValue, resetValue string) (int, time.Duration, bool) {
+	remaining, err := strconv.Atoi(strings.TrimSpace(remainingValue))
+	if err != nil || remaining < 0 {
+		return 0, 0, false
+	}
+	reset, err := time.ParseDuration(strings.TrimSpace(resetValue))
+	if err != nil || reset <= 0 {
+		return 0, 0, false
+	}
+	return remaining, providers.ClampRetryAfter(reset), true
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
@@ -378,10 +407,14 @@ type sseStream struct {
 	clean        *redact.Scrubber
 	name         string
 	idleTimeout  time.Duration
+	rateLimit    providers.RateLimit
 	idleTimedOut atomic.Bool
 	closed       bool
 	done         bool
 }
+
+// RateLimit reports quota hints from the stream's response headers.
+func (s *sseStream) RateLimit() providers.RateLimit { return s.rateLimit }
 
 func (s *sseStream) Recv() (providers.ChatChunk, error) {
 	if s.closed {

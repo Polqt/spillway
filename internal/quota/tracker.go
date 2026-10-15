@@ -89,7 +89,7 @@ func (t *Tracker) Available(ref providers.ModelRef) (ok bool, until time.Time, r
 
 // Observe records an outcome for a configured candidate. Cancellation and
 // request errors leave the cooldown state unchanged.
-func (t *Tracker) Observe(ref providers.ModelRef, err error, _ providers.RateLimit) {
+func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.RateLimit) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, configured := t.configured[ref]; !configured || errors.Is(err, context.Canceled) {
@@ -101,6 +101,15 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, _ providers.RateLim
 		state.rateFailures = 0
 		state.upstreamFailures = 0
 		state.cooldown = cooldown{}
+		if hint.Known {
+			reset := max(
+				exhaustedReset(hint.RemainingRequests, hint.ResetRequests),
+				exhaustedReset(hint.RemainingTokens, hint.ResetTokens),
+			)
+			if reset > 0 {
+				state.cooldown = cooldown{until: now.Add(reset), reason: "rate limited"}
+			}
+		}
 		t.candidates[ref] = state
 		return
 	}
@@ -140,6 +149,13 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, _ providers.RateLim
 		}
 		t.candidates[ref] = state
 	}
+}
+
+func exhaustedReset(remaining int, reset time.Duration) time.Duration {
+	if remaining != 0 || reset <= 0 {
+		return 0
+	}
+	return providers.ClampRetryAfter(reset)
 }
 
 func laterCooldown(current, next cooldown) cooldown {

@@ -10,18 +10,25 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 )
 
+type streamRateLimiter interface {
+	RateLimit() providers.RateLimit
+}
+
 // serveStream relays a provider stream as server-sent events, one flushed
 // "data:" event per chunk, ending with "data: [DONE]". Headers are sent with
 // the first chunk, so a failure before it is still a plain HTTP error.
 // serveStream marks whether response bytes were committed, so callers can
 // spill before the first chunk and still observe upstream failures afterward.
-func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) (err error, committed bool) {
+func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) (committed bool, rateLimit providers.RateLimit, err error) {
 	rec := recordFrom(r.Context())
 	rec.stream = true
 	stream, err := provider.ChatStream(r.Context(), req)
 	if err != nil {
 		rec.err = err
-		return err, false
+		return false, providers.RateLimit{}, err
+	}
+	if rateLimiter, ok := stream.(streamRateLimiter); ok {
+		rateLimit = rateLimiter.RateLimit()
 	}
 	defer func() {
 		if err := stream.Close(); err != nil && rec.err == nil {
@@ -36,12 +43,12 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 		if err != nil && !errors.Is(err, io.EOF) {
 			rec.err = err
 			if !started {
-				return err, false
+				return false, rateLimit, err
 			}
 			if r.Context().Err() == nil {
 				writeStreamError(w, rc, ref, err, writeTimeout)
 			}
-			return err, true
+			return true, rateLimit, err
 		}
 		if !started {
 			startEventStream(w)
@@ -51,11 +58,11 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 			if err := writeEvent(w, rc, []byte("[DONE]"), writeTimeout); err != nil {
 				rec.err = err
 			}
-			return nil, true
+			return true, rateLimit, nil
 		}
 		if err := writeEvent(w, rc, chunk.Data, writeTimeout); err != nil {
 			rec.err = err
-			return nil, true
+			return true, rateLimit, nil
 		}
 	}
 }
