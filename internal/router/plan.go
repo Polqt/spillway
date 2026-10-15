@@ -30,19 +30,25 @@ type Declaration struct {
 
 // Options supplies the validated tier configuration used to build a Router.
 type Options struct {
-	Tiers           map[string][]providers.ModelRef
-	Auto            []string
-	Declarations    map[providers.ModelRef]Declaration
+	Tiers        map[string][]providers.ModelRef
+	Auto         []string
+	Declarations map[providers.ModelRef]Declaration
+	// DifficultyTiers maps each closed difficulty label to its ordered fallback tiers.
 	DifficultyTiers map[string][]string
-	Rules           []Rule
+	// Rules are evaluated in order for auto requests; the first match wins.
+	Rules []Rule
 }
 
 // Rule is a first-match difficulty rule over bounded request features.
 type Rule struct {
-	EstimatedInputTokensGTE  *int
+	// EstimatedInputTokensGTE matches the estimated input size at or above this threshold.
+	EstimatedInputTokensGTE *int
+	// RequestedOutputTokensGTE matches the requested output size at or above this threshold.
 	RequestedOutputTokensGTE *int
-	ToolsPresent             *bool
-	Difficulty               string
+	// ToolsPresent matches whether tool definitions or tool history are present.
+	ToolsPresent *bool
+	// Difficulty is the closed label selected when all conditions match.
+	Difficulty string
 }
 
 // Router resolves virtual models into ordered candidates.
@@ -68,10 +74,14 @@ type candidate struct {
 
 // Plan is the deterministic result of resolving one virtual model.
 type Plan struct {
-	Source       string
-	Mode         string
-	Rule         int
-	Difficulty   string
+	Source string
+	// Mode identifies the routing mode used for this plan.
+	Mode string
+	// Rule is the 1-based matching rule position, or 0 when the default matched.
+	Rule int
+	// Difficulty is the selected closed difficulty label.
+	Difficulty string
+	// SelectedTier is the first configured tier for the selected difficulty.
 	SelectedTier string
 	Tiers        []string
 	Needs        []Capability
@@ -109,6 +119,20 @@ func New(o Options) (*Router, error) {
 		declarations:    make(map[providers.ModelRef]Declaration, len(o.Declarations)),
 		difficultyTiers: make(map[string][]string, len(o.DifficultyTiers)),
 		rules:           slices.Clone(o.Rules),
+	}
+	for i := range r.rules {
+		if value := r.rules[i].EstimatedInputTokensGTE; value != nil {
+			copy := *value
+			r.rules[i].EstimatedInputTokensGTE = &copy
+		}
+		if value := r.rules[i].RequestedOutputTokensGTE; value != nil {
+			copy := *value
+			r.rules[i].RequestedOutputTokensGTE = &copy
+		}
+		if value := r.rules[i].ToolsPresent; value != nil {
+			copy := *value
+			r.rules[i].ToolsPresent = &copy
+		}
 	}
 	for name, refs := range o.Tiers {
 		if name == "" || len(refs) == 0 {

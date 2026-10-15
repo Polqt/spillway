@@ -351,23 +351,31 @@ type ModelDeclaration struct {
 // Router configures the auto virtual model.
 type Router struct {
 	// Auto lists tier names in the order auto tries them (ADR 0008).
-	Auto       []string            `yaml:"auto,omitempty"`
-	Mode       string              `yaml:"mode,omitempty"`
+	Auto []string `yaml:"auto,omitempty"`
+	// Mode selects the opt-in deterministic difficulty rules mode.
+	Mode string `yaml:"mode,omitempty"`
+	// Difficulty maps each closed difficulty label to its ordered fallback tiers.
 	Difficulty map[string][]string `yaml:"difficulty,omitempty"`
-	Rules      []DifficultyRule    `yaml:"rules,omitempty"`
+	// Rules are evaluated in order for auto requests; the first match wins.
+	Rules []DifficultyRule `yaml:"rules,omitempty"`
 }
 
 // DifficultyRule selects a difficulty when every specified condition matches.
 type DifficultyRule struct {
-	When       DifficultyConditions `yaml:"when"`
-	Difficulty string               `yaml:"difficulty"`
+	// When contains the bounded request features matched by this rule.
+	When DifficultyConditions `yaml:"when"`
+	// Difficulty is the closed label selected when all conditions match.
+	Difficulty string `yaml:"difficulty"`
 }
 
 // DifficultyConditions contains the bounded request features rules may inspect.
 type DifficultyConditions struct {
-	EstimatedInputTokensGTE  *int  `yaml:"estimated_input_tokens_gte,omitempty"`
-	RequestedOutputTokensGTE *int  `yaml:"requested_output_tokens_gte,omitempty"`
-	ToolsPresent             *bool `yaml:"tools_present,omitempty"`
+	// EstimatedInputTokensGTE matches estimated input tokens at or above this threshold.
+	EstimatedInputTokensGTE *int `yaml:"estimated_input_tokens_gte,omitempty"`
+	// RequestedOutputTokensGTE matches requested output tokens at or above this threshold.
+	RequestedOutputTokensGTE *int `yaml:"requested_output_tokens_gte,omitempty"`
+	// ToolsPresent matches whether tool definitions or tool history are present.
+	ToolsPresent *bool `yaml:"tools_present,omitempty"`
 }
 
 // Logging configures the program's structured logger.

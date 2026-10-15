@@ -106,6 +106,35 @@ func TestPlan_Selection(t *testing.T) {
 	}
 }
 
+func TestNew_CopiesDifficultyRuleConditions(t *testing.T) {
+	t.Parallel()
+
+	tools := true
+	r, err := router.New(router.Options{
+		Tiers: map[string][]providers.ModelRef{"free": refs(t, "p/free")},
+		Auto:  []string{"free"},
+		Declarations: map[providers.ModelRef]router.Declaration{
+			ref(t, "p/free"): {Capabilities: []router.Capability{router.Tools}},
+		},
+		DifficultyTiers: map[string][]string{
+			"simple": {"free"}, "moderate": {"free"}, "hard": {"free"},
+		},
+		Rules: []router.Rule{{ToolsPresent: &tools, Difficulty: "hard"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tools = false
+	plan, ok, err := r.Plan("auto", []byte(toolsBody))
+	if err != nil || !ok {
+		t.Fatalf("Plan = %v, %v", ok, err)
+	}
+	if plan.Rule != 1 || plan.Difficulty != "hard" {
+		t.Errorf("Plan = rule %d difficulty %q, want rule 1 difficulty hard", plan.Rule, plan.Difficulty)
+	}
+}
+
 func TestPlan_LacksListsOnlyMissingCapabilities(t *testing.T) {
 	t.Parallel()
 	r, err := router.New(router.Options{
