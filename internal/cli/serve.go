@@ -15,6 +15,7 @@ import (
 
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/budget"
+	"github.com/Polqt/spillway/internal/cache"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/gemini"
@@ -196,6 +197,13 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 			return nil, fmt.Errorf("build budget gate: %w", err)
 		}
 	}
+	var exactCache *cache.Cache
+	if cfg.Cache != nil && cfg.Cache.Exact {
+		exactCache, err = cache.New(cfg.Cache.MaxMB<<20, cfg.Cache.TTL, now)
+		if err != nil {
+			return nil, fmt.Errorf("build exact cache: %w", err)
+		}
+	}
 	var allowedHosts []string
 	if cfg.Server.Loopback() {
 		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
@@ -217,6 +225,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		UsageRecorder: usageRecorder,
 		CostEstimator: budget.NewPricer(cfg),
 		BudgetGate:    budgetGate,
+		ExactCache:    exactCache,
 		Now:           now,
 	})
 }

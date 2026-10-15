@@ -114,25 +114,11 @@ func expandValue(value, path string, line int, lookupEnv func(string) (string, b
 	return out.String(), nil
 }
 
-func rejectFutureSections(root *yaml.Node) error {
-	if root.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		key := root.Content[i]
-		milestone := map[string]string{"cache": "v0.4"}[key.Value]
-		if milestone != "" {
-			return fmt.Errorf("%q is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
-		}
-	}
-	return nil
-}
-
 func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store", "pricing", "budgets"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store", "pricing", "budgets", "cache"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -233,7 +219,41 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if err := checkPricingShape(mappingValue(root, "pricing")); err != nil {
 		return err
 	}
-	return checkBudgetsShape(mappingValue(root, "budgets"))
+	if err := checkBudgetsShape(mappingValue(root, "budgets")); err != nil {
+		return err
+	}
+	return checkCacheShape(mappingValue(root, "cache"))
+}
+
+func checkCacheShape(cache *yaml.Node) error {
+	if cache == nil {
+		return nil
+	}
+	if cache.Kind != yaml.MappingNode {
+		return fmt.Errorf("cache (line %d): must be a mapping", cache.Line)
+	}
+	for i := 0; i+1 < len(cache.Content); i += 2 {
+		key, value := cache.Content[i], cache.Content[i+1]
+		if key.Value == "semantic" {
+			return errors.New("cache.semantic is not supported")
+		}
+		if !slices.Contains([]string{"exact", "ttl", "max_mb"}, key.Value) {
+			return fmt.Errorf("cache: unknown field %q", key.Value)
+		}
+		valid := value.Kind == yaml.ScalarNode
+		switch key.Value {
+		case "exact":
+			valid = valid && value.Tag == "!!bool"
+		case "ttl":
+			valid = valid && value.Tag == "!!str"
+		case "max_mb":
+			valid = valid && value.Tag == "!!int"
+		}
+		if !valid {
+			return fmt.Errorf("cache.%s (line %d): has an invalid value", key.Value, value.Line)
+		}
+	}
+	return nil
 }
 
 func checkBudgetsShape(budgets *yaml.Node) error {

@@ -54,6 +54,46 @@ func TestParse_StoreConfig(t *testing.T) {
 	}
 }
 
+func TestParse_ExactCacheConfig(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Parse([]byte(`server:
+  api_keys: [sk-test-local-ci]
+providers:
+  mock: {}
+cache:
+  exact: true
+  ttl: 1h
+  max_mb: 8
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Cache == nil || !cfg.Cache.Exact || cfg.Cache.TTL != time.Hour || cfg.Cache.MaxMB != 8 {
+		t.Fatalf("Cache = %+v, want exact enabled, 1h TTL and 8 MiB", cfg.Cache)
+	}
+}
+
+func TestParse_ExactCacheRejectsUnsupportedConfig(t *testing.T) {
+	t.Parallel()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	for _, tt := range []struct{ name, cache, want string }{
+		{"semantic", "semantic: true\n", "cache.semantic is not supported"},
+		{"unknown", "unknown: true\n", "cache: unknown field"},
+		{"ttl too short", "exact: true\nttl: 999ms\n", "cache.ttl"},
+		{"ttl too long", "exact: true\nttl: 25h\n", "cache.ttl"},
+		{"max too small", "exact: true\nmax_mb: 0\n", "cache.max_mb"},
+		{"max too large", "exact: true\nmax_mb: 1025\n", "cache.max_mb"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Parse([]byte(base + "cache:\n  " + strings.ReplaceAll(strings.TrimSuffix(tt.cache, "\n"), "\n", "\n  ") + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Parse error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_BudgetsValidationAndRedactedOutput(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "usage.db")
@@ -402,7 +442,7 @@ func TestParse_Errors(t *testing.T) {
 		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
 		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
 		{name: "router mode milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.mode is not supported until v0.5"},
-		{name: "cache milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {}\n", want: `"cache" is not supported until v0.4`},
+		{name: "cache semantic milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {semantic: true}\n", want: `cache.semantic is not supported`},
 		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  mock: {}\n", want: "server.listen must be host:port"},
 		{name: "port out of range", yaml: "server:\n  listen: \"127.0.0.1:70000\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},
 		{name: "port not a number", yaml: "server:\n  listen: \"127.0.0.1:http\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},

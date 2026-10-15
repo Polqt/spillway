@@ -34,6 +34,75 @@ type Config struct {
 	Store   *Store                      `yaml:"store,omitempty"`
 	Pricing map[string]Price            `yaml:"pricing,omitempty"`
 	Budgets *Budgets                    `yaml:"budgets,omitempty"`
+	Cache   *Cache                      `yaml:"cache,omitempty"`
+}
+
+// Cache configures the optional in-memory exact response cache.
+type Cache struct {
+	Exact bool          `yaml:"exact"`
+	TTL   time.Duration `yaml:"ttl"`
+	MaxMB int           `yaml:"max_mb"`
+}
+
+// UnmarshalYAML decodes only the supported cache fields and applies defaults.
+func (c *Cache) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("cache (line %d): must be a mapping", n.Line)
+	}
+	c.TTL, c.MaxMB = time.Hour, 64
+	seen := make(map[string]bool, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		if key.Value == "semantic" {
+			return errors.New("cache.semantic is not supported")
+		}
+		if key.Value != "exact" && key.Value != "ttl" && key.Value != "max_mb" {
+			return fmt.Errorf("cache: unknown field %q", key.Value)
+		}
+		if seen[key.Value] {
+			return fmt.Errorf("cache.%s (line %d): duplicate field", key.Value, key.Line)
+		}
+		seen[key.Value] = true
+		switch key.Value {
+		case "exact":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+				return fmt.Errorf("cache.exact (line %d): must be true or false", value.Line)
+			}
+			c.Exact = value.Value == "true"
+		case "ttl":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return fmt.Errorf("cache.ttl (line %d): must be a duration from 1s to 24h", value.Line)
+			}
+			ttl, err := time.ParseDuration(value.Value)
+			if err != nil || ttl < time.Second || ttl > 24*time.Hour {
+				return fmt.Errorf("cache.ttl (line %d): must be a duration from 1s to 24h", value.Line)
+			}
+			c.TTL = ttl
+		case "max_mb":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!int" {
+				return fmt.Errorf("cache.max_mb (line %d): must be an integer from 1 to 1024", value.Line)
+			}
+			maxMB, err := strconv.Atoi(value.Value)
+			if err != nil || maxMB < 1 || maxMB > 1024 {
+				return fmt.Errorf("cache.max_mb (line %d): must be an integer from 1 to 1024", value.Line)
+			}
+			c.MaxMB = maxMB
+		}
+	}
+	return nil
+}
+
+// MarshalYAML writes the cache limits in human-readable form.
+func (c Cache) MarshalYAML() (any, error) {
+	ttl := c.TTL.String()
+	if c.TTL == 0 {
+		ttl = time.Hour.String()
+	}
+	maxMB := c.MaxMB
+	if maxMB == 0 {
+		maxMB = 64
+	}
+	return map[string]any{"exact": c.Exact, "ttl": ttl, "max_mb": maxMB}, nil
 }
 
 // Budgets configures soft local spend caps in integer micro-USD.
@@ -426,9 +495,6 @@ func ParseWithEnv(data []byte, lookupEnv func(string) (string, bool)) (Config, e
 	}
 	if lookupEnv == nil {
 		lookupEnv = func(string) (string, bool) { return "", false }
-	}
-	if err := rejectFutureSections(node.Content[0]); err != nil {
-		return Config{}, fmt.Errorf("config: %w", err)
 	}
 	if err := rejectUnknownFields(node.Content[0]); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)

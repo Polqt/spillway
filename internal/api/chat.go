@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/budget"
+	"github.com/Polqt/spillway/internal/cache"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/router"
 )
@@ -31,6 +32,7 @@ type chatHandler struct {
 	captureStreamUsage bool
 	pricer             attemptPricer
 	gate               *budget.Gate
+	exactCache         *cache.Cache
 }
 
 // chatBody is the part of a chat request Spillway acts on. Model is a
@@ -43,12 +45,33 @@ type chatBody struct {
 }
 
 func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestBypass := bypassCache(r)
+	if h.exactCache != nil {
+		if requestBypass {
+			recordFrom(r.Context()).usage.Cache = "bypass"
+			w.Header().Set("X-Spillway-Cache", "bypass")
+		} else {
+			recordFrom(r.Context()).usage.Cache = "miss"
+			w.Header().Set("X-Spillway-Cache", "miss")
+		}
+	}
 	body, ok := decodeChat(w, r, h.bodyReadTimeout)
 	if !ok {
 		return
 	}
 	recordFrom(r.Context()).setRequestedModel(*body.Model)
 	recordFrom(r.Context()).configure(h.pricer, body.RawBody, h.gate, h.now)
+	rec := recordFrom(r.Context())
+	cacheBypass := body.Stream || requestBypass
+	if h.exactCache != nil {
+		if cacheBypass {
+			rec.usage.Cache = "bypass"
+			w.Header().Set("X-Spillway-Cache", "bypass")
+		} else {
+			rec.usage.Cache = "miss"
+			w.Header().Set("X-Spillway-Cache", "miss")
+		}
+	}
 	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
 	if err != nil {
 		rec := recordFrom(r.Context())
@@ -58,8 +81,26 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writePlanError(w, *body.Model, err)
 		return
 	}
+	if h.exactCache != nil && !cacheBypass {
+		if entry, ok := h.exactCache.Get(rec.clientApp, body.RawBody); ok {
+			rec.usage.Cache = "hit"
+			rec.usage.PromptTokens = entry.PromptTokens
+			rec.usage.CompletionTokens = entry.CompletionTokens
+			rec.usage.UsageSource = entry.UsageSource
+			rec.usage.CostMicroUSD = 0
+			rec.usage.CostSource = "none"
+			rec.provider, rec.model, rec.route = entry.Provider, entry.Model, entry.Route
+			w.Header().Set("X-Spillway-Cache", "hit")
+			w.Header().Set("X-Spillway-Provider", entry.Provider)
+			w.Header().Set("X-Spillway-Model", entry.Model)
+			w.Header().Set("X-Spillway-Route", entry.Route)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(entry.Body)
+			return
+		}
+	}
 	if virtual {
-		h.servePlan(w, r, plan, body)
+		h.servePlan(w, r, plan, body, cacheBypass)
 		return
 	}
 	setRoute(w, r, "direct")
@@ -82,7 +123,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rec := recordFrom(r.Context())
+	rec = recordFrom(r.Context())
 	rec.setProvider(ref)
 	// Set before calling the provider so they are present on errors too.
 	w.Header().Set("X-Spillway-Provider", ref.Provider)
@@ -117,6 +158,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recordResponseUsage(resp.Body, rec)
 	rec.usage.ErrorKind = ""
 	rec.endAttempt("success")
+	h.storeCacheEntry(rec, body, resp.Body, cacheBypass)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp.Body)
 }
@@ -145,7 +187,7 @@ type candidateFailure struct {
 	until  time.Time
 }
 
-func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan router.Plan, body chatBody) {
+func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan router.Plan, body chatBody, cacheBypass bool) {
 	tier := plan.Source
 	if plan.Source == "tier" && len(plan.Tiers) > 0 {
 		tier = plan.Tiers[0]
@@ -238,6 +280,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 				rec.setProvider(ref)
 				w.Header().Set("X-Spillway-Provider", ref.Provider)
 				w.Header().Set("X-Spillway-Model", ref.Model)
+				h.storeCacheEntry(rec, body, resp.Body, cacheBypass)
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write(resp.Body)
 				return
@@ -292,6 +335,21 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	}
 	rec.usage.ErrorKind = "no_candidate_available"
 	writeError(w, http.StatusServiceUnavailable, message, typeAPI, "no_candidate_available")
+}
+
+func bypassCache(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Spillway-Cache")), "bypass")
+}
+
+func (h *chatHandler) storeCacheEntry(rec *requestRecord, body chatBody, response []byte, bypass bool) {
+	if h.exactCache == nil || body.Stream || bypass || len(response) == 0 || len(response) > 1<<20 {
+		return
+	}
+	h.exactCache.Set(rec.clientApp, body.RawBody, cache.Entry{
+		Body: response, Provider: rec.provider, Model: rec.model, Route: rec.route,
+		PromptTokens: rec.usage.PromptTokens, CompletionTokens: rec.usage.CompletionTokens,
+		UsageSource: rec.usage.UsageSource,
+	})
 }
 
 func allBudgetBlocked(failures []candidateFailure) bool {

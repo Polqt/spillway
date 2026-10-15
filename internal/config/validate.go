@@ -52,6 +52,9 @@ func (c Config) validate() error {
 	if err := validatePricing(c.Pricing, c.Providers); err != nil {
 		return err
 	}
+	if c.Cache != nil && (c.Cache.TTL < time.Second || c.Cache.TTL > 24*time.Hour || c.Cache.MaxMB < 1 || c.Cache.MaxMB > 1024) {
+		return errors.New("cache.ttl must be 1s to 24h and cache.max_mb must be 1 to 1024")
+	}
 	return validateBudgets(c)
 }
 
