@@ -1,0 +1,22 @@
+# Evaluation-only deterministic rules config, paired with config.eval.yaml.
+# Keep the candidate set and all request-serving settings identical between arms.
+server:
+  listen: "127.0.0.1:8081"
+  api_keys:
+    - name: evaluation
+      key: "sk-test-spillway-evaluation"
+providers:
+  mock: {}
+tiers:
+  demo:
+    models: [mock/echo]
+router:
+  mode: rules
+  auto: [demo]
+  difficulty:
+    simple: [demo]
+    moderate: [demo]
+    hard: [demo]
+  rules:
+    - when: {estimated_input_tokens_gte: 1}
+      difficulty: hard
