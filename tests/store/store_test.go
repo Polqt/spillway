@@ -168,3 +168,49 @@ func TestOpen_RequiresPathAndRetention(t *testing.T) {
 		t.Fatal("Open empty options succeeded, want error")
 	}
 }
+
+func TestRecord_CountsWriteFailures(t *testing.T) {
+	s, err := store.Open(t.Context(), store.Options{Path: filepath.Join(t.TempDir(), "usage.db"), Retention: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Record(t.Context(), store.Request{RequestedModel: "mock/echo"}); err == nil {
+		t.Fatal("Record on closed store succeeded, want failure")
+	}
+	if got := s.RecordFailures(); got != 1 {
+		t.Errorf("RecordFailures() = %d, want 1", got)
+	}
+}
+
+func TestRecord_BoundsAndCleansRequestedModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := store.Open(t.Context(), store.Options{Path: path, Retention: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Record(t.Context(), store.Request{RequestedModel: "mock/\x01" + strings.Repeat("m", 260)}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var got string
+	if err := db.QueryRowContext(t.Context(), "SELECT requested_model FROM requests").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 256 {
+		t.Fatalf("requested model bytes = %d, want 256", len(got))
+	}
+	if strings.ContainsRune(got, '\x01') {
+		t.Fatalf("requested model retained non-printable byte: %q", got)
+	}
+	if got[5] != '?' {
+		t.Fatalf("requested model non-printable byte = %q, want '?': %q", got[5], got)
+	}
+}

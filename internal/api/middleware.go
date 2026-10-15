@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 // requestRecord collects what inner handlers learn about a request, for the
@@ -22,6 +23,8 @@ type requestRecord struct {
 	attempts  int
 	stream    bool
 	err       error
+	usage     store.Request
+	attemptAt time.Time
 }
 
 func (rec *requestRecord) setProvider(ref providers.ModelRef) {
@@ -32,8 +35,23 @@ func (rec *requestRecord) beginTier(tier string) {
 	rec.tier = tier
 }
 
-func (rec *requestRecord) beginAttempt() {
+func (rec *requestRecord) beginAttempt(ref providers.ModelRef) {
 	rec.attempts++
+	if len(rec.usage.Attempts) >= 16 {
+		return
+	}
+	rec.usage.Attempts = append(rec.usage.Attempts, store.Attempt{Provider: ref.Provider, Model: ref.Model})
+	rec.attemptAt = time.Now()
+}
+
+func (rec *requestRecord) endAttempt(outcome string) {
+	if len(rec.usage.Attempts) == 0 || rec.attemptAt.IsZero() {
+		return
+	}
+	attempt := &rec.usage.Attempts[len(rec.usage.Attempts)-1]
+	attempt.Outcome = outcome
+	attempt.LatencyMS = time.Since(rec.attemptAt).Milliseconds()
+	rec.attemptAt = time.Time{}
 }
 
 func (rec *requestRecord) setStream() {
@@ -79,7 +97,9 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
+func accessLog(logger *slog.Logger, recorder interface {
+	Record(context.Context, store.Request) error
+}, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &requestRecord{}
@@ -88,6 +108,29 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 		if sw.status == 0 {
 			// net/http sends 200 for a handler that writes nothing.
 			sw.status = http.StatusOK
+		}
+		if recorder != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions" {
+			usage := rec.usage
+			usage.At = start
+			usage.ClientApp = rec.clientApp
+			usage.Route = rec.route
+			usage.Tier = rec.tier
+			usage.Provider = rec.provider
+			usage.Model = rec.model
+			usage.Status = sw.status
+			usage.Stream = rec.stream
+			usage.LatencyMS = time.Since(start).Milliseconds()
+			if usage.UsageSource == "" {
+				usage.UsageSource = "none"
+			}
+			if usage.ErrorKind == "" && sw.status >= http.StatusBadRequest {
+				usage.ErrorKind = "request_error"
+			}
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+			if err := recorder.Record(ctx, usage); err != nil {
+				logger.ErrorContext(ctx, "record usage failed", "error_kind", "store_write_failed", "error", err)
+			}
+			cancel()
 		}
 
 		attrs := []any{

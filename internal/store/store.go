@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -80,15 +81,16 @@ type Attempt struct {
 
 // Store owns the database connection and hourly pruner.
 type Store struct {
-	db         *sql.DB
-	retention  time.Duration
-	now        func() time.Time
-	cancel     context.CancelFunc
-	done       chan struct{}
-	closeOnce  sync.Once
-	closeErr   error
-	pruneErrMu sync.Mutex
-	pruneErr   error
+	db             *sql.DB
+	retention      time.Duration
+	now            func() time.Time
+	cancel         context.CancelFunc
+	done           chan struct{}
+	closeOnce      sync.Once
+	closeErr       error
+	pruneErrMu     sync.Mutex
+	pruneErr       error
+	recordFailures atomic.Int64
 }
 
 // Open creates or migrates the database, prunes expired rows and starts its
@@ -192,7 +194,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 }
 
 // Record writes a request and its attempts in one transaction.
-func (s *Store) Record(ctx context.Context, r Request) error {
+func (s *Store) Record(ctx context.Context, r Request) (recordErr error) {
+	defer func() {
+		if recordErr != nil {
+			s.recordFailures.Add(1)
+		}
+	}()
 	if r.At.IsZero() {
 		r.At = s.now()
 	}
@@ -246,6 +253,11 @@ func (s *Store) Record(ctx context.Context, r Request) error {
 		return fmt.Errorf("commit usage record: %w", err)
 	}
 	return nil
+}
+
+// RecordFailures returns the number of failed usage record writes.
+func (s *Store) RecordFailures() int64 {
+	return s.recordFailures.Load()
 }
 
 func (s *Store) prune(ctx context.Context) error {

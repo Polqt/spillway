@@ -50,8 +50,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
 	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, nil), scrubber))
+	var usageStore *store.Store
 	if cfg.Store != nil {
-		usageStore, err := store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
+		usageStore, err = store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
 		if err != nil {
 			report(stderr, "spillway: %v\n", err)
 			return 1
@@ -70,7 +71,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	}
 	slices.Sort(attested)
 	logger.InfoContext(ctx, "free-tier providers are user-attested", "providers", attested)
-	handler, err := newHandler(cfg, logger)
+	handler, err := newHandler(cfg, logger, usageStore)
 	if err != nil {
 		report(stderr, "spillway: %v\n", err)
 		return 1
@@ -94,7 +95,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 }
 
 // newHandler wires the configured providers and local keys into the API.
-func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
+func newHandler(cfg config.Config, logger *slog.Logger, usageStore *store.Store) (http.Handler, error) {
 	var ps []providers.Provider
 	for name := range cfg.Providers {
 		switch name {
@@ -191,15 +192,22 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 	if cfg.Server.Loopback() {
 		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
 	}
+	var usageRecorder interface {
+		Record(context.Context, store.Request) error
+	}
+	if usageStore != nil {
+		usageRecorder = usageStore
+	}
 	return api.NewHandler(api.Options{
-		Providers:    set,
-		Router:       planner,
-		Tiers:        tiers,
-		Tracker:      tracker,
-		LocalKeys:    keys,
-		AllowedHosts: allowedHosts,
-		Logger:       logger,
-		Now:          now,
+		Providers:     set,
+		Router:        planner,
+		Tiers:         tiers,
+		Tracker:       tracker,
+		LocalKeys:     keys,
+		AllowedHosts:  allowedHosts,
+		Logger:        logger,
+		UsageRecorder: usageRecorder,
+		Now:           now,
 	})
 }
 

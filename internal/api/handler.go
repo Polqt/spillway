@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 // LocalKey is one local key and the name of the client app that presents it.
@@ -52,6 +54,10 @@ type Options struct {
 	// LoopbackHosts only when listening on loopback.
 	AllowedHosts []string
 	Logger       *slog.Logger
+	// UsageRecorder records completed chat request metadata when configured.
+	UsageRecorder interface {
+		Record(context.Context, store.Request) error
+	}
 	// Now supplies the clock used to format cooldown retry times.
 	Now               func() time.Time
 	BodyReadTimeout   time.Duration
@@ -116,7 +122,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	if o.AllowedHosts != nil {
 		h = hostCheck(o.AllowedHosts, h)
 	}
-	h = accessLog(o.Logger, h)
+	h = accessLog(o.Logger, o.UsageRecorder, h)
 	h = recoverPanics(o.Logger, h)
 	return h, nil
 }

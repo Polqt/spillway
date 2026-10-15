@@ -43,8 +43,12 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	recordFrom(r.Context()).setRequestedModel(*body.Model)
 	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
 	if err != nil {
+		rec := recordFrom(r.Context())
+		rec.addPlanSkips(plan.Skipped)
+		rec.usage.ErrorKind = setPlanErrorKind(err)
 		setRoute(w, r, planErrorRoute(*body.Model, plan))
 		h.writePlanError(w, *body.Model, err)
 		return
@@ -67,18 +71,31 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
-		if committed, _, err := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout); err != nil && !committed {
-			rec.err = err
+		rec.beginAttempt(ref)
+		committed, _, err := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+		if err != nil {
+			rec.setError(err)
+			rec.endAttempt(candidateErrorKind(err))
+		} else {
+			rec.usage.ErrorKind = ""
+			rec.endAttempt("success")
+		}
+		if err != nil && !committed {
 			writeProviderError(w, r, ref, err)
 		}
 		return
 	}
+	rec.beginAttempt(ref)
 	resp, err := provider.Chat(r.Context(), req)
 	if err != nil {
-		rec.err = err
+		rec.setError(err)
+		rec.endAttempt(candidateErrorKind(err))
 		writeProviderError(w, r, ref, err)
 		return
 	}
+	rec.usage.ErrorKind = ""
+	rec.endAttempt("success")
+	recordResponseUsage(resp.Body, &rec.usage)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp.Body)
 }
@@ -115,6 +132,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	candidates := plan.Eligible
 	rec := recordFrom(r.Context())
 	rec.beginTier(tier)
+	rec.addPlanSkips(plan.Skipped)
 	failures := make([]candidateFailure, 0, len(plan.Skipped)+len(candidates))
 	for _, skip := range plan.Skipped {
 		failures = append(failures, candidateFailure{ref: skip.Ref, reason: skip.Reason})
@@ -132,6 +150,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		if h.tracker != nil {
 			if available, until, reason := h.tracker.Available(ref); !available {
 				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until}
+				rec.addSkip(ref, fixedSkipReason(reason))
 				failures = append(failures, failure)
 				eligibleFailures = append(eligibleFailures, failure)
 				continue
@@ -143,6 +162,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			err := providers.ErrModelNotFound
 			reason := candidateReason(err)
 			failure := candidateFailure{ref: ref, reason: reason}
+			rec.addSkip(ref, "unavailable")
 			failures = append(failures, failure)
 			eligibleFailures = append(eligibleFailures, failure)
 			h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
@@ -152,7 +172,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		route := candidateRoute(plan, candidateTier, i+1, len(candidates))
 		setRoute(w, r, route)
 		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
-		rec.beginAttempt()
+		rec.beginAttempt(ref)
 		var err error
 		if body.Stream {
 			rec.setProvider(ref)
@@ -162,6 +182,13 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			var hint providers.RateLimit
 			committed, hint, err = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
 			if committed {
+				if err != nil {
+					rec.setError(err)
+					rec.endAttempt(candidateErrorKind(err))
+				} else {
+					rec.usage.ErrorKind = ""
+					rec.endAttempt("success")
+				}
 				if h.tracker != nil && r.Context().Err() == nil {
 					h.tracker.Observe(ref, err, hint)
 				}
@@ -170,6 +197,9 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		} else {
 			resp, chatErr := provider.Chat(r.Context(), req)
 			if chatErr == nil {
+				rec.usage.ErrorKind = ""
+				rec.endAttempt("success")
+				recordResponseUsage(resp.Body, &rec.usage)
 				if h.tracker != nil {
 					h.tracker.Observe(ref, nil, resp.RateLimit)
 				}
@@ -182,7 +212,12 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			}
 			err = chatErr
 		}
+		if err != nil {
+			rec.setError(err)
+			rec.endAttempt(candidateErrorKind(err))
+		}
 		if r.Context().Err() != nil {
+			rec.usage.ErrorKind = "client_disconnected"
 			return
 		}
 		if h.tracker != nil {
@@ -203,7 +238,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		}
 		h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
-			rec.err = err
+			rec.setError(err)
 			writeProviderError(w, r, ref, err)
 			return
 		}
@@ -213,10 +248,12 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
 	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
+		rec.usage.ErrorKind = "rate_limit_exceeded"
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, message, typeAPI, "rate_limit_exceeded")
 		return
 	}
+	rec.usage.ErrorKind = "no_candidate_available"
 	writeError(w, http.StatusServiceUnavailable, message, typeAPI, "no_candidate_available")
 }
 
