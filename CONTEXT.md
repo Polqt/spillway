@@ -84,7 +84,9 @@ client app (OpenAI SDK)
 
 The router is layered so that most requests never need an LLM call to be routed.
 
-1. **Rules (~0 ms).** A model reference (`model: "groq/llama-3.1-8b-instant"`) passes through as-is, plus the required capabilities: vision, tools, JSON mode, and context length versus token count. A virtual model (`"auto"`, or a tier such as `"spillway/cheap"`) enables routing.
+1. **Rules (~0 ms).** An explicit model reference (`model: "groq/llama-3.1-8b-instant"`) passes through as-is.
+   In v0.2, a tier virtual model such as `"spillway/cheap"` selects its configured candidates in order; capability checks are deferred.
+   The `"auto"` virtual model and capability-based routing arrive in v0.3.
 2. **Embedding classifier (~5–20 ms).** Embed the prompt, then run kNN against labeled examples (`simple`, `coding`, `reasoning`, `creative`, `long-context`) to get a tier and a confidence score.
 3. **LLM judge (low confidence only).** If confidence is below the threshold, ask a small local Llama via Ollama for a difficulty score from 1 to 5. Cache decisions by prompt hash.
 4. **Cascade (optional, per config).** Try the cheap tier first. Validate the response (JSON validity, refusal detection, length sanity). Escalate one tier if it fails.
@@ -133,7 +135,7 @@ The model names above are placeholders. The adapters should fetch or refresh eac
 
 - `POST /v1/chat/completions`: OpenAI-compatible, with streaming and tools.
 - `POST /v1/embeddings`
-- `GET  /v1/models`: real models plus the virtual ones (`auto`, `spillway/cheap`, `spillway/smart`).
+- `GET  /v1/models`: configured provider models and `spillway/<tier>` virtual models in v0.2; `auto` is planned for v0.3.
 - `GET  /healthz`
 - `GET  /dashboard`: the embedded UI.
 - `GET  /api/usage`, `/api/decisions`, `/api/quotas`: JSON endpoints that back the dashboard.
@@ -198,8 +200,8 @@ A provider that speaks the OpenAI API is a preset in `openaicompat`, not a new p
 ## 11. Milestones
 
 1. **v0.1 Proxy.** OpenAI-compatible API with streaming. Adapters for OpenAI-compatible providers (Groq, OpenRouter, Ollama) plus Gemini. A config loader.
-2. **v0.2 Spillover.** User-named tiers, spillover through candidates in tier order, quota tracking, and circuit breakers.
-3. **v0.3 Rules router.** Capability detection, `auto` and tier virtual models, and route reasons in headers.
+2. **v0.2 Spillover.** User-named tiers exposed as `spillway/<tier>` virtual models, spillover through candidates in tier order, quota tracking, and circuit breakers.
+3. **v0.3 Rules router.** Capability detection, `auto`, and route reasons in headers.
 4. **v0.4 Observability.** SQLite usage logs, budgets, exact cache, and the embedded dashboard.
 5. **v0.5 Smart routing.** The embedding classifier, the Llama judge via Ollama, and the cascade mode.
 6. **v1.0.** GoReleaser binaries, a Docker image, docs, and `spillway init` for interactive setup.

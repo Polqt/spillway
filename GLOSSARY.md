@@ -50,3 +50,28 @@ _Avoid_: project, consumer, caller
 Sending a request to its next candidate, in tier order, before any part of the response has reached the client.
 Once the client has received any of the response, a failure ends it with an error instead.
 _Avoid_: fallback, failover, retry, chain
+
+**Cooldown**:
+A period during which a candidate is skipped after a rate limit or another temporary failure.
+The provider's retry time is honored when it is available.
+_Avoid_: backoff, pause
+
+**Circuit breaker**:
+A temporary stop on a candidate after repeated upstream failures.
+The candidate becomes eligible again when the breaker's cooldown ends.
+_Avoid_: breaker state
+
+**Zero-spend tier**:
+A tier that only accepts models Spillway can identify as free, unless `allow_spend: true` explicitly opts into paid models.
+For Groq and Gemini, eligibility depends on the user's `free_tier: true` attestation.
+_Avoid_: free tier
+
+**Free-tier attestation**:
+The user's `free_tier: true` config claim that their Groq account has no paid plan or their Gemini project has no billing.
+Spillway cannot verify the claim or detect billing changes.
+_Avoid_: verified free tier
+
+**Exhaustion**:
+The state where every candidate in a tier is unavailable or failed for a request.
+Spillway reports each candidate and its reason in an OpenAI-shaped error.
+_Avoid_: tier failure
