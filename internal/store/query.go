@@ -42,7 +42,8 @@ type CostQuality struct {
 // CostQuality counts requests whose spend includes estimated or unknown cost.
 func (s *Store) CostQuality(ctx context.Context, since time.Time) (CostQuality, error) {
 	var result CostQuality
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(usage_source = 'estimated'), 0), COALESCE(SUM(cost_source IN ('unknown', 'mixed')), 0)
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(usage_source = 'estimated'), 0),
+		COALESCE(SUM(EXISTS (SELECT 1 FROM attempts WHERE attempts.request_id = requests.id AND attempts.cost_source = 'unknown')), 0)
 		FROM requests WHERE at_ns >= ?`, since.UTC().UnixNano()).Scan(&result.EstimatedRows, &result.UnknownRows)
 	if err != nil {
 		return CostQuality{}, fmt.Errorf("query usage cost quality: %w", err)
@@ -61,12 +62,14 @@ func (s *Store) Usage(ctx context.Context, q UsageQuery) (result []UsageRow, ret
 	}
 	query := `SELECT ` + group + `, COUNT(*), SUM(status >= 400), SUM(cache = 'hit'),
 		SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_micro_usd),
-		SUM(usage_source = 'estimated'), SUM(cost_source IN ('unknown', 'mixed'))
+	SUM(usage_source = 'estimated'),
+	SUM(EXISTS (SELECT 1 FROM attempts WHERE attempts.request_id = requests.id AND attempts.cost_source = 'unknown'))
 		FROM requests WHERE at_ns >= ? AND at_ns < ? GROUP BY 1 ORDER BY 1`
 	rows, err := s.db.QueryContext(ctx, query, q.Since.UTC().UnixNano(), q.Until.UTC().UnixNano())
 	if err != nil {
 		return nil, fmt.Errorf("query usage totals: %w", err)
 	}
+	result = make([]UsageRow, 0)
 	defer func() {
 		if err := rows.Close(); err != nil && retErr == nil {
 			retErr = fmt.Errorf("close usage totals query: %w", err)
@@ -151,18 +154,24 @@ func (s *Store) Recent(ctx context.Context, q RecentQuery) (requests []Request, 
 	if err := rows.Err(); err != nil {
 		return nil, "", fmt.Errorf("read recent requests: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, "", fmt.Errorf("close recent request query: %w", err)
+	}
 	more := len(requests) > q.Limit
 	if more {
 		requests = requests[:q.Limit]
 		ids = ids[:q.Limit]
 		timestamps = timestamps[:q.Limit]
 	}
-	for i := range requests {
-		attempts, err := s.requestAttempts(ctx, ids[i])
-		if err != nil {
-			return nil, "", err
+	attempts, err := s.requestAttempts(ctx, ids)
+	if err != nil {
+		return nil, "", err
+	}
+	for i, id := range ids {
+		requests[i].Attempts = attempts[id]
+		if requests[i].Attempts == nil {
+			requests[i].Attempts = make([]Attempt, 0)
 		}
-		requests[i].Attempts = attempts
 	}
 	if more && len(ids) > 0 {
 		page.At, page.ID = timestamps[len(timestamps)-1], ids[len(ids)-1]
@@ -175,9 +184,18 @@ func (s *Store) Recent(ctx context.Context, q RecentQuery) (requests []Request, 
 	return requests, next, nil
 }
 
-func (s *Store) requestAttempts(ctx context.Context, requestID int64) (attempts []Attempt, retErr error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT at_ns, provider, model, outcome, latency_ms, prompt_tokens,
-		completion_tokens, usage_source, cost_micro_usd, cost_source FROM attempts WHERE request_id = ? ORDER BY id`, requestID)
+func (s *Store) requestAttempts(ctx context.Context, requestIDs []int64) (attempts map[int64][]Attempt, retErr error) {
+	attempts = make(map[int64][]Attempt, len(requestIDs))
+	if len(requestIDs) == 0 {
+		return attempts, nil
+	}
+	idsJSON, err := json.Marshal(requestIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode recent request ids: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT request_id, at_ns, provider, model, outcome, latency_ms, prompt_tokens,
+		completion_tokens, usage_source, cost_micro_usd, cost_source FROM attempts
+		WHERE request_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?)) ORDER BY request_id, id`, string(idsJSON))
 	if err != nil {
 		return nil, fmt.Errorf("query request attempts: %w", err)
 	}
@@ -187,14 +205,15 @@ func (s *Store) requestAttempts(ctx context.Context, requestID int64) (attempts 
 		}
 	}()
 	for rows.Next() {
+		var requestID int64
 		var a Attempt
 		var at int64
-		if err := rows.Scan(&at, &a.Provider, &a.Model, &a.Outcome, &a.LatencyMS, &a.PromptTokens,
+		if err := rows.Scan(&requestID, &at, &a.Provider, &a.Model, &a.Outcome, &a.LatencyMS, &a.PromptTokens,
 			&a.CompletionTokens, &a.UsageSource, &a.CostMicroUSD, &a.CostSource); err != nil {
 			return nil, fmt.Errorf("read request attempts: %w", err)
 		}
 		a.At = time.Unix(0, at).UTC()
-		attempts = append(attempts, a)
+		attempts[requestID] = append(attempts[requestID], a)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read request attempts: %w", err)

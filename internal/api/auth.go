@@ -35,21 +35,22 @@ func newAuthenticator(keys []LocalKey) (*authenticator, error) {
 	return a, nil
 }
 
-// clientApp returns the name of the client app whose local key is token.
+// match returns the client app and dashboard permission for token.
 // It compares against every key with no early exit and selects the match
 // without branching, so timing reveals neither whether nor which key matched.
-func (a *authenticator) clientApp(token string) (string, bool) {
+func (a *authenticator) match(token string) (string, bool, bool) {
 	presented := sha256.Sum256([]byte(token))
-	idx, matched := 0, 0
+	idx, matched, dashboard := 0, 0, 0
 	for i, d := range a.digests {
 		eq := subtle.ConstantTimeCompare(presented[:], d[:])
 		idx = subtle.ConstantTimeSelect(eq, i, idx)
+		dashboard = subtle.ConstantTimeSelect(eq, boolInt(a.dashboard[i]), dashboard)
 		matched |= eq
 	}
 	if matched != 1 {
-		return "", false
+		return "", false, false
 	}
-	return a.names[idx], true
+	return a.names[idx], dashboard == 1, true
 }
 
 // middleware requires "Authorization: Bearer <local key>" on every path
@@ -61,28 +62,18 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			return
 		}
 		scheme, token, hasToken := strings.Cut(r.Header.Get("Authorization"), " ")
-		name, ok := a.clientApp(token)
+		name, dashboard, ok := a.match(token)
 		if !hasToken || !strings.EqualFold(scheme, "Bearer") || !ok {
 			writeError(w, http.StatusUnauthorized, authFailedMessage, typeAuthentication, "invalid_api_key")
 			return
 		}
 		recordFrom(r.Context()).clientApp = name
-		if strings.HasPrefix(r.URL.Path, "/api") && !a.hasDashboardKey(token) {
+		if strings.HasPrefix(r.URL.Path, "/api") && !dashboard {
 			writeError(w, http.StatusForbidden, "This API key does not have dashboard access.", "permission_denied", "permission_denied")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (a *authenticator) hasDashboardKey(token string) bool {
-	presented := sha256.Sum256([]byte(token))
-	allowed := 0
-	for i, digest := range a.digests {
-		equal := subtle.ConstantTimeCompare(presented[:], digest[:])
-		allowed |= equal & boolInt(a.dashboard[i])
-	}
-	return allowed == 1
 }
 
 func boolInt(value bool) int {

@@ -164,6 +164,10 @@ func TestDashboardAPI_UsageDecisionsBudgetAndQuotas(t *testing.T) {
 	if !strings.Contains(budgetResponse.Body.String(), `"includes_estimated_costs":true`) || !strings.Contains(budgetResponse.Body.String(), `"includes_unknown_costs":true`) {
 		t.Errorf("budget quality flags missing: %s", budgetResponse.Body)
 	}
+	quotaResponse := dashboardRequest(t, handler, "/api/quotas", dashboardKey, "127.0.0.1")
+	if !strings.Contains(quotaResponse.Body.String(), `"provider":"mock"`) || !strings.Contains(quotaResponse.Body.String(), `"breaker_state":"closed"`) {
+		t.Errorf("quota snapshot missing candidate state: %s", quotaResponse.Body)
+	}
 }
 
 func TestDashboardAPI_QueryBoundsUseOpenAIErrorShape(t *testing.T) {
