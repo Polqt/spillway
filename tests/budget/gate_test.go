@@ -118,6 +118,13 @@ func TestGate_SeedsSpendFromStore(t *testing.T) {
 	}
 }
 
+func TestGate_RejectsNegativeLimit(t *testing.T) {
+	_, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: -1, MonthlyMicroUSD: 10}})
+	if err == nil {
+		t.Fatal("NewGate accepted a negative daily limit alongside a positive monthly limit")
+	}
+}
+
 func TestGate_SeedsSpendFromPersistedStoreAfterRestart(t *testing.T) {
 	now := time.Date(2026, time.June, 12, 8, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "usage.db")

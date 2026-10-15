@@ -38,6 +38,9 @@ type Gate struct {
 
 // NewGate creates a spend gate seeded from persisted usage totals.
 func NewGate(ctx context.Context, o GateOptions) (*Gate, error) {
+	if o.Limits.DailyMicroUSD < 0 || o.Limits.MonthlyMicroUSD < 0 {
+		return nil, errors.New("budget gate limits must not be negative")
+	}
 	if o.Limits.DailyMicroUSD <= 0 && o.Limits.MonthlyMicroUSD <= 0 {
 		return nil, errors.New("budget gate requires a positive limit")
 	}
