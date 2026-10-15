@@ -26,12 +26,30 @@ type Config struct {
 	Logging   Logging             `yaml:"logging"`
 	Providers map[string]Provider `yaml:"providers"`
 	Tiers     map[string]Tier     `yaml:"tiers,omitempty"`
+	// Models declares capabilities per model reference; it is the only
+	// capability source (ADR 0007).
+	Models map[string]ModelDeclaration `yaml:"models,omitempty"`
+	Router Router                      `yaml:"router,omitempty"`
 }
 
 // Tier is an ordered list of model references with an optional spend opt-in.
 type Tier struct {
 	Models     []string `yaml:"models"`
 	AllowSpend bool     `yaml:"allow_spend"`
+}
+
+// ModelDeclaration is the complete list of what one model supports; an
+// empty Capabilities list means text only.
+type ModelDeclaration struct {
+	Capabilities []string `yaml:"capabilities"`
+	// ContextWindow is the model's context size in tokens, 0 when undeclared.
+	ContextWindow int `yaml:"context_window,omitempty"`
+}
+
+// Router configures the auto virtual model.
+type Router struct {
+	// Auto lists tier names in the order auto tries them (ADR 0008).
+	Auto []string `yaml:"auto,omitempty"`
 }
 
 // Logging configures the program's structured logger.

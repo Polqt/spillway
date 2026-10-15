@@ -1,9 +1,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/Polqt/spillway/internal/redact"
@@ -109,7 +111,7 @@ func rejectFutureSections(root *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i]
-		milestone := map[string]string{"router": "v0.3", "budgets": "v0.4", "cache": "v0.4"}[key.Value]
+		milestone := map[string]string{"budgets": "v0.4", "cache": "v0.4"}[key.Value]
 		if milestone != "" {
 			return fmt.Errorf("%q is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
 		}
@@ -121,7 +123,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -209,6 +211,80 @@ func rejectUnknownFields(root *yaml.Node) error {
 				return fmt.Errorf("%s.models (line %d): must be a list", path, models.Line)
 			}
 		}
+	}
+	if err := checkModelsShape(mappingValue(root, "models")); err != nil {
+		return err
+	}
+	return checkRouterShape(mappingValue(root, "router"))
+}
+
+// maxContextWindow bounds a declared context window to a plausible size.
+const maxContextWindow = 10_000_000
+
+// checkModelsShape catches what decoding cannot: a missing capabilities list,
+// which must be told apart from an empty one, and an explicit zero window.
+func checkModelsShape(models *yaml.Node) error {
+	if models == nil {
+		return nil
+	}
+	if models.Kind != yaml.MappingNode {
+		return fmt.Errorf("models (line %d): must be a mapping of model references to declarations", models.Line)
+	}
+	for i := 0; i+1 < len(models.Content); i += 2 {
+		ref, declaration := models.Content[i], models.Content[i+1]
+		path := "models." + ref.Value
+		if declaration.Kind != yaml.MappingNode {
+			return fmt.Errorf("%s (line %d): must be a mapping with a capabilities field", path, declaration.Line)
+		}
+		if err := rejectFields(declaration, path, "capabilities", "context_window"); err != nil {
+			return err
+		}
+		capabilities := mappingValue(declaration, "capabilities")
+		if capabilities == nil {
+			return fmt.Errorf("%s.capabilities is required; list what the model supports, or [] for text only", path)
+		}
+		if capabilities.Kind != yaml.SequenceNode {
+			return fmt.Errorf("%s.capabilities (line %d): must be a list", path, capabilities.Line)
+		}
+		if window := mappingValue(declaration, "context_window"); window != nil {
+			n, err := strconv.Atoi(window.Value)
+			if window.Tag != "!!int" || err != nil || n < 1 || n > maxContextWindow {
+				return fmt.Errorf("%s.context_window (line %d): must be a whole number from 1 to %d", path, window.Line, maxContextWindow)
+			}
+		}
+	}
+	return nil
+}
+
+// routerMilestone names router keys from CONTEXT section 7 that belong to
+// later milestones, so they get guidance instead of "unknown field".
+var routerMilestone = map[string]string{"mode": "v0.5", "judge_model": "v0.5", "confidence_threshold": "v0.5"}
+
+func checkRouterShape(router *yaml.Node) error {
+	if router == nil {
+		return nil
+	}
+	if router.Kind != yaml.MappingNode {
+		return fmt.Errorf("router (line %d): must be a mapping with an auto field", router.Line)
+	}
+	for i := 0; i+1 < len(router.Content); i += 2 {
+		key := router.Content[i]
+		if milestone, later := routerMilestone[key.Value]; later {
+			return fmt.Errorf("router.%s is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
+		}
+	}
+	if err := rejectFields(router, "router", "auto"); err != nil {
+		return err
+	}
+	auto := mappingValue(router, "auto")
+	if auto == nil {
+		return errors.New("router.auto is required; list the tiers auto tries, zero-spend tiers first")
+	}
+	if auto.Kind != yaml.SequenceNode {
+		return fmt.Errorf("router.auto (line %d): must be a list of tier names", auto.Line)
+	}
+	if len(auto.Content) == 0 {
+		return errors.New("router.auto must list at least one tier; zero-spend tiers come first")
 	}
 	return nil
 }

@@ -237,7 +237,7 @@ func TestParse_Errors(t *testing.T) {
 		{name: "insecure non-loopback base URL", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"http://example.com\"}\n", want: "providers.mock.base_url must use https"},
 		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
 		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
-		{name: "router milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {}\n", want: `"router" is not supported until v0.3`},
+		{name: "router mode milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.mode is not supported until v0.5"},
 		{name: "budgets milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nbudgets: {}\n", want: `"budgets" is not supported until v0.4`},
 		{name: "cache milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {}\n", want: `"cache" is not supported until v0.4`},
 		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  mock: {}\n", want: "server.listen must be host:port"},
@@ -338,6 +338,124 @@ func TestParse_TierShapeValidation(t *testing.T) {
 				t.Errorf("Parse error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+const routingBase = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n" +
+	"tiers:\n  free:\n    models: [mock/echo, mock/rate-limited]\n  smart:\n    allow_spend: true\n    models: [openrouter/paid, mock/echo]\n"
+
+func parseRouting(extra string) (config.Config, error) {
+	return config.ParseWithEnv([]byte(routingBase+extra), func(string) (string, bool) { return "sk-test-openrouter-key", true })
+}
+
+func TestParse_ModelsAndRouter(t *testing.T) {
+	t.Parallel()
+	cfg, err := parseRouting("models:\n  mock/echo: {capabilities: [tools, json_mode], context_window: 32768}\n  mock/rate-limited: {capabilities: []}\nrouter:\n  auto: [free, smart]\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	echo := cfg.Models["mock/echo"]
+	if strings.Join(echo.Capabilities, ",") != "tools,json_mode" || echo.ContextWindow != 32768 {
+		t.Errorf("Models[mock/echo] = %+v, want tools,json_mode and 32768", echo)
+	}
+	if limited, ok := cfg.Models["mock/rate-limited"]; !ok || len(limited.Capabilities) != 0 || limited.ContextWindow != 0 {
+		t.Errorf("Models[mock/rate-limited] = %+v, %v; want a text-only declaration", limited, ok)
+	}
+	if strings.Join(cfg.Router.Auto, ",") != "free,smart" {
+		t.Errorf("Router.Auto = %v, want [free smart]", cfg.Router.Auto)
+	}
+	var out strings.Builder
+	if err := cfg.WriteRedacted(&out); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	for _, want := range []string{"\nmodels:", "context_window: 32768", "\nrouter:", "auto:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("WriteRedacted output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestParse_WithoutModelsAndRouter(t *testing.T) {
+	t.Parallel()
+	cfg, err := parseRouting("")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Models) != 0 || len(cfg.Router.Auto) != 0 {
+		t.Errorf("Models = %v, Router = %+v; want both empty", cfg.Models, cfg.Router)
+	}
+	var out strings.Builder
+	if err := cfg.WriteRedacted(&out); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	if strings.Contains(out.String(), "\nmodels:") || strings.Contains(out.String(), "\nrouter:") {
+		t.Errorf("WriteRedacted prints empty routing sections:\n%s", out.String())
+	}
+}
+
+func TestParse_ModelsAndRouterValidation(t *testing.T) {
+	t.Parallel()
+	refs := make([]string, 17)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("mock/m%d", i)
+	}
+	const head = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	big := head + "tiers:\n  a:\n    models: [" + strings.Join(refs[:9], ", ") + "]\n  b:\n    models: [" + strings.Join(refs[9:], ", ") + "]\nrouter:\n  auto: [a, b]\n"
+	tests := []struct{ name, extra, full, want string }{
+		{name: "models must be a mapping", extra: "models: [mock/echo]\n", want: "models (line"},
+		{name: "declaration must be a mapping", extra: "models:\n  mock/echo: [tools]\n", want: "models.mock/echo (line"},
+		{name: "unknown declaration field", extra: "models:\n  mock/echo: {capabilities: [], vision: true}\n", want: "models.mock/echo (line"},
+		{name: "capabilities required", extra: "models:\n  mock/echo: {context_window: 8}\n", want: "models.mock/echo.capabilities is required; list what the model supports, or [] for text only"},
+		{name: "capabilities must be a list", extra: "models:\n  mock/echo: {capabilities: tools}\n", want: "models.mock/echo.capabilities (line"},
+		{name: "unknown capability", extra: "models:\n  mock/echo: {capabilities: [audio]}\n", want: `models.mock/echo.capabilities[0]: unknown capability "audio"; use tools, vision, json_mode or structured_outputs`},
+		{name: "duplicate capability", extra: "models:\n  mock/echo: {capabilities: [tools, tools]}\n", want: "models.mock/echo.capabilities[1] duplicates"},
+		{name: "context window zero", extra: "models:\n  mock/echo: {capabilities: [], context_window: 0}\n", want: "models.mock/echo.context_window (line"},
+		{name: "context window too large", extra: "models:\n  mock/echo: {capabilities: [], context_window: 10000001}\n", want: "must be a whole number from 1 to 10000000"},
+		{name: "context window not a number", extra: "models:\n  mock/echo: {capabilities: [], context_window: big}\n", want: "must be a whole number from 1 to 10000000"},
+		{name: "bad model reference", extra: "models:\n  broken: {capabilities: []}\n", want: "models.broken: model reference must be provider/model"},
+		{name: "model not in a tier", extra: "models:\n  mock/unavailable: {capabilities: []}\n", want: "models.mock/unavailable is not in any tier; capability declarations only affect tier and auto routing, so add it to a tier or remove it"},
+		{name: "router must be a mapping", extra: "router: [free]\n", want: "router (line"},
+		{name: "router auto required", extra: "router: {}\n", want: "router.auto is required"},
+		{name: "router unknown field", extra: "router: {auto: [free], fallback: x}\n", want: "router (line"},
+		{name: "router judge milestone", extra: "router: {auto: [free], judge_model: ollama/x}\n", want: "router.judge_model is not supported until v0.5"},
+		{name: "router threshold milestone", extra: "router: {auto: [free], confidence_threshold: 0.7}\n", want: "router.confidence_threshold is not supported until v0.5"},
+		{name: "router auto must be a list", extra: "router: {auto: free}\n", want: "router.auto (line"},
+		{name: "router auto empty", extra: "router: {auto: []}\n", want: "router.auto must list at least one tier"},
+		{name: "router auto unknown tier", extra: "router: {auto: [free, nope]}\n", want: "router.auto[1]: tier nope is not configured"},
+		{name: "router auto duplicate", extra: "router: {auto: [free, free]}\n", want: "router.auto[1] duplicates"},
+		{name: "router auto spend first", extra: "router: {auto: [smart, free]}\n", want: "router.auto[0]: tier smart allows spend and must come after every zero-spend tier (ADR 0008)"},
+		{name: "router auto too many candidates", full: big, want: "router.auto resolves to 17 candidates; at most 16 are allowed"},
+		{name: "tier reference with space", full: head + "tiers:\n  a:\n    models: [\"mock/echo two\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
+		{name: "tier reference with control character", full: head + "tiers:\n  a:\n    models: [\"mock/echo\\x01\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var err error
+			if tt.full != "" {
+				_, err = config.Parse([]byte(tt.full))
+			} else {
+				_, err = parseRouting(tt.extra)
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Parse error = %v, want %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "sk-test-") {
+				t.Errorf("Parse error %q contains a key", err)
+			}
+		})
+	}
+}
+
+func TestParse_RouterAutoCountsSharedModelsOnce(t *testing.T) {
+	t.Parallel()
+	refs := make([]string, 16)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("mock/m%d", i)
+	}
+	input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\ntiers:\n  a:\n    models: [" + strings.Join(refs, ", ") + "]\n  b:\n    models: [mock/m0, mock/m15]\nrouter:\n  auto: [a, b]\n"
+	if _, err := config.Parse([]byte(input)); err != nil {
+		t.Fatalf("Parse: %v, want shared models counted once", err)
 	}
 }
 
@@ -536,8 +654,8 @@ func TestParse_EnvironmentReferenceErrorsNamePath(t *testing.T) {
 
 func TestParse_FutureSectionErrorPrecedesExpansion(t *testing.T) {
 	t.Parallel()
-	_, err := config.ParseWithEnv([]byte("router: \"${UNSET}\"\n"), func(string) (string, bool) { return "", false })
-	if err == nil || !strings.Contains(err.Error(), `"router" is not supported until v0.3`) {
+	_, err := config.ParseWithEnv([]byte("budgets: \"${UNSET}\"\n"), func(string) (string, bool) { return "", false })
+	if err == nil || !strings.Contains(err.Error(), `"budgets" is not supported until v0.4`) {
 		t.Errorf("ParseWithEnv error = %v, want milestone guidance", err)
 	}
 }

@@ -35,7 +35,94 @@ func (c Config) validate() error {
 	if err := validateProviders(c.Providers); err != nil {
 		return err
 	}
-	return validateTiers(c.Tiers, c.Providers)
+	if err := validateTiers(c.Tiers, c.Providers); err != nil {
+		return err
+	}
+	if err := validateModels(c.Models, c.Tiers); err != nil {
+		return err
+	}
+	return validateRouter(c.Router, c.Tiers)
+}
+
+// capabilities is the closed set a model declaration may list (ADR 0007).
+var capabilities = []string{"tools", "vision", "json_mode", "structured_outputs"}
+
+func validateModels(models map[string]ModelDeclaration, tiers map[string]Tier) error {
+	inTier := make(map[string]bool)
+	for _, tier := range tiers {
+		for _, model := range tier.Models {
+			inTier[model] = true
+		}
+	}
+	refs := make([]string, 0, len(models))
+	for ref := range models {
+		refs = append(refs, ref)
+	}
+	slices.Sort(refs)
+	for _, ref := range refs {
+		path := "models." + ref
+		if _, err := providers.ParseModelRef(ref); err != nil {
+			return fmt.Errorf("%s: model reference must be provider/model", path)
+		}
+		if !inTier[ref] {
+			return fmt.Errorf("%s is not in any tier; capability declarations only affect tier and auto routing, so add it to a tier or remove it", path)
+		}
+		seen := make(map[string]bool, len(models[ref].Capabilities))
+		for i, capability := range models[ref].Capabilities {
+			if !slices.Contains(capabilities, capability) {
+				return fmt.Errorf("%s.capabilities[%d]: unknown capability %q; use tools, vision, json_mode or structured_outputs", path, i, capability)
+			}
+			if seen[capability] {
+				return fmt.Errorf("%s.capabilities[%d] duplicates an earlier capability", path, i)
+			}
+			seen[capability] = true
+		}
+	}
+	return nil
+}
+
+// maxAutoCandidates keeps auto within the per-request attempt bound of one
+// tier (ADR 0008).
+const maxAutoCandidates = 16
+
+func validateRouter(router Router, tiers map[string]Tier) error {
+	seenTier := make(map[string]bool, len(router.Auto))
+	candidates := make(map[string]bool)
+	spendAt := -1
+	for i, name := range router.Auto {
+		tier, ok := tiers[name]
+		if !ok {
+			return fmt.Errorf("router.auto[%d]: tier %s is not configured", i, name)
+		}
+		if seenTier[name] {
+			return fmt.Errorf("router.auto[%d] duplicates an earlier tier", i)
+		}
+		seenTier[name] = true
+		if tier.AllowSpend && spendAt < 0 {
+			spendAt = i
+		}
+		if !tier.AllowSpend && spendAt >= 0 {
+			return fmt.Errorf("router.auto[%d]: tier %s allows spend and must come after every zero-spend tier (ADR 0008)", spendAt, router.Auto[spendAt])
+		}
+		for _, model := range tier.Models {
+			candidates[model] = true
+		}
+	}
+	if len(candidates) > maxAutoCandidates {
+		return fmt.Errorf("router.auto resolves to %d candidates; at most %d are allowed, so list fewer tiers or models", len(candidates), maxAutoCandidates)
+	}
+	return nil
+}
+
+// printableModelRef reports whether ref can appear in a response header
+// unchanged: printable ASCII, no spaces.
+func printableModelRef(ref string) bool {
+	for i := 0; i < len(ref); i++ {
+		if ref[i] <= ' ' || ref[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateTiers(tiers map[string]Tier, configured map[string]Provider) error {
@@ -62,6 +149,9 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 			ref, err := providers.ParseModelRef(model)
 			if err != nil {
 				return fmt.Errorf("%s: model reference must be provider/model", modelPath)
+			}
+			if !printableModelRef(model) {
+				return fmt.Errorf("%s: model reference must be printable ASCII without spaces", modelPath)
 			}
 			if _, exists := configured[ref.Provider]; !exists {
 				return fmt.Errorf("%s: provider %s is not configured", modelPath, ref.Provider)
