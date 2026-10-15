@@ -117,12 +117,12 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 	for ref := range t.configured {
 		state := t.candidates[ref]
 		until, reason := state.until, state.reason
+		breaker := BreakerClosed
+		if state.upstreamFailures >= 3 && now.Before(state.until) && state.reason == "circuit open" {
+			breaker = BreakerOpen
+		}
 		if provider, ok := t.providers[ref.Provider]; ok && provider.until.After(until) {
 			until, reason = provider.until, provider.reason
-		}
-		breaker := BreakerClosed
-		if state.upstreamFailures >= 3 && now.Before(until) && reason == "circuit open" {
-			breaker = BreakerOpen
 		}
 		if !now.Before(until) {
 			until, reason = time.Time{}, ""

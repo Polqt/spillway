@@ -11,20 +11,12 @@ import (
 	"github.com/Polqt/spillway/internal/store"
 )
 
-type dashboardServeFunc func(http.ResponseWriter, *http.Request, Options)
-
 func noStoreAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-func dashboardEndpoint(o Options, serve dashboardServeFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serve(w, r, o)
 	})
 }
 

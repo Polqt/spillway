@@ -262,6 +262,29 @@ func TestTracker_CircuitBreakerThresholdBackoffAndReset(t *testing.T) {
 	})
 }
 
+func TestTracker_SnapshotPreservesCandidateBreakerWithProviderCooldown(t *testing.T) {
+	now := time.Date(2026, time.October, 15, 12, 0, 0, 0, time.UTC)
+	ref := providers.ModelRef{Provider: "groq", Model: "candidate"}
+	sibling := providers.ModelRef{Provider: "groq", Model: "sibling"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref, sibling}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+	}
+	tracker.Observe(sibling, providers.ErrUnauthorized, providers.RateLimit{})
+	for _, candidate := range tracker.Snapshot() {
+		if candidate.Model == ref.Model {
+			if candidate.Breaker != quota.BreakerOpen || candidate.Reason != "unauthorized" {
+				t.Fatalf("candidate snapshot = %+v, want open breaker and provider cooldown reason", candidate)
+			}
+			return
+		}
+	}
+	t.Fatalf("candidate %q missing from snapshot", ref.Model)
+}
+
 func TestTracker_CircuitBreakerHonors503RetryAfterImmediately(t *testing.T) {
 	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
 	ref := providers.ModelRef{Provider: "mock", Model: "unavailable"}
