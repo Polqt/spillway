@@ -25,6 +25,7 @@ import (
 	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
+	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 )
 
@@ -358,6 +359,48 @@ func TestStream_TierFailureAfterChunkDoesNotSpill(t *testing.T) {
 	assertTierStreamHasNoKeys(t, rec.Body.String())
 	if second.calls.Load() != 0 {
 		t.Errorf("second candidate calls = %d, want 0", second.calls.Load())
+	}
+}
+
+func TestStream_TierMidStreamFailuresOpenCircuit(t *testing.T) {
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"first"}`}, afterChunks: providers.ErrUpstreamUnavailable}, nil
+	}}
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &trackedStream{chunks: []string{`{"model":"second"}`}}, nil
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []providers.ModelRef{{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tracker:   tracker,
+		Now:       func() time.Time { return now },
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers:     map[string][]providers.ModelRef{"demo": refs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		rec := serveTierStream(t, h)
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"model":"second"`) {
+			t.Fatalf("stream response = %d %s; want committed first candidate failure", rec.Code, rec.Body)
+		}
+	}
+	if first.calls.Load() != 3 || second.calls.Load() != 0 {
+		t.Fatalf("provider calls = %d/%d, want 3/0", first.calls.Load(), second.calls.Load())
+	}
+	if available, until, reason := tracker.Available(refs[0]); available || !until.Equal(now.Add(30*time.Second)) || reason != "circuit open" {
+		t.Errorf("first candidate state = %v, %v, %q; want open for 30s", available, until, reason)
 	}
 }
 

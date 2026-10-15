@@ -891,6 +891,53 @@ func TestChat_TierCooldownExhaustionUsesEarliestRetryAfter(t *testing.T) {
 	}
 }
 
+func TestChat_MockDeadTierOpensCircuitAfterThreeCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, err := mock.New(mock.Options{Now: time.Now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		set, err := providers.NewSet(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs := []providers.ModelRef{{Provider: "mock", Model: "rate-limited"}, {Provider: "mock", Model: "unavailable"}}
+		tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: refs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := api.NewHandler(api.Options{
+			Providers: set,
+			Tracker:   tracker,
+			LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+			Logger:    slog.New(slog.DiscardHandler),
+			Tiers:     map[string][]providers.ModelRef{"dead": refs},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/dead", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("call status = %d, want 503 before all candidates cool; body %s", rec.Code, rec.Body)
+			}
+		}
+		for range 2 {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/dead", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assertError(t, rec, http.StatusTooManyRequests, "api_error", "rate_limit_exceeded")
+			if !strings.Contains(rec.Body.String(), "mock/unavailable circuit open (retry in 30s)") {
+				t.Errorf("exhaustion body = %s, want open circuit reason", rec.Body)
+			}
+		}
+	})
+}
+
 func TestChat_TierCooldownHandlesConcurrentRequests(t *testing.T) {
 	first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
 		return providers.ChatResponse{}, providers.ErrRateLimited

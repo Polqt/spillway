@@ -14,6 +14,8 @@ import (
 const (
 	rateLimitBase = 15 * time.Second
 	maxRateLimit  = 10 * time.Minute
+	circuitBase   = 30 * time.Second
+	maxCircuit    = 5 * time.Minute
 	providerPause = 15 * time.Minute
 	modelPause    = 15 * time.Minute
 )
@@ -31,7 +33,8 @@ type cooldown struct {
 
 type candidateState struct {
 	cooldown
-	rateFailures int
+	rateFailures     int
+	upstreamFailures int
 }
 
 // Tracker tracks cooldowns for the configured model references only.
@@ -96,6 +99,7 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, _ providers.RateLim
 	if err == nil {
 		state := t.candidates[ref]
 		state.rateFailures = 0
+		state.upstreamFailures = 0
 		state.cooldown = cooldown{}
 		t.candidates[ref] = state
 		return
@@ -123,6 +127,18 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, _ providers.RateLim
 		state := t.candidates[ref]
 		state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(modelPause), reason: "model not found"})
 		t.candidates[ref] = state
+	case errors.Is(err, providers.ErrUpstreamUnavailable):
+		state := t.candidates[ref]
+		if state.upstreamFailures < 7 {
+			state.upstreamFailures++
+		}
+		var retry providers.RetryAfterError
+		if errors.As(err, &retry) && retry.After > 0 {
+			state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(providers.ClampRetryAfter(retry.After)), reason: "circuit open"})
+		} else if state.upstreamFailures >= 3 {
+			state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(circuitBackoff(state.upstreamFailures)), reason: "circuit open"})
+		}
+		t.candidates[ref] = state
 	}
 }
 
@@ -143,6 +159,20 @@ func rateLimitBackoff(failures int) time.Duration {
 	}
 	if duration > maxRateLimit {
 		return maxRateLimit
+	}
+	return duration
+}
+
+func circuitBackoff(failures int) time.Duration {
+	duration := circuitBase
+	for range failures - 3 {
+		if duration >= maxCircuit/2 {
+			return maxCircuit
+		}
+		duration *= 2
+	}
+	if duration > maxCircuit {
+		return maxCircuit
 	}
 	return duration
 }

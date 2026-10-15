@@ -12,3 +12,5 @@ providers:
 tiers:
   demo:
     models: [mock/rate-limited, mock/unavailable, mock/echo]
+  dead:
+    models: [mock/rate-limited, mock/unavailable]

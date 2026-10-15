@@ -73,7 +73,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
-		if err := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout); err != nil {
+		if err, committed := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout); err != nil && !committed {
 			rec.err = err
 			writeProviderError(w, r, ref, err)
 		}
@@ -127,10 +127,11 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 			rec.provider, rec.model = ref.Provider, ref.Model
 			w.Header().Set("X-Spillway-Provider", ref.Provider)
 			w.Header().Set("X-Spillway-Model", ref.Model)
-			err = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
-			if err == nil {
-				if h.tracker != nil {
-					h.tracker.Observe(ref, nil, providers.RateLimit{})
+			var committed bool
+			err, committed = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+			if committed {
+				if h.tracker != nil && r.Context().Err() == nil {
+					h.tracker.Observe(ref, err, providers.RateLimit{})
 				}
 				return
 			}

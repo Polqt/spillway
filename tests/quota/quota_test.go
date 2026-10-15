@@ -3,6 +3,7 @@ package quota_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -139,6 +140,68 @@ func TestTracker_ClampsRetryTimeAndBoundsFallbackBackoff(t *testing.T) {
 	}
 	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(10 * time.Minute)) {
 		t.Fatalf("backoff cap ends at %v, want 10m", until)
+	}
+}
+
+func TestTracker_CircuitBreakerThresholdBackoffAndReset(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ref := providers.ModelRef{Provider: "mock", Model: "unavailable"}
+		tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: []providers.ModelRef{ref}})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for range 2 {
+			tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+			if available, _, _ := tracker.Available(ref); !available {
+				t.Fatal("breaker opened before the third failure")
+			}
+		}
+		tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+		assertCircuit(t, tracker, ref, 30*time.Second)
+
+		<-time.After(30 * time.Second)
+		if available, _, _ := tracker.Available(ref); !available {
+			t.Fatal("candidate unavailable after 30s circuit expiry")
+		}
+		tracker.Observe(ref, fmt.Errorf("attempt timed out: %w", providers.ErrUpstreamUnavailable), providers.RateLimit{})
+		assertCircuit(t, tracker, ref, 60*time.Second)
+
+		<-time.After(60 * time.Second)
+		tracker.Observe(ref, nil, providers.RateLimit{})
+		if available, _, _ := tracker.Available(ref); !available {
+			t.Fatal("success did not clear the circuit")
+		}
+		for range 3 {
+			tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+		}
+		assertCircuit(t, tracker, ref, 30*time.Second)
+
+		<-time.After(30 * time.Second)
+		for range 20 {
+			tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+		}
+		assertCircuit(t, tracker, ref, 5*time.Minute)
+	})
+}
+
+func TestTracker_CircuitBreakerHonors503RetryAfterImmediately(t *testing.T) {
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	ref := providers.ModelRef{Provider: "mock", Model: "unavailable"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(ref, providers.RetryAfterError{After: 12 * time.Second, Kind: providers.ErrUpstreamUnavailable}, providers.RateLimit{})
+	if available, until, reason := tracker.Available(ref); available || !until.Equal(now.Add(12*time.Second)) || reason != "circuit open" {
+		t.Fatalf("first 503 with Retry-After = %v, %v, %q; want false, 12s, circuit open", available, until, reason)
+	}
+}
+
+func assertCircuit(t *testing.T, tracker *quota.Tracker, ref providers.ModelRef, duration time.Duration) {
+	t.Helper()
+	if available, until, reason := tracker.Available(ref); available || !until.Equal(time.Now().Add(duration)) || reason != "circuit open" {
+		t.Fatalf("Available() = %v, %v, %q; want false, %s circuit open", available, until, reason, duration)
 	}
 }
 
