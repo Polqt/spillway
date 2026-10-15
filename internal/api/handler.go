@@ -20,9 +20,9 @@ import (
 
 // LocalKey is one local key and the name of the client app that presents it.
 type LocalKey struct {
-	Name      string
-	Key       redact.Secret
-	Dashboard bool
+	Name      string        // Name of the client app.
+	Key       redact.Secret // Local bearer key for the client app.
+	Dashboard bool          // Grants access to read-only dashboard APIs.
 }
 
 // providerSet is the part of providers.Set the API uses.
@@ -69,7 +69,7 @@ type Options struct {
 	UsageRecorder interface {
 		Record(context.Context, store.Request) error
 	}
-	DashboardStore dashboardStore
+	DashboardStore dashboardStore // Reads usage history for dashboard endpoints.
 	CostEstimator  attemptPricer
 	BudgetGate     *budget.Gate
 	ExactCache     *cache.Cache

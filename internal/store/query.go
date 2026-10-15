@@ -12,38 +12,54 @@ import (
 // ErrInvalidCursor reports a malformed opaque recent-request cursor.
 var ErrInvalidCursor = errors.New("invalid recent cursor")
 
+// UsageGroup is one supported usage aggregation dimension.
+type UsageGroup string
+
+const (
+	// UsageByProvider groups totals by serving provider.
+	UsageByProvider UsageGroup = "provider"
+	// UsageByModel groups totals by serving model.
+	UsageByModel UsageGroup = "model"
+	// UsageByClientApp groups totals by local client name.
+	UsageByClientApp UsageGroup = "client_app"
+	// UsageByDay groups totals by UTC calendar day.
+	UsageByDay UsageGroup = "day"
+)
+
+const unknownAttemptCost = "EXISTS (SELECT 1 FROM attempts WHERE attempts.request_id = requests.id AND attempts.cost_source = 'unknown')"
+
 // UsageQuery selects a bounded date range and one supported grouping.
 type UsageQuery struct {
-	Since time.Time
-	Until time.Time
-	Group string
+	Since time.Time  // Inclusive UTC start.
+	Until time.Time  // Exclusive UTC end.
+	Group UsageGroup // One of the UsageBy constants.
 }
 
 // UsageRow contains grouped request totals. Cost is an integer micro-USD sum.
 type UsageRow struct {
-	Key              string `json:"key"`
-	Requests         int64  `json:"requests"`
-	Errors           int64  `json:"errors"`
-	CacheHits        int64  `json:"cache_hits"`
-	PromptTokens     int64  `json:"prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens"`
-	CostMicroUSD     int64  `json:"cost_micro_usd"`
-	CostUSD          string `json:"cost_usd"`
-	EstimatedRows    int64  `json:"estimated_rows"`
-	UnknownCostRows  int64  `json:"unknown_cost_rows"`
+	Key              string `json:"key"`               // The provider, model, client app or day key.
+	Requests         int64  `json:"requests"`          // Requests in the group.
+	Errors           int64  `json:"errors"`            // Requests with an error status.
+	CacheHits        int64  `json:"cache_hits"`        // Requests served by the exact cache.
+	PromptTokens     int64  `json:"prompt_tokens"`     // Recorded prompt tokens.
+	CompletionTokens int64  `json:"completion_tokens"` // Recorded completion tokens.
+	CostMicroUSD     int64  `json:"cost_micro_usd"`    // Recorded cost in integer micro-USD.
+	CostUSD          string `json:"cost_usd"`          // Recorded cost as a six-place decimal string.
+	EstimatedRows    int64  `json:"estimated_rows"`    // Requests with estimated token usage.
+	UnknownCostRows  int64  `json:"unknown_cost_rows"` // Requests with at least one unknown-cost attempt.
 }
 
 // CostQuality summarizes non-exact request costs in a time period.
 type CostQuality struct {
-	EstimatedRows int64 `json:"estimated_rows"`
-	UnknownRows   int64 `json:"unknown_rows"`
+	EstimatedRows int64 `json:"estimated_rows"` // Requests with estimated token usage.
+	UnknownRows   int64 `json:"unknown_rows"`   // Requests with at least one unknown-cost attempt.
 }
 
 // CostQuality counts requests whose spend includes estimated or unknown cost.
 func (s *Store) CostQuality(ctx context.Context, since time.Time) (CostQuality, error) {
 	var result CostQuality
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(usage_source = 'estimated'), 0),
-		COALESCE(SUM(EXISTS (SELECT 1 FROM attempts WHERE attempts.request_id = requests.id AND attempts.cost_source = 'unknown')), 0)
+		COALESCE(SUM(`+unknownAttemptCost+`), 0)
 		FROM requests WHERE at_ns >= ?`, since.UTC().UnixNano()).Scan(&result.EstimatedRows, &result.UnknownRows)
 	if err != nil {
 		return CostQuality{}, fmt.Errorf("query usage cost quality: %w", err)
@@ -53,9 +69,9 @@ func (s *Store) CostQuality(ctx context.Context, since time.Time) (CostQuality, 
 
 // Usage returns grouped request metadata in [Since, Until).
 func (s *Store) Usage(ctx context.Context, q UsageQuery) (result []UsageRow, retErr error) {
-	group := map[string]string{
-		"provider": "provider", "model": "model", "client_app": "client_app",
-		"day": "strftime('%Y-%m-%d', at_ns / 1000000000, 'unixepoch')",
+	group := map[UsageGroup]string{
+		UsageByProvider: "provider", UsageByModel: "model", UsageByClientApp: "client_app",
+		UsageByDay: "strftime('%Y-%m-%d', at_ns / 1000000000, 'unixepoch')",
 	}[q.Group]
 	if group == "" {
 		return nil, fmt.Errorf("unsupported usage group %q", q.Group)
@@ -63,7 +79,7 @@ func (s *Store) Usage(ctx context.Context, q UsageQuery) (result []UsageRow, ret
 	query := `SELECT ` + group + `, COUNT(*), SUM(status >= 400), SUM(cache = 'hit'),
 		SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_micro_usd),
 	SUM(usage_source = 'estimated'),
-	SUM(EXISTS (SELECT 1 FROM attempts WHERE attempts.request_id = requests.id AND attempts.cost_source = 'unknown'))
+	SUM(` + unknownAttemptCost + `)
 		FROM requests WHERE at_ns >= ? AND at_ns < ? GROUP BY 1 ORDER BY 1`
 	rows, err := s.db.QueryContext(ctx, query, q.Since.UTC().UnixNano(), q.Until.UTC().UnixNano())
 	if err != nil {
@@ -93,8 +109,8 @@ func (s *Store) Usage(ctx context.Context, q UsageQuery) (result []UsageRow, ret
 // RecentQuery selects a page of requests. Before is the opaque cursor returned
 // by the preceding page and is independent of later inserts.
 type RecentQuery struct {
-	Limit  int
-	Before string
+	Limit  int    // Maximum number of requests, from 1 to 200.
+	Before string // Opaque cursor returned by a previous page.
 }
 
 // Recent returns requests newest first and the cursor for the next page.

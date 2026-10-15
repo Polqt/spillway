@@ -38,16 +38,16 @@ type Gate struct {
 
 // PeriodStatus reports one configured UTC budget period.
 type PeriodStatus struct {
-	LimitMicroUSD     int64     `json:"limit_micro_usd"`
-	SpentMicroUSD     int64     `json:"spent_micro_usd"`
-	RemainingMicroUSD int64     `json:"remaining_micro_usd"`
-	ResetAt           time.Time `json:"reset_at"`
+	LimitMicroUSD     int64     `json:"limit_micro_usd"`     // Configured limit in micro-USD.
+	SpentMicroUSD     int64     `json:"spent_micro_usd"`     // Spend recorded in the current period.
+	RemainingMicroUSD int64     `json:"remaining_micro_usd"` // Non-negative amount below the limit.
+	ResetAt           time.Time `json:"reset_at"`            // Start of the next UTC period.
 }
 
 // Status is a read-only snapshot of the configured UTC budget periods.
 type Status struct {
-	Daily   *PeriodStatus `json:"daily,omitempty"`
-	Monthly *PeriodStatus `json:"monthly,omitempty"`
+	Daily   *PeriodStatus `json:"daily,omitempty"`   // Daily budget, when configured.
+	Monthly *PeriodStatus `json:"monthly,omitempty"` // Monthly budget, when configured.
 }
 
 // NewGate creates a spend gate seeded from persisted usage totals.

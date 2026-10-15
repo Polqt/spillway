@@ -39,13 +39,23 @@ type candidateState struct {
 	upstreamFailures int
 }
 
+// BreakerState is the current state of a candidate's circuit breaker.
+type BreakerState string
+
+const (
+	// BreakerClosed means requests may pass the circuit breaker.
+	BreakerClosed BreakerState = "closed"
+	// BreakerOpen means the circuit breaker is cooling down after upstream failures.
+	BreakerOpen BreakerState = "open"
+)
+
 // CandidateSnapshot describes the cooldown and circuit state of one candidate.
 type CandidateSnapshot struct {
-	Provider      string     `json:"provider"`
-	Model         string     `json:"model"`
-	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
-	Reason        string     `json:"reason,omitempty"`
-	Breaker       string     `json:"breaker_state"`
+	Provider      string       `json:"provider"`                 // Candidate provider name.
+	Model         string       `json:"model"`                    // Candidate model name.
+	CooldownUntil *time.Time   `json:"cooldown_until,omitempty"` // Resume time when cooling down.
+	Reason        string       `json:"reason,omitempty"`         // Fixed cooldown reason.
+	Breaker       BreakerState `json:"breaker_state"`            // Current circuit breaker state.
 }
 
 // Tracker tracks cooldowns for the configured model references only.
@@ -110,9 +120,9 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 		if provider, ok := t.providers[ref.Provider]; ok && provider.until.After(until) {
 			until, reason = provider.until, provider.reason
 		}
-		breaker := "closed"
+		breaker := BreakerClosed
 		if state.upstreamFailures >= 3 && now.Before(until) && reason == "circuit open" {
-			breaker = "open"
+			breaker = BreakerOpen
 		}
 		if !now.Before(until) {
 			until, reason = time.Time{}, ""

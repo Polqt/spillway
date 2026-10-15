@@ -58,7 +58,7 @@ func serveUsage(w http.ResponseWriter, r *http.Request, o Options) {
 		writeError(w, http.StatusBadRequest, "group must be provider, model, client_app or day.", typeInvalidRequest, "invalid_query")
 		return
 	}
-	rows, err := o.DashboardStore.Usage(r.Context(), store.UsageQuery{Since: since, Until: until, Group: group})
+	rows, err := o.DashboardStore.Usage(r.Context(), store.UsageQuery{Since: since, Until: until, Group: store.UsageGroup(group)})
 	if err != nil {
 		writeInternalError(w)
 		return

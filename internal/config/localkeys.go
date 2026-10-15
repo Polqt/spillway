@@ -11,9 +11,9 @@ import (
 
 // LocalKey is one local key and the name of the client app that presents it.
 type LocalKey struct {
-	Name      string        `yaml:"name"`
-	Key       redact.Secret `yaml:"key"`
-	Dashboard bool          `yaml:"dashboard,omitempty"`
+	Name      string        `yaml:"name"`                // Name of the client app.
+	Key       redact.Secret `yaml:"key"`                 // Local bearer key for the client app.
+	Dashboard bool          `yaml:"dashboard,omitempty"` // Grants read-only dashboard API access.
 }
 
 // LocalKeys is the server.api_keys list. Each entry is either a plain string,
