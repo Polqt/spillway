@@ -20,13 +20,14 @@ import (
 const maxBodyBytes = 10 << 20
 
 type chatHandler struct {
-	providers         providerSet
-	logger            *slog.Logger
-	router            Planner
-	tracker           candidateTracker
-	now               func() time.Time
-	bodyReadTimeout   time.Duration
-	chunkWriteTimeout time.Duration
+	providers          providerSet
+	logger             *slog.Logger
+	router             Planner
+	tracker            candidateTracker
+	now                func() time.Time
+	bodyReadTimeout    time.Duration
+	chunkWriteTimeout  time.Duration
+	captureStreamUsage bool
 }
 
 // chatBody is the part of a chat request Spillway acts on. Model is a
@@ -72,7 +73,8 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 	if body.Stream {
 		rec.beginAttempt(ref)
-		committed, _, err := serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+		streamReq, stripUsage := streamUsageRequest(req, h.captureStreamUsage)
+		committed, _, err := serveStream(w, r, ref, provider, streamReq, h.chunkWriteTimeout, h.captureStreamUsage, stripUsage)
 		if err != nil {
 			rec.setError(err)
 			rec.endAttempt(candidateErrorKind(err))
@@ -175,12 +177,13 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		rec.beginAttempt(ref)
 		var err error
 		if body.Stream {
+			streamReq, stripUsage := streamUsageRequest(req, h.captureStreamUsage)
 			rec.setProvider(ref)
 			w.Header().Set("X-Spillway-Provider", ref.Provider)
 			w.Header().Set("X-Spillway-Model", ref.Model)
 			var committed bool
 			var hint providers.RateLimit
-			committed, hint, err = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
+			committed, hint, err = serveStream(w, r, ref, provider, streamReq, h.chunkWriteTimeout, h.captureStreamUsage, stripUsage)
 			if committed {
 				if err != nil {
 					rec.setError(err)

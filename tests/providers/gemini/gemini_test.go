@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -33,6 +34,7 @@ func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
 	chatFixture := fixture(t, "chat.json")
 	streamFixture := fixture(t, "stream.sse")
 	var gotAuth, gotPath string
+	var gotIncludeUsage bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.RequestURI()
 		switch r.URL.Path {
@@ -40,6 +42,15 @@ func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
 			_, _ = w.Write(modelsFixture)
 		case "/v1beta/openai/chat/completions":
 			if r.Header.Get("Accept") == "text/event-stream" {
+				var body struct {
+					StreamOptions struct {
+						IncludeUsage bool `json:"include_usage"`
+					} `json:"stream_options"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode stream request: %v", err)
+				}
+				gotIncludeUsage = body.StreamOptions.IncludeUsage
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = w.Write(streamFixture)
 				return
@@ -63,7 +74,7 @@ func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
 	if err != nil || string(chat.Body) != string(chatFixture) {
 		t.Fatalf("Chat() = %s, %v; want recorded fixture verbatim", chat.Body, err)
 	}
-	stream, err := p.ChatStream(t.Context(), providers.ChatRequest{Model: "gemini-2.5-flash", RawBody: []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}],"stream":true}`)})
+	stream, err := p.ChatStream(t.Context(), providers.ChatRequest{Model: "gemini-2.5-flash", RawBody: []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +83,15 @@ func TestProvider_ChatStreamAndModelsUseRecordedFixtures(t *testing.T) {
 	if err != nil || !strings.Contains(string(chunk.Data), `"content":"Hello"`) {
 		t.Fatalf("Recv() = %s, %v", chunk.Data, err)
 	}
+	usageChunk, err := stream.Recv()
+	if err != nil || usageChunk.Usage == nil || usageChunk.Usage.TotalTokens != 6 {
+		t.Fatalf("usage chunk = %+v, %v; want six reported tokens", usageChunk, err)
+	}
 	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
 		t.Fatalf("stream end = %v, want io.EOF", err)
+	}
+	if !gotIncludeUsage {
+		t.Error("Gemini stream request omitted stream_options.include_usage")
 	}
 	if gotAuth != "Bearer "+providerKey || gotPath != "/v1beta/openai/chat/completions" {
 		t.Errorf("last request auth/path = %q %q", gotAuth, gotPath)

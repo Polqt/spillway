@@ -1,9 +1,12 @@
 package api_test
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -239,3 +242,282 @@ func usageStoreDBCount(t *testing.T, path string, count *int) error {
 	defer func() { _ = reader.Close() }()
 	return reader.QueryRowContext(t.Context(), "SELECT count(*) FROM requests").Scan(count)
 }
+
+func TestStream_UsageCaptureInjectsAndHidesReportedUsage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+
+	var upstreamBody string
+	provider := &usageStreamProvider{stream: func(_ context.Context, req providers.ChatRequest) (providers.Stream, error) {
+		upstreamBody = string(req.RawBody)
+		return &usageTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"choices":[{"delta":{"content":"hello"}}],"usage":{"prompt_tokens":7,"completion_tokens":5}}`), Usage: &providers.Usage{PromptTokens: 7, CompletionTokens: 5}},
+			{Data: json.RawMessage(`{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":5}}`), Usage: &providers.Usage{PromptTokens: 7, CompletionTokens: 5}},
+		}}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	rec := sendUsageStreamRequest(t.Context(), t, handler, request)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var forwarded struct {
+		StreamOptions struct {
+			IncludeUsage bool `json:"include_usage"`
+		} `json:"stream_options"`
+	}
+	if err := json.Unmarshal([]byte(upstreamBody), &forwarded); err != nil || !forwarded.StreamOptions.IncludeUsage {
+		t.Fatalf("upstream body = %s, %v; want stream_options.include_usage", upstreamBody, err)
+	}
+	if strings.Contains(rec.Body.String(), `"choices":[]`) || strings.Contains(rec.Body.String(), `"usage"`) {
+		t.Fatalf("client received injected usage data: %s", rec.Body)
+	}
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 7 || completion != 5 || source != "reported" {
+		t.Errorf("recorded usage = %d/%d %q; want 7/5 reported", prompt, completion, source)
+	}
+}
+
+func TestStream_ClientUsageRequestIsRelayedUnchanged(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	usage, err := json.Marshal(providers.Usage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageChunk := json.RawMessage(`{"choices":[],"usage":` + string(usage) + `}`)
+	var upstreamBody string
+	provider := &usageStreamProvider{stream: func(_ context.Context, req providers.ChatRequest) (providers.Stream, error) {
+		upstreamBody = string(req.RawBody)
+		return &usageTestStream{chunks: []providers.ChatChunk{{Data: usageChunk, Usage: &providers.Usage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7}}}}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}`
+	rec := sendUsageStreamRequest(t.Context(), t, handler, request)
+	if upstreamBody != request {
+		t.Errorf("upstream body = %s, want original %s", upstreamBody, request)
+	}
+	if !strings.Contains(rec.Body.String(), string(usageChunk)) {
+		t.Errorf("client did not receive requested usage chunk: %s", rec.Body)
+	}
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 4 || completion != 3 || source != "reported" {
+		t.Errorf("recorded usage = %d/%d %q; want 4/3 reported", prompt, completion, source)
+	}
+}
+
+func TestStream_MissingUsageEstimatesReportedText(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	provider := &usageStreamProvider{stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &usageTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"choices":[{"delta":{"content":"abc"}}]}`)},
+			{Data: json.RawMessage(`{"choices":[{"delta":{"content":[{"type":"text","text":"defg"},{"type":"image"}]}}]}`)},
+			{Data: json.RawMessage(`{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"hij"}}]}}]}`)},
+		}}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	_ = sendUsageStreamRequest(t.Context(), t, handler, request)
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 2 || completion != 9 || source != "estimated" {
+		t.Errorf("recorded usage = %d/%d %q; want 2/9 estimated", prompt, completion, source)
+	}
+}
+
+func TestStream_MidstreamErrorRecordsEstimatedUsage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	provider := &usageStreamProvider{stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &usageTestStream{
+			chunks: []providers.ChatChunk{{Data: json.RawMessage(`{"choices":[{"delta":{"content":"1234567"}}]}`)}},
+			endErr: providers.ErrUpstreamUnavailable,
+		}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	rec := sendUsageStreamRequest(t.Context(), t, handler, request)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"code":"upstream_unavailable"`) {
+		t.Fatalf("stream response = %d %s; want OpenAI mid-stream error", rec.Code, rec.Body)
+	}
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 2 || completion != 3 || source != "estimated" {
+		t.Errorf("recorded usage = %d/%d %q; want 2/3 estimated", prompt, completion, source)
+	}
+}
+
+func TestStream_ClientDisconnectRecordsEstimatedUsage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	provider := &usageStreamProvider{stream: func(ctx context.Context, _ providers.ChatRequest) (providers.Stream, error) {
+		return &usageTestStream{
+			ctx: ctx, waitForCancel: true,
+			chunks: []providers.ChatChunk{{Data: json.RawMessage(`{"choices":[{"delta":{"content":"1234567"}}]}`)}},
+		}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+keyCI)
+	response, err := srv.Client().Do(request)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil || line != "data: {\"choices\":[{\"delta\":{\"content\":\"1234567\"}}]}\n" {
+		cancel()
+		_ = response.Body.Close()
+		t.Fatalf("first event = %q, %v", line, err)
+	}
+	cancel()
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 2 || completion != 3 || source != "estimated" {
+		t.Errorf("recorded usage = %d/%d %q; want 2/3 estimated", prompt, completion, source)
+	}
+}
+
+func TestStream_StoreOffDoesNotChangeRequestOrChunks(t *testing.T) {
+	const request = `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	const chunk = `{"choices":[{"delta":{"content":"hello"}}]}`
+	var upstreamBody string
+	provider := &usageStreamProvider{stream: func(_ context.Context, req providers.ChatRequest) (providers.Stream, error) {
+		upstreamBody = string(req.RawBody)
+		return &usageTestStream{chunks: []providers.ChatChunk{{Data: json.RawMessage(chunk)}}}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, nil)
+	rec := sendUsageStreamRequest(t.Context(), t, handler, request)
+	if upstreamBody != request {
+		t.Errorf("store-off upstream request = %s, want %s", upstreamBody, request)
+	}
+	if want := "data: " + chunk + "\n\n" + "data: [DONE]\n\n"; rec.Body.String() != want {
+		t.Errorf("store-off stream = %q, want byte-for-byte %q", rec.Body.String(), want)
+	}
+}
+
+func newUsageStreamHandler(t *testing.T, provider *usageStreamProvider, usageStore *store.Store) http.Handler {
+	t.Helper()
+	set, err := providers.NewSet(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorder interface {
+		Record(context.Context, store.Request) error
+	}
+	if usageStore != nil {
+		recorder = usageStore
+	}
+	handler, err := api.NewHandler(api.Options{
+		Providers: set, LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger: slog.New(slog.DiscardHandler), UsageRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func sendUsageStreamRequest(ctx context.Context, t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func usageStoreDBUsage(t *testing.T, path string, prompt, completion *int, source *string) error {
+	t.Helper()
+	reader, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reader.Close() }()
+	return reader.QueryRowContext(t.Context(), "SELECT prompt_tokens, completion_tokens, usage_source FROM requests").Scan(prompt, completion, source)
+}
+
+type usageStreamProvider struct {
+	stream func(context.Context, providers.ChatRequest) (providers.Stream, error)
+}
+
+func (*usageStreamProvider) Name() string                                      { return "capture" }
+func (*usageStreamProvider) Models(context.Context) ([]providers.Model, error) { return nil, nil }
+func (*usageStreamProvider) Chat(context.Context, providers.ChatRequest) (providers.ChatResponse, error) {
+	return providers.ChatResponse{}, errors.New("not used")
+}
+func (p *usageStreamProvider) ChatStream(ctx context.Context, req providers.ChatRequest) (providers.Stream, error) {
+	return p.stream(ctx, req)
+}
+
+type usageTestStream struct {
+	chunks        []providers.ChatChunk
+	index         int
+	ctx           context.Context
+	waitForCancel bool
+	endErr        error
+}
+
+func (s *usageTestStream) Recv() (providers.ChatChunk, error) {
+	if s.index == len(s.chunks) {
+		if s.waitForCancel {
+			<-s.ctx.Done()
+			return providers.ChatChunk{}, s.ctx.Err()
+		}
+		if s.endErr != nil {
+			return providers.ChatChunk{}, s.endErr
+		}
+		return providers.ChatChunk{}, io.EOF
+	}
+	chunk := s.chunks[s.index]
+	s.index++
+	return chunk, nil
+}
+func (*usageTestStream) Close() error { return nil }

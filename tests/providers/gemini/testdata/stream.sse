@@ -1,3 +1,5 @@
 data: {"id":"chatcmpl-gemini","object":"chat.completion.chunk","model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
+data: {"id":"chatcmpl-gemini","object":"chat.completion.chunk","model":"gemini-2.5-flash","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}
+
 data: [DONE]

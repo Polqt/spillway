@@ -105,8 +105,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
-		tracker: o.Tracker,
-		now:     o.Now,
+		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil,
 	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.

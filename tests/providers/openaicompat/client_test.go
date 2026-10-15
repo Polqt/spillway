@@ -67,6 +67,7 @@ func TestNew_RequiresKeyExceptForOllama(t *testing.T) {
 func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 	modelFixture, chatFixture, streamFixture := fixture(t, "models.json"), fixture(t, "chat.json"), fixture(t, "stream.sse")
 	var authValues []string
+	var streamIncludeUsage bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authValues = append(authValues, r.Header.Get("Authorization"))
 		switch r.URL.Path {
@@ -74,6 +75,15 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 			_, _ = w.Write(modelFixture)
 		case "/v1/chat/completions":
 			if r.Header.Get("Accept") == "text/event-stream" {
+				var body struct {
+					StreamOptions struct {
+						IncludeUsage bool `json:"include_usage"`
+					} `json:"stream_options"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode stream request: %v", err)
+				}
+				streamIncludeUsage = body.StreamOptions.IncludeUsage
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = w.Write(streamFixture)
 				return
@@ -96,7 +106,7 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 		t.Fatalf("Chat() = %s, %v; want fixture verbatim", chat.Body, err)
 	}
 
-	stream, err := c.ChatStream(t.Context(), providers.ChatRequest{Model: "llama-3.1-8b-instant", RawBody: []byte(`{"model":"groq/llama-3.1-8b-instant","messages":[{"role":"user","content":"hi"}],"stream":true}`)})
+	stream, err := c.ChatStream(t.Context(), providers.ChatRequest{Model: "llama-3.1-8b-instant", RawBody: []byte(`{"model":"groq/llama-3.1-8b-instant","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +124,9 @@ func TestClient_ChatModelsAndStreamUseRecordedFixtures(t *testing.T) {
 	}
 	if len(chunks) != 3 || !strings.Contains(chunks[0], `"content":"Hello"`) || !strings.Contains(chunks[2], `"total_tokens":8`) {
 		t.Errorf("stream chunks = %q", chunks)
+	}
+	if !streamIncludeUsage {
+		t.Error("Groq stream request omitted stream_options.include_usage")
 	}
 	for _, auth := range authValues {
 		if auth != "Bearer "+providerKey {
@@ -366,6 +379,7 @@ func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
 			chatFixture := fixture(t, tt.chatFile)
 			streamFixture := fixture(t, tt.streamFile)
 			var gotModel string
+			var gotIncludeUsage bool
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if got, want := r.Header.Get("Authorization"), tt.wantAuth; got != want {
 					t.Errorf("Authorization = %q, want %q", got, want)
@@ -376,13 +390,17 @@ func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
 				case "/v1/chat/completions":
 					body, _ := io.ReadAll(r.Body)
 					var request struct {
-						Model string `json:"model"`
+						Model         string `json:"model"`
+						StreamOptions struct {
+							IncludeUsage bool `json:"include_usage"`
+						} `json:"stream_options"`
 					}
 					if err := json.Unmarshal(body, &request); err != nil {
 						t.Errorf("decode model from request: %v", err)
 					}
 					gotModel = request.Model
 					if r.Header.Get("Accept") == "text/event-stream" {
+						gotIncludeUsage = request.StreamOptions.IncludeUsage
 						w.Header().Set("Content-Type", "text/event-stream")
 						_, _ = w.Write(streamFixture)
 						return
@@ -414,7 +432,7 @@ func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
 				t.Errorf("upstream model = %q, want %q", gotModel, tt.model)
 			}
 			stream, err := c.ChatStream(t.Context(), providers.ChatRequest{
-				Model: tt.model, RawBody: []byte(`{"model":"` + tt.name + `/` + tt.model + `","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+				Model: tt.model, RawBody: []byte(`{"model":"` + tt.name + `/` + tt.model + `","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -431,8 +449,11 @@ func TestClient_OpenRouterAndOllamaUseRecordedFixtures(t *testing.T) {
 				}
 				chunks = append(chunks, string(chunk.Data))
 			}
-			if len(chunks) != 1 || !strings.Contains(chunks[0], `"content":"ok"`) {
+			if len(chunks) != 2 || !strings.Contains(chunks[0], `"content":"ok"`) || !strings.Contains(chunks[1], `"total_tokens":6`) {
 				t.Errorf("stream chunks = %q; want recorded fixture chunk", chunks)
+			}
+			if !gotIncludeUsage {
+				t.Errorf("%s stream request omitted stream_options.include_usage", tt.name)
 			}
 		})
 	}
