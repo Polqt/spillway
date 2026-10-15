@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
+	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 )
 
@@ -835,6 +837,101 @@ func TestChat_TierExhaustionIsBoundedAndDoesNotLeakProviderText(t *testing.T) {
 	if got := strings.Count(logs.String(), `msg="tier candidate failed"`); got != 2 {
 		t.Errorf("failed-attempt log lines = %d, want 2: %s", got, logs)
 	}
+}
+
+func TestChat_TierCooldownExhaustionUsesEarliestRetryAfter(t *testing.T) {
+	first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, providers.RetryAfterError{After: 34 * time.Second, Kind: providers.ErrRateLimited}
+	}}
+	second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited}
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []providers.ModelRef{{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tracker:   tracker,
+		Now:       func() time.Time { return now },
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers:     map[string][]providers.ModelRef{"demo": refs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+		req.Header.Set("Authorization", "Bearer "+keyCI)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assertError(t, rec, http.StatusTooManyRequests, "api_error", "rate_limit_exceeded")
+		retry, parseErr := strconv.Atoi(rec.Header().Get("Retry-After"))
+		if parseErr != nil || retry != 7 {
+			t.Errorf("Retry-After = %q, want earliest cooldown of 7", rec.Header().Get("Retry-After"))
+		}
+		for _, candidate := range []string{"first/candidate rate limited (retry in 34s)", "second/candidate rate limited (retry in 7s)"} {
+			if !strings.Contains(rec.Body.String(), candidate) {
+				t.Errorf("cooldown reason %q missing from body: %s", candidate, rec.Body)
+			}
+		}
+	}
+	if got := first.calls.Load(); got != 1 {
+		t.Errorf("first provider calls = %d, want first request only", got)
+	}
+	if got := second.calls.Load(); got != 1 {
+		t.Errorf("second provider calls = %d, want first request only", got)
+	}
+}
+
+func TestChat_TierCooldownHandlesConcurrentRequests(t *testing.T) {
+	first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, providers.ErrRateLimited
+	}}
+	second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: json.RawMessage(`{"model":"second"}`)}, nil
+	}}
+	set, err := providers.NewSet(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []providers.ModelRef{{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}
+	tracker, err := quota.New(quota.Options{Candidates: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tracker:   tracker,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+		Tiers:     map[string][]providers.ModelRef{"demo": refs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("concurrent response status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestChat_TierUnknownNamesConfiguredTiersAndAutoStaysUnavailable(t *testing.T) {

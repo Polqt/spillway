@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ChatRequest is an OpenAI chat completion request.
@@ -47,7 +48,24 @@ func (m Message) Text() string {
 
 // ChatResponse carries a complete OpenAI chat.completion object verbatim.
 type ChatResponse struct {
+	// Body is the complete OpenAI-format response.
 	Body json.RawMessage
+	// RateLimit contains quota hints from the successful response, when present.
+	RateLimit RateLimit
+}
+
+// RateLimit carries provider quota hints for a successful response.
+type RateLimit struct {
+	// RemainingRequests is the reported number of remaining requests.
+	RemainingRequests int
+	// RemainingTokens is the reported number of remaining tokens.
+	RemainingTokens int
+	// ResetRequests is the duration until the request quota resets.
+	ResetRequests time.Duration
+	// ResetTokens is the duration until the token quota resets.
+	ResetTokens time.Duration
+	// Known reports whether the provider supplied quota hints.
+	Known bool
 }
 
 // Usage is the token accounting of one completion.

@@ -19,6 +19,7 @@ import (
 	"github.com/Polqt/spillway/internal/providers/gemini"
 	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
+	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 )
 
@@ -144,6 +145,18 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 		}
 		tiers[name] = candidates
 	}
+	var tracker *quota.Tracker
+	now := time.Now
+	if len(tiers) > 0 {
+		candidates := make([]providers.ModelRef, 0)
+		for _, refs := range tiers {
+			candidates = append(candidates, refs...)
+		}
+		tracker, err = quota.New(quota.Options{Now: now, Candidates: candidates})
+		if err != nil {
+			return nil, fmt.Errorf("build quota tracker: %w", err)
+		}
+	}
 	var allowedHosts []string
 	if cfg.Server.Loopback() {
 		allowedHosts = api.LoopbackHosts(cfg.Server.Host())
@@ -151,9 +164,11 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 	return api.NewHandler(api.Options{
 		Providers:    set,
 		Tiers:        tiers,
+		Tracker:      tracker,
 		LocalKeys:    keys,
 		AllowedHosts: allowedHosts,
 		Logger:       logger,
+		Now:          now,
 	})
 }
 

@@ -23,6 +23,8 @@ type chatHandler struct {
 	providers         providerSet
 	logger            *slog.Logger
 	tiers             map[string][]providers.ModelRef
+	tracker           candidateTracker
+	now               func() time.Time
 	bodyReadTimeout   time.Duration
 	chunkWriteTimeout time.Duration
 }
@@ -90,6 +92,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type candidateFailure struct {
 	ref    providers.ModelRef
 	reason string
+	until  time.Time
 }
 
 func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier string, candidates []providers.ModelRef, body chatBody) {
@@ -101,6 +104,12 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 			return
 		}
 		rec.err = nil
+		if h.tracker != nil {
+			if available, until, reason := h.tracker.Available(ref); !available {
+				failures = append(failures, candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until})
+				continue
+			}
+		}
 		provider, ok := h.providers.Lookup(ref.Provider)
 		if !ok {
 			// A validated config cannot reach this path, but an incomplete API option should fail safely.
@@ -120,11 +129,17 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 			w.Header().Set("X-Spillway-Model", ref.Model)
 			err = serveStream(w, r, ref, provider, req, h.chunkWriteTimeout)
 			if err == nil {
+				if h.tracker != nil {
+					h.tracker.Observe(ref, nil, providers.RateLimit{})
+				}
 				return
 			}
 		} else {
 			resp, chatErr := provider.Chat(r.Context(), req)
 			if chatErr == nil {
+				if h.tracker != nil {
+					h.tracker.Observe(ref, nil, resp.RateLimit)
+				}
 				rec.provider, rec.model = ref.Provider, ref.Model
 				w.Header().Set("X-Spillway-Provider", ref.Provider)
 				w.Header().Set("X-Spillway-Model", ref.Model)
@@ -137,8 +152,16 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 		if r.Context().Err() != nil {
 			return
 		}
-		reason := candidateReason(err)
-		failures = append(failures, candidateFailure{ref: ref, reason: reason})
+		if h.tracker != nil {
+			h.tracker.Observe(ref, err, providers.RateLimit{})
+			if available, until, reason := h.tracker.Available(ref); !available {
+				failures = append(failures, candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until})
+			} else {
+				failures = append(failures, candidateFailure{ref: ref, reason: candidateReason(err)})
+			}
+		} else {
+			failures = append(failures, candidateFailure{ref: ref, reason: candidateReason(err)})
+		}
 		h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
 			clearCandidateHeaders(w)
@@ -150,7 +173,45 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 	clearCandidateHeaders(w)
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
+	if retryAfter, allCooling := earliestCooldown(failures, len(candidates), h.now()); allCooling {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, message, typeAPI, "rate_limit_exceeded")
+		return
+	}
 	writeError(w, http.StatusServiceUnavailable, message, typeAPI, "no_candidate_available")
+}
+
+func cooldownReason(reason string, until, now time.Time) string {
+	if reason == "" || until.IsZero() {
+		return reason
+	}
+	remaining := until.Sub(now)
+	if remaining < 0 {
+		remaining = 0
+	}
+	seconds := int((remaining + time.Second - 1) / time.Second)
+	return fmt.Sprintf("%s (retry in %ds)", reason, seconds)
+}
+
+func earliestCooldown(failures []candidateFailure, candidateCount int, now time.Time) (int, bool) {
+	if candidateCount == 0 || len(failures) != candidateCount {
+		return 0, false
+	}
+	var earliest time.Time
+	for _, failure := range failures {
+		if failure.until.IsZero() {
+			return 0, false
+		}
+		if earliest.IsZero() || failure.until.Before(earliest) {
+			earliest = failure.until
+		}
+	}
+	remaining := earliest.Sub(now)
+	if remaining < 0 {
+		remaining = 0
+	}
+	seconds := int((remaining + time.Second - 1) / time.Second)
+	return seconds, true
 }
 
 func clearCandidateHeaders(w http.ResponseWriter) {
@@ -160,7 +221,11 @@ func clearCandidateHeaders(w http.ResponseWriter) {
 }
 
 func (h *chatHandler) logCandidateFailure(r *http.Request, tier string, ref providers.ModelRef, kind string) {
-	h.logger.WarnContext(r.Context(), "tier candidate failed", "tier", tier, "provider", ref.Provider, "model", ref.Model, "error_kind", kind)
+	log := h.logger.WarnContext
+	if kind == "unauthorized" {
+		log = h.logger.ErrorContext
+	}
+	log(r.Context(), "tier candidate failed", "tier", tier, "provider", ref.Provider, "model", ref.Model, "error_kind", kind)
 }
 
 func candidateErrorKind(err error) string {

@@ -1,0 +1,183 @@
+package quota_test
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/quota"
+)
+
+func TestTracker_RetryAfterAndBackoffExpireAtExpectedTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ref := providers.ModelRef{Provider: "groq", Model: "one"}
+		tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: []providers.ModelRef{ref}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tracker.Observe(ref, providers.RetryAfterError{After: 34 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
+		if available, until, reason := tracker.Available(ref); available || !until.Equal(time.Now().Add(34*time.Second)) || reason != "rate limited" {
+			t.Fatalf("Available() = %v, %v, %q; want false, 34s resume, rate limited", available, until, reason)
+		}
+		<-time.After(33 * time.Second)
+		if available, _, _ := tracker.Available(ref); available {
+			t.Fatal("candidate available at 33s, want cooling")
+		}
+		<-time.After(time.Second)
+		if available, _, _ := tracker.Available(ref); !available {
+			t.Fatal("candidate unavailable at 34s, want available")
+		}
+	})
+
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	ref := providers.ModelRef{Provider: "groq", Model: "one"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tracker.Observe(ref, nil, providers.RateLimit{})
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(15 * time.Second)) {
+		t.Fatalf("first no-hint cooldown ends at %v, want 15s", until)
+	}
+	now = now.Add(15 * time.Second)
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(30 * time.Second)) {
+		t.Fatalf("second no-hint cooldown ends at %v, want 30s", until)
+	}
+	now = now.Add(30 * time.Second)
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(60 * time.Second)) {
+		t.Fatalf("third no-hint cooldown ends at %v, want 60s", until)
+	}
+	now = now.Add(60 * time.Second)
+	tracker.Observe(ref, nil, providers.RateLimit{})
+	if available, _, _ := tracker.Available(ref); !available {
+		t.Fatal("success did not reset rate-limit cooldown")
+	}
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(15 * time.Second)) {
+		t.Fatalf("cooldown after success ends at %v, want 15s", until)
+	}
+}
+
+func TestTracker_ProviderFailuresShareCooldownAcrossConfiguredCandidates(t *testing.T) {
+	now := time.Now()
+	groqOne := providers.ModelRef{Provider: "groq", Model: "one"}
+	groqTwo := providers.ModelRef{Provider: "groq", Model: "two"}
+	gemini := providers.ModelRef{Provider: "gemini", Model: "one"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{groqOne, groqTwo, gemini}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(groqOne, providers.RetryAfterError{After: 10 * time.Second, Kind: providers.ErrPaymentRequired}, providers.RateLimit{})
+	for _, ref := range []providers.ModelRef{groqOne, groqTwo} {
+		if available, until, reason := tracker.Available(ref); available || !until.Equal(now.Add(10*time.Second)) || reason != "payment required" {
+			t.Errorf("Available(%s) = %v, %v, %q", ref, available, until, reason)
+		}
+	}
+	if available, _, _ := tracker.Available(gemini); !available {
+		t.Fatal("payment cooldown affected another provider")
+	}
+
+	tracker.Observe(groqOne, providers.ErrUnauthorized, providers.RateLimit{})
+	if available, _, reason := tracker.Available(groqTwo); available || reason != "unauthorized" {
+		t.Fatalf("provider key rejection did not cool sibling: %v, %q", available, reason)
+	}
+}
+
+func TestTracker_ModelNotFoundAndIgnoredErrors(t *testing.T) {
+	now := time.Now()
+	ref := providers.ModelRef{Provider: "gemini", Model: "gone"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(ref, providers.ErrModelNotFound, providers.RateLimit{})
+	if available, until, reason := tracker.Available(ref); available || !until.Equal(now.Add(15*time.Minute)) || reason != "model not found" {
+		t.Fatalf("404 cooldown = %v, %v, %q", available, until, reason)
+	}
+	now = now.Add(15 * time.Minute)
+	if available, _, _ := tracker.Available(ref); !available {
+		t.Fatal("candidate unavailable after 15m")
+	}
+	tracker.Observe(ref, providers.ErrBadRequest, providers.RateLimit{})
+	tracker.Observe(ref, context.Canceled, providers.RateLimit{})
+	if available, _, _ := tracker.Available(ref); !available {
+		t.Fatal("ignored error changed candidate state")
+	}
+	unknown := providers.ModelRef{Provider: "client-input", Model: "unbounded"}
+	tracker.Observe(unknown, providers.ErrUnauthorized, providers.RateLimit{})
+	if available, _, _ := tracker.Available(unknown); !available {
+		t.Fatal("unconfigured reference was tracked")
+	}
+}
+
+func TestTracker_ClampsRetryTimeAndBoundsFallbackBackoff(t *testing.T) {
+	now := time.Now()
+	ref := providers.ModelRef{Provider: "groq", Model: "one"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(ref, providers.RetryAfterError{After: 999999999 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(24 * time.Hour)) {
+		t.Fatalf("retry clamp = %v, want 24h", until)
+	}
+	now = now.Add(24 * time.Hour)
+	tracker.Observe(ref, nil, providers.RateLimit{})
+	for i := range 7 {
+		tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+		if i < 6 {
+			now = now.Add(10 * time.Minute)
+		}
+	}
+	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(10 * time.Minute)) {
+		t.Fatalf("backoff cap ends at %v, want 10m", until)
+	}
+}
+
+func TestTracker_ConcurrentFailuresNeverShortenCooldown(t *testing.T) {
+	now := time.Now()
+	ref := providers.ModelRef{Provider: "groq", Model: "one"}
+	sibling := providers.ModelRef{Provider: "groq", Model: "two"}
+	tracker, err := quota.New(quota.Options{Now: func() time.Time { return now }, Candidates: []providers.ModelRef{ref, sibling}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(ref, providers.RetryAfterError{After: 34 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	if _, until, reason := tracker.Available(ref); !until.Equal(now.Add(34*time.Second)) || reason != "rate limited" {
+		t.Fatalf("shorter rate-limit failure shortened cooldown to %v, reason %q", until, reason)
+	}
+	tracker.Observe(ref, providers.RetryAfterError{After: 24 * time.Hour, Kind: providers.ErrPaymentRequired}, providers.RateLimit{})
+	tracker.Observe(sibling, providers.ErrUnauthorized, providers.RateLimit{})
+	if _, until, reason := tracker.Available(sibling); !until.Equal(now.Add(24*time.Hour)) || reason != "payment required" {
+		t.Fatalf("key rejection shortened provider cooldown to %v, reason %q", until, reason)
+	}
+}
+
+func TestTracker_ConcurrentObserveAndAvailable(t *testing.T) {
+	refs := []providers.ModelRef{{Provider: "groq", Model: "one"}, {Provider: "gemini", Model: "two"}}
+	tracker, err := quota.New(quota.Options{Candidates: refs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				tracker.Observe(refs[0], errors.Join(providers.ErrRateLimited, errors.New("upstream")), providers.RateLimit{})
+				tracker.Available(refs[1])
+			}
+		}()
+	}
+	wg.Wait()
+}

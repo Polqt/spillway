@@ -25,18 +25,27 @@ type providerSet interface {
 	Providers() []providers.Provider
 }
 
+type candidateTracker interface {
+	Available(ref providers.ModelRef) (bool, time.Time, string)
+	Observe(ref providers.ModelRef, err error, hint providers.RateLimit)
+}
+
 // Options configures NewHandler.
 type Options struct {
 	Providers providerSet
 	// Tiers maps virtual tier names to candidates in their configured order.
 	Tiers map[string][]providers.ModelRef
+	// Tracker stores cooldowns for configured tier candidates.
+	Tracker candidateTracker
 	// LocalKeys must hold at least one non-empty key; there is no
 	// unauthenticated mode (ADR 0003).
 	LocalKeys []LocalKey
 	// AllowedHosts, when non-nil, enables the Host check. Set it to
 	// LoopbackHosts only when listening on loopback.
-	AllowedHosts      []string
-	Logger            *slog.Logger
+	AllowedHosts []string
+	Logger       *slog.Logger
+	// Now supplies the clock used to format cooldown retry times.
+	Now               func() time.Time
 	BodyReadTimeout   time.Duration
 	ChunkWriteTimeout time.Duration
 	ModelsTimeout     time.Duration
@@ -60,6 +69,9 @@ func NewHandler(o Options) (http.Handler, error) {
 	if o.ModelsTimeout <= 0 {
 		o.ModelsTimeout = 10 * time.Second
 	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 	auth, err := newAuthenticator(o.LocalKeys)
 	if err != nil {
 		return nil, err
@@ -75,6 +87,8 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, tiers: tiers,
+		tracker: o.Tracker,
+		now:     o.Now,
 	})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.
