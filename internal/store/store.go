@@ -20,7 +20,7 @@ import (
 )
 
 // SchemaVersion is the newest schema this binary can open.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const pruneInterval = time.Hour
 
@@ -68,6 +68,7 @@ type Skip struct {
 
 // Attempt describes one provider request.
 type Attempt struct {
+	At               time.Time
 	Provider         string
 	Model            string
 	Outcome          string
@@ -239,10 +240,13 @@ func (s *Store) Record(ctx context.Context, r Request) (recordErr error) {
 		return fmt.Errorf("read usage request id: %w", err)
 	}
 	for _, attempt := range r.Attempts {
+		if attempt.At.IsZero() {
+			attempt.At = r.At
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (
-			request_id, provider, model, outcome, latency_ms, prompt_tokens,
+			request_id, at_ns, provider, model, outcome, latency_ms, prompt_tokens,
 			completion_tokens, usage_source, cost_micro_usd, cost_source
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, bounded(attempt.Provider, 64), bounded(attempt.Model, 256),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, attempt.At.UTC().UnixNano(), bounded(attempt.Provider, 64), bounded(attempt.Model, 256),
 			bounded(attempt.Outcome, 64), attempt.LatencyMS, attempt.PromptTokens, attempt.CompletionTokens,
 			bounded(attempt.UsageSource, 16), attempt.CostMicroUSD, bounded(attempt.CostSource, 16)); err != nil {
 			_ = tx.Rollback()
@@ -262,7 +266,7 @@ func (s *Store) RecordFailures() int64 {
 
 // SpendSince returns recorded request costs at or after the UTC timestamp.
 func (s *Store) SpendSince(ctx context.Context, since time.Time) (int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT cost_micro_usd FROM requests WHERE at_ns >= ?`, since.UTC().UnixNano())
+	rows, err := s.db.QueryContext(ctx, `SELECT cost_micro_usd FROM attempts WHERE at_ns >= ?`, since.UTC().UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("query usage spend: %w", err)
 	}

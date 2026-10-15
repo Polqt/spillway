@@ -18,7 +18,7 @@ import (
 func TestGate_UTCPeriodsAndFreeModels(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
-		gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 10, MonthlyMicroUSD: 20}, Providers: map[string]config.Provider{"groq": {}}, Now: func() time.Time { return now }})
+		gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 10}, Providers: map[string]config.Provider{"groq": {}}, Now: func() time.Time { return now }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,6 +42,14 @@ func TestGate_UTCPeriodsAndFreeModels(t *testing.T) {
 		monthGate.Charge(now, 10)
 		if allowed, reset := monthGate.Allow(paid); allowed || !reset.Equal(time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)) {
 			t.Fatalf("monthly limit = %v, %v; want blocked until UTC month start", allowed, reset)
+		}
+		bothGate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 10, MonthlyMicroUSD: 10}, Providers: map[string]config.Provider{"groq": {}}, Now: func() time.Time { return time.Date(2026, time.February, 1, 8, 0, 0, 0, time.UTC) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bothGate.Charge(time.Date(2026, time.February, 1, 8, 0, 0, 0, time.UTC), 10)
+		if allowed, reset := bothGate.Allow(paid); allowed || !reset.Equal(time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("simultaneous daily and monthly limits = %v, %v; want latest reset", allowed, reset)
 		}
 	})
 }
@@ -117,7 +125,10 @@ func TestGate_SeedsSpendFromPersistedStoreAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := usageStore.Record(t.Context(), store.Request{At: now.Add(-time.Hour), CostMicroUSD: 50}); err != nil {
+	if err := usageStore.Record(t.Context(), store.Request{
+		At: now.Add(-time.Hour), CostMicroUSD: 50,
+		Attempts: []store.Attempt{{At: now.Add(-time.Hour), CostMicroUSD: 50}},
+	}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	if err := usageStore.Close(); err != nil {

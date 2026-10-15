@@ -65,7 +65,7 @@ func NewGate(ctx context.Context, o GateOptions) (*Gate, error) {
 	return g, nil
 }
 
-// Allow reports whether ref can be used and the earliest applicable reset.
+// Allow reports whether ref can be used and when all exhausted limits reset.
 func (g *Gate) Allow(ref providers.ModelRef) (bool, time.Time) {
 	if config.IsZeroSpendEligible(ref, g.providers[ref.Provider]) {
 		return true, time.Time{}
@@ -109,7 +109,7 @@ func (g *Gate) nextReset(now time.Time) time.Time {
 	}
 	if g.limits.MonthlyMicroUSD > 0 && g.monthly >= g.limits.MonthlyMicroUSD {
 		monthlyReset := g.month.AddDate(0, 1, 0)
-		if reset.IsZero() || monthlyReset.Before(reset) {
+		if reset.IsZero() || monthlyReset.After(reset) {
 			reset = monthlyReset
 		}
 	}

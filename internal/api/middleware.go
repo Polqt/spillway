@@ -84,6 +84,11 @@ func (rec *requestRecord) endAttempt(outcome string) {
 	attempt.PromptTokens = rec.usage.PromptTokens
 	attempt.CompletionTokens = rec.usage.CompletionTokens
 	attempt.UsageSource = rec.usage.UsageSource
+	at := time.Now()
+	if rec.now != nil {
+		at = rec.now()
+	}
+	attempt.At = at
 	if rec.pricer != nil {
 		cost := rec.pricer.Estimate(providers.ModelRef{Provider: attempt.Provider, Model: attempt.Model}, attempt.PromptTokens, attempt.CompletionTokens, rec.reportedCost)
 		attempt.CostMicroUSD, attempt.CostSource = cost.MicroUSD, cost.Source
@@ -94,10 +99,6 @@ func (rec *requestRecord) endAttempt(outcome string) {
 			rec.usage.CostSource = "mixed"
 		}
 		if rec.gate != nil {
-			at := time.Now()
-			if rec.now != nil {
-				at = rec.now()
-			}
 			rec.gate.Charge(at, cost.MicroUSD)
 		}
 	}

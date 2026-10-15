@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -67,9 +68,9 @@ func TestStore_SpendSinceSumsPersistedRequestCosts(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	for _, request := range []store.Request{
-		{At: now.Add(-48 * time.Hour), CostMicroUSD: 900},
-		{At: now.Add(-time.Hour), CostMicroUSD: 1234},
-		{At: now, CostMicroUSD: 5678},
+		{At: now.Add(-48 * time.Hour), CostMicroUSD: 900, Attempts: []store.Attempt{{At: now.Add(-48 * time.Hour), CostMicroUSD: 900}}},
+		{At: now.Add(-time.Hour), CostMicroUSD: 1234, Attempts: []store.Attempt{{At: now.Add(-time.Hour), CostMicroUSD: 1234}}},
+		{At: now, CostMicroUSD: 5678, Attempts: []store.Attempt{{At: now, CostMicroUSD: 5678}}},
 	} {
 		if err := s.Record(t.Context(), request); err != nil {
 			t.Fatalf("Record: %v", err)
@@ -81,6 +82,63 @@ func TestStore_SpendSinceSumsPersistedRequestCosts(t *testing.T) {
 	}
 	if got != 6912 {
 		t.Errorf("SpendSince = %d micro-USD, want 6912", got)
+	}
+}
+
+func TestStore_SpendSinceUsesAttemptCompletionPeriod(t *testing.T) {
+	t.Parallel()
+	requestAt := time.Date(2026, time.June, 30, 23, 59, 0, 0, time.UTC)
+	attemptAt := requestAt.Add(2 * time.Minute)
+	s, err := store.Open(t.Context(), store.Options{Path: filepath.Join(t.TempDir(), "usage.db"), Retention: 90 * 24 * time.Hour, Now: func() time.Time { return attemptAt }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Record(t.Context(), store.Request{
+		At: requestAt, CostMicroUSD: 123,
+		Attempts: []store.Attempt{{At: attemptAt, CostMicroUSD: 123}},
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	got, err := s.SpendSince(t.Context(), time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SpendSince: %v", err)
+	}
+	if got != 123 {
+		t.Errorf("SpendSince after UTC month start = %d, want attempt cost 123", got)
+	}
+}
+
+func TestOpen_BackfillsAttemptCostTimes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "usage.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, time.May, 4, 9, 0, 0, 0, time.UTC).UnixNano()
+	for _, statement := range []string{
+		"CREATE TABLE requests (id INTEGER PRIMARY KEY, at_ns INTEGER NOT NULL)",
+		"CREATE TABLE attempts (id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, cost_micro_usd INTEGER NOT NULL)",
+		"INSERT INTO requests (id, at_ns) VALUES (1, " + strconv.FormatInt(at, 10) + ")",
+		"INSERT INTO attempts (id, request_id, cost_micro_usd) VALUES (1, 1, 77)",
+		"PRAGMA user_version = 1",
+	} {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatalf("seed v1 store: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(t.Context(), store.Options{Path: path, Retention: 90 * 24 * time.Hour, Now: func() time.Time { return time.Unix(0, at) }})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	got, err := s.SpendSince(t.Context(), time.Unix(0, at).Add(-time.Second))
+	if err != nil || got != 77 {
+		t.Errorf("SpendSince migrated data = %d, %v; want 77, nil", got, err)
 	}
 }
 
