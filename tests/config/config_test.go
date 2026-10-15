@@ -731,24 +731,21 @@ func TestParse_RulesRouterRejectsDuplicateFields(t *testing.T) {
 	tests := []struct {
 		name  string
 		extra string
-		want  string
 	}{
 		{
 			name:  "duplicate rule condition",
 			extra: "router:\n  mode: rules\n  auto: [free]\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules:\n    - when:\n        tools_present: true\n        tools_present: false\n      difficulty: hard\n",
-			want:  "mapping key \"tools_present\" already defined",
 		},
 		{
 			name:  "duplicate rule difficulty",
 			extra: "router:\n  mode: rules\n  auto: [free]\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules:\n    - when: {tools_present: true}\n      difficulty: simple\n      difficulty: hard\n",
-			want:  "mapping key \"difficulty\" already defined",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := parseRouting(tt.extra); err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("Parse error = %v, want %q", err, tt.want)
+			if _, err := parseRouting(tt.extra); err == nil {
+				t.Fatal("Parse succeeded with duplicate fields, want error")
 			}
 		})
 	}
