@@ -19,6 +19,7 @@ import (
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/mock"
+	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
 	"github.com/Polqt/spillway/internal/store"
@@ -322,7 +323,7 @@ func TestStream_ClientUsageRequestIsRelayedUnchanged(t *testing.T) {
 	}
 }
 
-func TestStream_MissingUsageEstimatesReportedText(t *testing.T) {
+func TestStream_MissingUsageEstimatesRelayedDelta(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
 	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
 	if err != nil {
@@ -344,8 +345,97 @@ func TestStream_MissingUsageEstimatesReportedText(t *testing.T) {
 	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
 		t.Fatal(err)
 	}
-	if prompt != 2 || completion != 9 || source != "estimated" {
-		t.Errorf("recorded usage = %d/%d %q; want 2/9 estimated", prompt, completion, source)
+	if prompt != 2 || completion != 29 || source != "estimated" {
+		t.Errorf("recorded usage = %d/%d %q; want 2/29 estimated", prompt, completion, source)
+	}
+}
+
+func TestStream_MissingUsageEstimatesToolCallName(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+	provider := &usageStreamProvider{stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &usageTestStream{chunks: []providers.ChatChunk{{Data: json.RawMessage(`{"choices":[{"delta":{"tool_calls":[{"function":{"name":"run"}}]}}]}`)}}}, nil
+	}}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	_ = sendUsageStreamRequest(t.Context(), t, handler, request)
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 2 || completion != 10 || source != "estimated" {
+		t.Errorf("recorded usage = %d/%d %q; want 2/10 estimated", prompt, completion, source)
+	}
+}
+
+func TestStream_PartialSSEUsageChunkIsCapturedAndHidden(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	usageStore, err := store.Open(t.Context(), store.Options{Path: dbPath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = usageStore.Close() }()
+
+	includeUsage := make(chan bool, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		includeUsage <- body.StreamOptions.IncludeUsage
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("upstream writer does not support flushing")
+			return
+		}
+		for _, part := range []string{
+			`data: {"choices":[{"delta":{"content":"ok"}}]}`,
+			"\n\n",
+			`data: {"choices":[],"usage":{"prompt_tokens":7,`,
+			`"completion_tokens":5,"total_tokens":12}}`,
+			"\n\n",
+			"data: [DONE]\n\n",
+		} {
+			if _, err := io.WriteString(w, part); err != nil {
+				t.Errorf("write upstream event: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	provider, err := openaicompat.New(openaicompat.Options{
+		Name: "capture", BaseURL: upstream.URL, APIKey: redact.NewSecret("sk-test-capture"), Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newUsageStreamHandler(t, provider, usageStore)
+	request := `{"model":"capture/model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	rec := sendUsageStreamRequest(t.Context(), t, handler, request)
+	if !<-includeUsage {
+		t.Error("upstream request omitted stream_options.include_usage")
+	}
+	if strings.Contains(rec.Body.String(), `"usage"`) || !strings.Contains(rec.Body.String(), `"content":"ok"`) {
+		t.Errorf("client stream = %s; want content without usage", rec.Body)
+	}
+	var prompt, completion int
+	var source string
+	if err := usageStoreDBUsage(t, dbPath, &prompt, &completion, &source); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != 7 || completion != 5 || source != "reported" {
+		t.Errorf("recorded usage = %d/%d %q; want 7/5 reported", prompt, completion, source)
 	}
 }
 
@@ -443,7 +533,7 @@ func TestStream_StoreOffDoesNotChangeRequestOrChunks(t *testing.T) {
 	}
 }
 
-func newUsageStreamHandler(t *testing.T, provider *usageStreamProvider, usageStore *store.Store) http.Handler {
+func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore *store.Store) http.Handler {
 	t.Helper()
 	set, err := providers.NewSet(provider)
 	if err != nil {

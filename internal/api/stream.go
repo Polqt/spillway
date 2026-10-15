@@ -73,7 +73,7 @@ func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef,
 			usage := *chunk.Usage
 			reported = &usage
 		}
-		choices, contentBytes := streamChunkContent(chunk.Data)
+		choices, contentBytes := streamChunkDeltaBytes(chunk.Data)
 		if stripUsage && chunk.Usage != nil {
 			if choices == 0 {
 				continue
@@ -146,59 +146,28 @@ func streamUsageRequest(req providers.ChatRequest, capture bool) (providers.Chat
 	return req, true
 }
 
-func streamChunkContent(data []byte) (choices, contentBytes int) {
+func streamChunkDeltaBytes(data []byte) (choices, contentBytes int) {
 	var chunk struct {
 		Choices []struct {
-			Delta struct {
-				Content       json.RawMessage `json:"content"`
-				Refusal       string          `json:"refusal"`
-				Reasoning     string          `json:"reasoning"`
-				ReasoningText string          `json:"reasoning_content"`
-				ToolCalls     []struct {
-					Function struct {
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"delta"`
+			Delta json.RawMessage `json:"delta"`
 		} `json:"choices"`
 	}
 	if json.Unmarshal(data, &chunk) != nil {
-		return -1, 0
+		return -1, len(data)
 	}
 	for _, choice := range chunk.Choices {
-		contentBytes += contentByteCount(choice.Delta.Content) + len(choice.Delta.Refusal) + len(choice.Delta.Reasoning) + len(choice.Delta.ReasoningText)
-		for _, toolCall := range choice.Delta.ToolCalls {
-			contentBytes += len(toolCall.Function.Arguments)
+		var delta map[string]json.RawMessage
+		if json.Unmarshal(choice.Delta, &delta) != nil || delta == nil {
+			contentBytes += len(choice.Delta)
+			continue
+		}
+		for _, value := range delta {
+			if string(value) != "null" {
+				contentBytes += len(value)
+			}
 		}
 	}
 	return len(chunk.Choices), contentBytes
-}
-
-func contentByteCount(content json.RawMessage) int {
-	var text string
-	if json.Unmarshal(content, &text) == nil {
-		return len(text)
-	}
-	var parts []json.RawMessage
-	if json.Unmarshal(content, &parts) == nil {
-		contentBytes := 0
-		for _, rawPart := range parts {
-			var part struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(rawPart, &part) == nil && part.Type == "text" {
-				contentBytes += len(part.Text)
-			} else {
-				contentBytes += len(rawPart)
-			}
-		}
-		return contentBytes
-	}
-	if len(content) == 0 || string(content) == "null" {
-		return 0
-	}
-	return len(content)
 }
 
 func estimateStreamUsage(body []byte, contentBytes int64, usage *store.Request) {
