@@ -621,8 +621,8 @@ func TestChat_VirtualModelNotFoundPointsToRouterVersion(t *testing.T) {
 			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
 			rec := e.do(t, request{auth: "Bearer " + keyCI, body: body})
 			assertError(t, rec, http.StatusNotFound, "invalid_request_error", "model_not_found")
-			if !strings.Contains(rec.Body.String(), "v0.3") || !strings.Contains(rec.Body.String(), "GET /v1/models") || !strings.Contains(rec.Body.String(), "provider/model") {
-				t.Errorf("message = %s, want router version and model listing guidance", rec.Body)
+			if !strings.Contains(rec.Body.String(), "set router.auto") {
+				t.Errorf("message = %s, want router.auto configuration guidance", rec.Body)
 			}
 		})
 	}
@@ -1061,7 +1061,7 @@ func TestChat_TierUnknownNamesConfiguredTiersAndAutoStaysUnavailable(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for model, want := range map[string]string{"spillway/missing": "demo", "auto": "v0.3"} {
+	for model, want := range map[string]string{"spillway/missing": "demo", "auto": "router.auto"} {
 		t.Run(model, func(t *testing.T) {
 			body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))

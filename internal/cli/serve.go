@@ -21,6 +21,7 @@ import (
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
+	"github.com/Polqt/spillway/internal/router"
 )
 
 // shutdownGrace is how long in-flight requests get to finish after the
@@ -145,6 +146,22 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 		}
 		tiers[name] = candidates
 	}
+	declarations := make(map[providers.ModelRef]router.Declaration, len(cfg.Models))
+	for model, declaration := range cfg.Models {
+		ref, err := providers.ParseModelRef(model)
+		if err != nil {
+			return nil, fmt.Errorf("model declaration %s: %w", model, err)
+		}
+		capabilities := make([]router.Capability, len(declaration.Capabilities))
+		for i, capability := range declaration.Capabilities {
+			capabilities[i] = router.Capability(capability)
+		}
+		declarations[ref] = router.Declaration{Capabilities: capabilities, ContextWindow: declaration.ContextWindow}
+	}
+	planner, err := router.New(router.Options{Tiers: tiers, Auto: cfg.Router.Auto, Declarations: declarations})
+	if err != nil {
+		return nil, fmt.Errorf("build router: %w", err)
+	}
 	var tracker *quota.Tracker
 	now := time.Now
 	if len(tiers) > 0 {
@@ -163,6 +180,7 @@ func newHandler(cfg config.Config, logger *slog.Logger) (http.Handler, error) {
 	}
 	return api.NewHandler(api.Options{
 		Providers:    set,
+		Router:       planner,
 		Tiers:        tiers,
 		Tracker:      tracker,
 		LocalKeys:    keys,

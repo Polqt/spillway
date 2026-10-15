@@ -6,11 +6,11 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
+	"github.com/Polqt/spillway/internal/router"
 )
 
 // LocalKey is one local key and the name of the client app that presents it.
@@ -30,9 +30,17 @@ type candidateTracker interface {
 	Observe(ref providers.ModelRef, err error, hint providers.RateLimit)
 }
 
+// Planner resolves virtual model requests and lists configured virtual models.
+type Planner interface {
+	Plan(model string, body []byte) (router.Plan, bool, error)
+	VirtualModels() []string
+}
+
 // Options configures NewHandler.
 type Options struct {
 	Providers providerSet
+	// Router plans auto and tier requests. When nil, NewHandler builds a tier-only planner from Tiers.
+	Router Planner
 	// Tiers maps virtual tier names to candidates in their configured order.
 	Tiers map[string][]providers.ModelRef
 	// Tracker stores cooldowns for configured tier candidates.
@@ -79,14 +87,18 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	tiers := make(map[string][]providers.ModelRef, len(o.Tiers))
-	for name, candidates := range o.Tiers {
-		tiers[name] = slices.Clone(candidates)
+	planner := o.Router
+	if planner == nil {
+		var err error
+		planner, err = router.New(router.Options{Tiers: o.Tiers})
+		if err != nil {
+			return nil, err
+		}
 	}
-	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout, tiers: tiers})
+	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout, virtualModels: planner.VirtualModels()})
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
-		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, tiers: tiers,
+		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
 		tracker: o.Tracker,
 		now:     o.Now,
 	})

@@ -148,7 +148,7 @@ func (l *logLines) String() string {
 
 func TestRun_ServeMockEndToEnd(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: e2e\n      key: "+e2eKey+"\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: e2e\n      key: "+e2eKey+"\nproviders:\n  mock: {}\ntiers:\n  free:\n    models: [mock/echo]\nmodels:\n  mock/echo:\n    capabilities: [tools]\nrouter:\n  auto: [free]\n")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	pr, pw := io.Pipe()
@@ -222,6 +222,15 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	}
 	if completion.Object != "chat.completion" || len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "You said: hello spillway" {
 		t.Errorf("completion = %+v", completion)
+	}
+	autoBody := `{"model":"auto","messages":[{"role":"user","content":"use a tool"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`
+	auto := send(http.MethodPost, "/v1/chat/completions", "", e2eKey, autoBody)
+	if auto.status != http.StatusOK || !strings.Contains(auto.body, `"model":"echo"`) {
+		t.Errorf("auto chat = %d %s, want mock/echo success", auto.status, auto.body)
+	}
+	models := send(http.MethodGet, "/v1/models", "", e2eKey, "")
+	if models.status != http.StatusOK || !strings.Contains(models.body, `"id":"auto"`) {
+		t.Errorf("model list = %d %s, want auto", models.status, models.body)
 	}
 
 	cancel()

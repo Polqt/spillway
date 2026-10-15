@@ -14,10 +14,10 @@ import (
 )
 
 type modelsHandler struct {
-	providers providerSet
-	logger    *slog.Logger
-	timeout   time.Duration
-	tiers     map[string][]providers.ModelRef
+	providers     providerSet
+	logger        *slog.Logger
+	timeout       time.Duration
+	virtualModels []string
 }
 
 type modelList struct {
@@ -72,10 +72,10 @@ func (h *modelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	for name := range h.tiers {
-		data = append(data, modelItem{ID: "spillway/" + name, Object: "model", OwnedBy: "spillway"})
+	for _, name := range h.virtualModels {
+		data = append(data, modelItem{ID: name, Object: "model", OwnedBy: "spillway"})
 	}
-	if failed == len(configured) && len(h.tiers) == 0 {
+	if failed == len(configured) && len(h.virtualModels) == 0 {
 		writeError(w, http.StatusBadGateway, "All configured providers failed to list models; retry later.", typeAPI, "upstream_unavailable")
 		return
 	}

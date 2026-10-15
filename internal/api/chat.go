@@ -8,12 +8,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/router"
 )
 
 // maxBodyBytes bounds a chat request; 10 MiB fits several base64 images.
@@ -22,7 +21,7 @@ const maxBodyBytes = 10 << 20
 type chatHandler struct {
 	providers         providerSet
 	logger            *slog.Logger
-	tiers             map[string][]providers.ModelRef
+	router            Planner
 	tracker           candidateTracker
 	now               func() time.Time
 	bodyReadTimeout   time.Duration
@@ -43,21 +42,13 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if strings.HasPrefix(*body.Model, "spillway/") {
-		tier := strings.TrimPrefix(*body.Model, "spillway/")
-		candidates, ok := h.tiers[tier]
-		if !ok {
-			names := make([]string, 0, len(h.tiers))
-			for name := range h.tiers {
-				names = append(names, name)
-			}
-			slices.Sort(names)
-			writeError(w, http.StatusNotFound,
-				fmt.Sprintf("Tier %q not found. Configured tiers: %s.", tier, strings.Join(names, ", ")),
-				typeInvalidRequest, "model_not_found")
-			return
-		}
-		h.serveTier(w, r, tier, candidates, body)
+	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
+	if err != nil {
+		h.writePlanError(w, *body.Model, err)
+		return
+	}
+	if virtual {
+		h.servePlan(w, r, plan, body)
 		return
 	}
 	ref, provider, ok := h.resolve(w, *body.Model)
@@ -89,24 +80,57 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.Body)
 }
 
+func (h *chatHandler) writePlanError(w http.ResponseWriter, model string, err error) {
+	switch {
+	case errors.Is(err, router.ErrUnknownTier), errors.Is(err, router.ErrAutoNotConfigured):
+		writeError(w, http.StatusNotFound, err.Error(), typeInvalidRequest, "model_not_found")
+	case errors.Is(err, router.ErrInvalidField):
+		writeError(w, http.StatusBadRequest, err.Error(), typeInvalidRequest, "invalid_request")
+	case errors.Is(err, router.ErrNoCapableModel):
+		code := "no_capable_model"
+		var noCapable *router.NoCapableModelError
+		if errors.As(err, &noCapable) && noCapable.EverySkipWasSize {
+			code = "context_length_exceeded"
+		}
+		writeError(w, http.StatusBadRequest, err.Error(), typeInvalidRequest, code)
+	default:
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Could not plan model %q.", model), typeAPI, "internal_error")
+	}
+}
+
 type candidateFailure struct {
 	ref    providers.ModelRef
 	reason string
 	until  time.Time
 }
 
-func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier string, candidates []providers.ModelRef, body chatBody) {
+func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan router.Plan, body chatBody) {
+	tier := plan.Source
+	if plan.Source == "tier" && len(plan.Tiers) > 0 {
+		tier = plan.Tiers[0]
+	}
+	candidates := plan.Eligible
 	rec := recordFrom(r.Context())
 	rec.tier = tier
-	failures := make([]candidateFailure, 0, len(candidates))
-	for _, ref := range candidates {
+	failures := make([]candidateFailure, 0, len(plan.Skipped)+len(candidates))
+	for _, skip := range plan.Skipped {
+		failures = append(failures, candidateFailure{ref: skip.Ref, reason: skip.Reason})
+	}
+	eligibleFailures := make([]candidateFailure, 0, len(candidates))
+	for i, ref := range candidates {
+		candidateTier := tier
+		if i < len(plan.Tiers) {
+			candidateTier = plan.Tiers[i]
+		}
 		if r.Context().Err() != nil {
 			return
 		}
 		rec.err = nil
 		if h.tracker != nil {
 			if available, until, reason := h.tracker.Available(ref); !available {
-				failures = append(failures, candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until})
+				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until}
+				failures = append(failures, failure)
+				eligibleFailures = append(eligibleFailures, failure)
 				continue
 			}
 		}
@@ -115,8 +139,10 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 			// A validated config cannot reach this path, but an incomplete API option should fail safely.
 			err := providers.ErrModelNotFound
 			reason := candidateReason(err)
-			failures = append(failures, candidateFailure{ref: ref, reason: reason})
-			h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
+			failure := candidateFailure{ref: ref, reason: reason}
+			failures = append(failures, failure)
+			eligibleFailures = append(eligibleFailures, failure)
+			h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
 			continue
 		}
 		clearCandidateHeaders(w)
@@ -157,14 +183,20 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 		if h.tracker != nil {
 			h.tracker.Observe(ref, err, providers.RateLimit{})
 			if available, until, reason := h.tracker.Available(ref); !available {
-				failures = append(failures, candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until})
+				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until}
+				failures = append(failures, failure)
+				eligibleFailures = append(eligibleFailures, failure)
 			} else {
-				failures = append(failures, candidateFailure{ref: ref, reason: candidateReason(err)})
+				failure := candidateFailure{ref: ref, reason: candidateReason(err)}
+				failures = append(failures, failure)
+				eligibleFailures = append(eligibleFailures, failure)
 			}
 		} else {
-			failures = append(failures, candidateFailure{ref: ref, reason: candidateReason(err)})
+			failure := candidateFailure{ref: ref, reason: candidateReason(err)}
+			failures = append(failures, failure)
+			eligibleFailures = append(eligibleFailures, failure)
 		}
-		h.logCandidateFailure(r, tier, ref, candidateErrorKind(err))
+		h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
 			clearCandidateHeaders(w)
 			rec.err = err
@@ -175,7 +207,7 @@ func (h *chatHandler) serveTier(w http.ResponseWriter, r *http.Request, tier str
 	clearCandidateHeaders(w)
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
-	if retryAfter, allCooling := earliestCooldown(failures, len(candidates), h.now()); allCooling {
+	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, message, typeAPI, "rate_limit_exceeded")
 		return
@@ -349,12 +381,6 @@ func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (
 }
 
 func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.ModelRef, providers.Provider, bool) {
-	if model == "auto" {
-		writeError(w, http.StatusNotFound,
-			fmt.Sprintf("Virtual model %q requires the router, which arrives in v0.3. Send a provider/model reference, or see GET /v1/models.", model),
-			typeInvalidRequest, "model_not_found")
-		return providers.ModelRef{}, nil, false
-	}
 	ref, err := providers.ParseModelRef(model)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found. Send a model reference as provider/model, such as mock/echo, or see GET /v1/models.", model), typeInvalidRequest, "model_not_found")
