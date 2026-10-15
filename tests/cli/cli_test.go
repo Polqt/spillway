@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,6 +123,22 @@ func TestRun_CheckPrintsTierAndFreeTierWithoutKeys(t *testing.T) {
 	for _, secret := range []string{"sk-test-local-check-tier", "sk-test-groq-check-tier"} {
 		if strings.Contains(stdout.String()+stderr.String(), secret) {
 			t.Errorf("check output contains secret %q", secret)
+		}
+	}
+}
+
+func TestRun_CheckPrintsStoreConfig(t *testing.T) {
+	t.Parallel()
+	storePath := filepath.Join(t.TempDir(), "usage.db")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-check-store]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 30d\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
+	}
+	for _, want := range []string{"store:", storePath, "retention: 30d"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("check output = %q, want %q", stdout.String(), want)
 		}
 	}
 }

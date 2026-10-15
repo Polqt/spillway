@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -41,7 +43,35 @@ func (c Config) validate() error {
 	if err := validateModels(c.Models, c.Tiers); err != nil {
 		return err
 	}
-	return validateRouter(c.Router, c.Tiers)
+	if err := validateRouter(c.Router, c.Tiers); err != nil {
+		return err
+	}
+	return validateStore(c.Store)
+}
+
+func validateStore(s *Store) error {
+	if s == nil {
+		return nil
+	}
+	if strings.TrimSpace(s.Path) == "" {
+		return errors.New("store.path must name a file; set it to a SQLite file path")
+	}
+	if s.Retention < 24*time.Hour || s.Retention > 3650*24*time.Hour {
+		return errors.New("store.retention must be from 1d to 3650d; choose a value in that range")
+	}
+	cleanPath := filepath.Clean(s.Path)
+	if cleanPath == "." || cleanPath == string(filepath.Separator) || filepath.Base(cleanPath) == "." {
+		return errors.New("store.path must name a file; choose a file path inside an existing directory")
+	}
+	if info, err := os.Stat(s.Path); err == nil && info.IsDir() {
+		return errors.New("store.path must name a file; choose a file path inside an existing directory")
+	}
+	parent := filepath.Dir(cleanPath)
+	info, err := os.Stat(parent)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("store.path directory must exist; create %s or choose an existing directory", parent)
+	}
+	return nil
 }
 
 // capabilities is the closed set a model declaration may list (ADR 0007).

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
@@ -38,6 +39,60 @@ providers:
 	}
 	if _, ok := cfg.Providers["mock"]; !ok || len(cfg.Providers) != 1 {
 		t.Errorf("Providers = %v, want only mock", cfg.Providers)
+	}
+}
+
+func TestParse_StoreConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "usage.db")
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: " + path + "\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Store.Path != path || cfg.Store.Retention != 90*24*time.Hour {
+		t.Errorf("Store = %+v, want path %q and 90 day retention", cfg.Store, path)
+	}
+}
+
+func TestParse_StoreConfigExpandsEnvironment(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "usage.db")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"STORE_PATH": path, "STORE_RETENTION": "30d"}
+		value, ok := values[name]
+		return value, ok
+	}
+	cfg, err := config.ParseWithEnv([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: \"${STORE_PATH}\"\n  retention: \"${STORE_RETENTION}\"\n"), lookup)
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+	if cfg.Store.Path != path || cfg.Store.Retention != 30*24*time.Hour {
+		t.Errorf("Store = %+v, want expanded path and 30 day retention", cfg.Store)
+	}
+}
+
+func TestParse_StoreValidation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tests := []struct {
+		name, store, want string
+	}{
+		{name: "empty path", store: "path: \"\"", want: "store.path"},
+		{name: "missing directory", store: "path: " + filepath.Join(dir, "missing", "usage.db"), want: "directory must exist"},
+		{name: "directory path", store: "path: " + dir, want: "must name a file"},
+		{name: "retention too short", store: "path: " + filepath.Join(dir, "usage.db") + "\n  retention: 23h", want: "store.retention"},
+		{name: "retention too long", store: "path: " + filepath.Join(dir, "usage.db") + "\n  retention: 3651d", want: "store.retention"},
+		{name: "unknown field", store: "path: " + filepath.Join(dir, "usage.db") + "\n  enabled: true", want: "store (line"},
+		{name: "duration syntax", store: "path: " + filepath.Join(dir, "usage.db") + "\n  retention: someday", want: "store.retention"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  " + tt.store + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Parse error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

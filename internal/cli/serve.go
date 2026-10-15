@@ -22,6 +22,7 @@ import (
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 // shutdownGrace is how long in-flight requests get to finish after the
@@ -49,6 +50,18 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
 	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, nil), scrubber))
+	if cfg.Store != nil {
+		usageStore, err := store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
+		if err != nil {
+			report(stderr, "spillway: %v\n", err)
+			return 1
+		}
+		defer func() {
+			if err := usageStore.Close(); err != nil {
+				logger.ErrorContext(ctx, "close usage store", "error", err)
+			}
+		}()
+	}
 	attested := make([]string, 0)
 	for name, provider := range cfg.Providers {
 		if provider.FreeTier {

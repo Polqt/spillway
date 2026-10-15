@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -249,6 +250,91 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	// Security property: serve's log output never contains a local key.
 	if strings.Contains(out, e2eKey) {
 		t.Errorf("log contains the local key:\n%s", out)
+	}
+}
+
+func TestRun_ServeCreatesStoreOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "usage.db")
+	configPath := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-e2e]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, &stdout, pw, noEnv)
+		_ = pw.Close()
+	}()
+	select {
+	case <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("configured store file: %v", err)
+	}
+	unusedPath := filepath.Join(dir, "unused.db")
+	if _, err := os.Stat(unusedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unconfigured store path exists: %v", err)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+}
+
+func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-no-store]\nproviders:\n  mock: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, &stdout, pw, noEnv)
+		_ = pw.Close()
+	}()
+	select {
+	case <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.yaml" {
+		t.Errorf("files beside config = %v, want only config.yaml", entries)
+	}
+}
+
+func TestRun_ServeRejectsStorePathThatCannotOpen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "not-a-database")
+	if err := os.WriteFile(storePath, []byte("invalid sqlite file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-bad-path]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n")
+	var stdout, stderr strings.Builder
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, &stdout, &stderr, noEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "spillway: ") || strings.Contains(stderr.String(), "listening") {
+		t.Errorf("serve = %d, stderr %q; want startup failure before listening", code, stderr.String())
 	}
 }
 

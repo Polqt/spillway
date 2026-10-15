@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,65 @@ type Config struct {
 	// capability source (ADR 0007).
 	Models map[string]ModelDeclaration `yaml:"models,omitempty"`
 	Router Router                      `yaml:"router,omitempty"`
+	Store  *Store                      `yaml:"store,omitempty"`
+}
+
+// Store configures the opt-in local usage database.
+type Store struct {
+	Path      string        `yaml:"path"`
+	Retention time.Duration `yaml:"retention"`
+}
+
+// UnmarshalYAML accepts day-based retention values such as 90d.
+func (s *Store) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("store (line %d): must be a mapping", n.Line)
+	}
+	s.Retention = 90 * 24 * time.Hour
+	seen := make(map[string]bool, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		field, value := n.Content[i], n.Content[i+1]
+		if field.Value != "path" && field.Value != "retention" {
+			return fmt.Errorf("store (line %d): unknown field %q", field.Line, field.Value)
+		}
+		if seen[field.Value] {
+			return fmt.Errorf("store.%s (line %d): duplicate field", field.Value, field.Line)
+		}
+		seen[field.Value] = true
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return fmt.Errorf("store.%s (line %d): must be a string", field.Value, value.Line)
+		}
+		if field.Value == "path" {
+			s.Path = value.Value
+			continue
+		}
+		retention, err := parseStoreRetention(value.Value)
+		if err != nil {
+			return fmt.Errorf("store.retention (line %d): must be a duration from 1d to 3650d", value.Line)
+		}
+		s.Retention = retention
+	}
+	return nil
+}
+
+// MarshalYAML writes retention using whole days when possible.
+func (s Store) MarshalYAML() (any, error) {
+	retention := s.Retention.String()
+	if s.Retention%(24*time.Hour) == 0 {
+		retention = fmt.Sprintf("%dd", s.Retention/(24*time.Hour))
+	}
+	return map[string]string{"path": s.Path, "retention": retention}, nil
+}
+
+func parseStoreRetention(value string) (time.Duration, error) {
+	if strings.HasSuffix(value, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(value, "d"))
+		if err != nil || days < 1 || days > 3650 {
+			return 0, errors.New("invalid day count")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(value)
 }
 
 // Tier is an ordered list of model references with an optional spend opt-in.
@@ -225,6 +285,9 @@ func ParseWithEnv(data []byte, lookupEnv func(string) (string, bool)) (Config, e
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
+	}
+	if cfg.Store != nil && cfg.Store.Retention == 0 {
+		cfg.Store.Retention = 90 * 24 * time.Hour
 	}
 	for name, provider := range cfg.Providers {
 		if !provider.timeoutSet {

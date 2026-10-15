@@ -62,6 +62,15 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 			}
 		}
 	}
+	if store := mappingValue(root, "store"); store != nil {
+		for _, field := range []string{"path", "retention"} {
+			if value := mappingValue(store, field); value != nil {
+				if err := expandScalar(value, "store."+field, lookupEnv); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -123,7 +132,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if root.Kind != yaml.MappingNode {
 		return fmt.Errorf("config (line %d): must be a mapping", root.Line)
 	}
-	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router"); err != nil {
+	if err := rejectFields(root, "config", "server", "logging", "providers", "tiers", "models", "router", "store"); err != nil {
 		return err
 	}
 	server := mappingValue(root, "server")
@@ -215,7 +224,28 @@ func rejectUnknownFields(root *yaml.Node) error {
 	if err := checkModelsShape(mappingValue(root, "models")); err != nil {
 		return err
 	}
-	return checkRouterShape(mappingValue(root, "router"))
+	if err := checkRouterShape(mappingValue(root, "router")); err != nil {
+		return err
+	}
+	return checkStoreShape(mappingValue(root, "store"))
+}
+
+func checkStoreShape(store *yaml.Node) error {
+	if store == nil {
+		return nil
+	}
+	if store.Kind != yaml.MappingNode {
+		return fmt.Errorf("store (line %d): must be a mapping", store.Line)
+	}
+	if err := rejectFields(store, "store", "path", "retention"); err != nil {
+		return err
+	}
+	for _, field := range []string{"path", "retention"} {
+		if value := mappingValue(store, field); value != nil && (value.Kind != yaml.ScalarNode || value.Tag != "!!str") {
+			return fmt.Errorf("store.%s (line %d): must be a string", field, value.Line)
+		}
+	}
+	return nil
 }
 
 // maxContextWindow bounds a declared context window to a plausible size.
