@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Polqt/spillway/internal/config"
+	"github.com/Polqt/spillway/internal/providers"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -294,6 +295,33 @@ func TestParse_TiersValidateZeroSpendEligibility(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
 				t.Errorf("ParseWithEnv error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestIsZeroSpendEligible_ADR0005Rules(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		ref      providers.ModelRef
+		provider config.Provider
+		want     bool
+	}{
+		{name: "ollama", ref: providers.ModelRef{Provider: "ollama", Model: "llama3"}, want: true},
+		{name: "mock", ref: providers.ModelRef{Provider: "mock", Model: "echo"}, want: true},
+		{name: "openrouter free", ref: providers.ModelRef{Provider: "openrouter", Model: "vendor/model:free"}, want: true},
+		{name: "openrouter paid", ref: providers.ModelRef{Provider: "openrouter", Model: "vendor/model"}},
+		{name: "groq attested", ref: providers.ModelRef{Provider: "groq", Model: "model"}, provider: config.Provider{FreeTier: true}, want: true},
+		{name: "groq not attested", ref: providers.ModelRef{Provider: "groq", Model: "model"}},
+		{name: "gemini attested", ref: providers.ModelRef{Provider: "gemini", Model: "model"}, provider: config.Provider{FreeTier: true}, want: true},
+		{name: "gemini not attested", ref: providers.ModelRef{Provider: "gemini", Model: "model"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := config.IsZeroSpendEligible(tt.ref, tt.provider); got != tt.want {
+				t.Errorf("IsZeroSpendEligible(%+v, %+v) = %t, want %t", tt.ref, tt.provider, got, tt.want)
 			}
 		})
 	}

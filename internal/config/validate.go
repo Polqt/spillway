@@ -160,7 +160,7 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 				return fmt.Errorf("%s duplicates an earlier model reference", modelPath)
 			}
 			seen[model] = struct{}{}
-			if tier.AllowSpend || isZeroSpendEligible(ref, configured[ref.Provider]) {
+			if tier.AllowSpend || IsZeroSpendEligible(ref, configured[ref.Provider]) {
 				continue
 			}
 			fix := fmt.Sprintf("set %s.allow_spend: true", path)
@@ -175,7 +175,8 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 	return nil
 }
 
-func isZeroSpendEligible(ref providers.ModelRef, provider Provider) bool {
+// IsZeroSpendEligible reports whether ADR 0005 identifies a model as free from config alone.
+func IsZeroSpendEligible(ref providers.ModelRef, provider Provider) bool {
 	switch ref.Provider {
 	case "ollama", "mock":
 		return true

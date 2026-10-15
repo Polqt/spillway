@@ -92,6 +92,41 @@ func TestChat_AutoSelectsFirstDeclaredCapableCandidate(t *testing.T) {
 	}
 }
 
+func TestChat_AutoAccessLog(t *testing.T) {
+	t.Parallel()
+	provider, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := providers.NewSet(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner, err := router.New(router.Options{Tiers: map[string][]providers.ModelRef{"free": {routerRef("mock", "echo")}}, Auto: []string{"free"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := &syncBuffer{}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Router:    planner,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := routerRequest(t, h, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	for _, want := range []string{"provider=mock", "model=echo", "tier=auto", "attempts=1", `route="auto; tier free; candidate 1/1"`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("access log lacks %q: %s", want, logs.String())
+		}
+	}
+}
+
 func TestChat_RouteHeaderUsesDocumentedGrammar(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

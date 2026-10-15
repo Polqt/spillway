@@ -21,7 +21,7 @@ type streamRateLimiter interface {
 // spill before the first chunk and still observe upstream failures afterward.
 func serveStream(w http.ResponseWriter, r *http.Request, ref providers.ModelRef, provider providers.Provider, req providers.ChatRequest, writeTimeout time.Duration) (committed bool, rateLimit providers.RateLimit, err error) {
 	rec := recordFrom(r.Context())
-	rec.stream = true
+	rec.setStream()
 	stream, err := provider.ChatStream(r.Context(), req)
 	if err != nil {
 		rec.err = err

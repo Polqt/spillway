@@ -97,6 +97,9 @@ The full rules are in `docs/CODING_STANDARDS.md`. The ones most often missed:
 5. **Review** the diff against `docs/CODING_STANDARDS.md` and the plan.
 6. **Security audit** when touching keys, auth, config, HTTP servers or clients, or logging.
 
+When implementing a ticket, finish verification, tests and any fixes before checking its acceptance checklist.
+Do not include the ticket Markdown file in a commit.
+
 Record hard-to-reverse decisions as ADRs in `docs/adr/`.
 
 ## Commits

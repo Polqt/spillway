@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/Polqt/spillway/internal/providers"
 )
 
 // requestRecord collects what inner handlers learn about a request, for the
@@ -20,6 +22,22 @@ type requestRecord struct {
 	attempts  int
 	stream    bool
 	err       error
+}
+
+func (rec *requestRecord) setProvider(ref providers.ModelRef) {
+	rec.provider, rec.model = ref.Provider, ref.Model
+}
+
+func (rec *requestRecord) beginTier(tier string) {
+	rec.tier = tier
+}
+
+func (rec *requestRecord) beginAttempt() {
+	rec.attempts++
+}
+
+func (rec *requestRecord) setStream() {
+	rec.stream = true
 }
 
 type recordKey struct{}

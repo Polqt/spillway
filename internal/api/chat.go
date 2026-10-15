@@ -60,7 +60,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec := recordFrom(r.Context())
-	rec.provider, rec.model = ref.Provider, ref.Model
+	rec.setProvider(ref)
 	// Set before calling the provider so they are present on errors too.
 	w.Header().Set("X-Spillway-Provider", ref.Provider)
 	w.Header().Set("X-Spillway-Model", ref.Model)
@@ -114,7 +114,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	}
 	candidates := plan.Eligible
 	rec := recordFrom(r.Context())
-	rec.tier = tier
+	rec.beginTier(tier)
 	failures := make([]candidateFailure, 0, len(plan.Skipped)+len(candidates))
 	for _, skip := range plan.Skipped {
 		failures = append(failures, candidateFailure{ref: skip.Ref, reason: skip.Reason})
@@ -152,10 +152,10 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		route := candidateRoute(plan, candidateTier, i+1, len(candidates))
 		setRoute(w, r, route)
 		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
-		rec.attempts++
+		rec.beginAttempt()
 		var err error
 		if body.Stream {
-			rec.provider, rec.model = ref.Provider, ref.Model
+			rec.setProvider(ref)
 			w.Header().Set("X-Spillway-Provider", ref.Provider)
 			w.Header().Set("X-Spillway-Model", ref.Model)
 			var committed bool
@@ -173,7 +173,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 				if h.tracker != nil {
 					h.tracker.Observe(ref, nil, resp.RateLimit)
 				}
-				rec.provider, rec.model = ref.Provider, ref.Model
+				rec.setProvider(ref)
 				w.Header().Set("X-Spillway-Provider", ref.Provider)
 				w.Header().Set("X-Spillway-Model", ref.Model)
 				w.Header().Set("Content-Type", "application/json")
