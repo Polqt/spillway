@@ -189,7 +189,9 @@ type candidateFailure struct {
 
 func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan router.Plan, body chatBody, cacheBypass bool) {
 	tier := plan.Source
-	if plan.Source == "tier" && len(plan.Tiers) > 0 {
+	if plan.Mode == "rules" {
+		tier = plan.SelectedTier
+	} else if plan.Source == "tier" && len(plan.Tiers) > 0 {
 		tier = plan.Tiers[0]
 	}
 	candidates := plan.Eligible
@@ -197,6 +199,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	rec.beginTier(tier)
 	rec.addPlanSkips(plan.Skipped)
 	failures := make([]candidateFailure, 0, len(plan.Skipped)+len(candidates))
+	lastTier := tier
 	for _, skip := range plan.Skipped {
 		failures = append(failures, candidateFailure{ref: skip.Ref, reason: skip.Reason})
 	}
@@ -206,6 +209,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		if i < len(plan.Tiers) {
 			candidateTier = plan.Tiers[i]
 		}
+		lastTier = candidateTier
 		if r.Context().Err() != nil {
 			return
 		}
@@ -242,7 +246,8 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			continue
 		}
 		clearCandidateHeaders(w)
-		route := candidateRoute(plan, candidateTier, i+1, len(candidates))
+		candidatePosition, candidatesInTier := candidatePosition(plan, i, candidateTier, len(candidates))
+		route := candidateRoute(plan, candidateTier, candidatePosition, candidatesInTier)
 		setRoute(w, r, route)
 		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 		rec.beginAttempt(ref)
@@ -320,7 +325,7 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		}
 	}
 	clearCandidateHeaders(w)
-	setRoute(w, r, exhaustedRoute(plan, tier, len(candidates)))
+	setRoute(w, r, exhaustedRoute(plan, lastTier, len(candidates)))
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
 	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
@@ -454,15 +459,28 @@ func setRoute(w http.ResponseWriter, r *http.Request, route string) {
 
 func candidateRoute(plan router.Plan, tier string, candidate, total int) string {
 	var parts []string
-	if plan.Source == "auto" {
+	if plan.Mode == "rules" {
+		parts = append(parts, "rules")
+		if plan.Rule == 0 {
+			parts = append(parts, "default")
+		} else {
+			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+		}
+		parts = append(parts, "difficulty "+plan.Difficulty, "tier "+safeTierName(plan.SelectedTier))
+		if tier != plan.SelectedTier {
+			parts = append(parts, "fallback "+safeTierName(tier))
+		}
+	} else if plan.Source == "auto" {
 		parts = append(parts, "auto")
 	} else {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
-	if needs := routeNeeds(plan.Needs); needs != "" {
-		parts = append(parts, "needs "+needs)
+	if plan.Mode != "rules" {
+		if needs := routeNeeds(plan.Needs); needs != "" {
+			parts = append(parts, "needs "+needs)
+		}
 	}
-	if plan.Source == "auto" {
+	if plan.Source == "auto" && plan.Mode != "rules" {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
 	parts = append(parts, fmt.Sprintf("candidate %d/%d", candidate, total))
@@ -471,7 +489,20 @@ func candidateRoute(plan router.Plan, tier string, candidate, total int) string 
 
 func planErrorRoute(model string, plan router.Plan) string {
 	var parts []string
-	if model == "auto" {
+	if plan.Mode == "rules" {
+		parts = append(parts, "rules")
+		if plan.Rule == 0 {
+			parts = append(parts, "default")
+		} else {
+			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+		}
+		parts = append(parts, "difficulty "+plan.Difficulty)
+		if plan.SelectedTier != "" {
+			parts = append(parts, "tier "+safeTierName(plan.SelectedTier))
+		}
+		parts = append(parts, "no capable model")
+		return strings.Join(parts, "; ")
+	} else if model == "auto" {
 		parts = append(parts, "auto")
 	} else if strings.HasPrefix(model, "spillway/") {
 		parts = append(parts, "tier "+safeTierName(strings.TrimPrefix(model, "spillway/")))
@@ -487,16 +518,45 @@ func planErrorRoute(model string, plan router.Plan) string {
 
 func exhaustedRoute(plan router.Plan, tier string, eligible int) string {
 	var parts []string
-	if plan.Source == "auto" {
+	if plan.Mode == "rules" {
+		parts = append(parts, "rules")
+		if plan.Rule == 0 {
+			parts = append(parts, "default")
+		} else {
+			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+		}
+		parts = append(parts, "difficulty "+plan.Difficulty, "tier "+safeTierName(plan.SelectedTier))
+		if tier != plan.SelectedTier {
+			parts = append(parts, "fallback "+safeTierName(tier))
+		}
+	} else if plan.Source == "auto" {
 		parts = append(parts, "auto")
 	} else {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
-	if needs := routeNeeds(plan.Needs); needs != "" {
-		parts = append(parts, "needs "+needs)
+	if plan.Mode != "rules" {
+		if needs := routeNeeds(plan.Needs); needs != "" {
+			parts = append(parts, "needs "+needs)
+		}
 	}
 	parts = append(parts, fmt.Sprintf("exhausted (%d eligible)", eligible))
 	return strings.Join(parts, "; ")
+}
+
+func candidatePosition(plan router.Plan, index int, tier string, total int) (int, int) {
+	if plan.Mode != "rules" {
+		return index + 1, total
+	}
+	position, count := 0, 0
+	for i, candidateTier := range plan.Tiers {
+		if candidateTier == tier {
+			count++
+			if i <= index {
+				position++
+			}
+		}
+	}
+	return position, count
 }
 
 func routeNeeds(needs []router.Capability) string {

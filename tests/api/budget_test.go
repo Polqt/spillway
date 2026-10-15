@@ -74,6 +74,53 @@ func TestChat_BudgetSkipsPaidCandidateAndServesFreeCandidate(t *testing.T) {
 	}
 }
 
+func TestChat_RulesBudgetExhaustionKeepsSelectedDifficulty(t *testing.T) {
+	now := time.Date(2026, time.June, 12, 8, 0, 0, 0, time.UTC)
+	paid := &countingProvider{name: "openrouter", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		t.Fatal("budget-blocked paid provider was called")
+		return providers.ChatResponse{}, nil
+	}}
+	ref := routerRef("openrouter", "vendor/model")
+	set, err := providers.NewSet(paid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner, err := router.New(router.Options{
+		Tiers: map[string][]providers.ModelRef{"free": {ref}, "paid": {ref}}, Auto: []string{"free", "paid"},
+		DifficultyTiers: map[string][]string{"simple": {"free"}, "moderate": {"paid"}, "hard": {"paid"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Providers: map[string]config.Provider{"openrouter": {}},
+		Pricing:   map[string]config.Price{"openrouter/vendor/model": {InputMicroUSDPerMillion: 1_000_000, OutputMicroUSDPerMillion: 1_000_000}},
+	}
+	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 1}, Providers: cfg.Providers, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.Charge(now, 1)
+	h, err := api.NewHandler(api.Options{
+		Providers: set, Router: planner,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler), CostEstimator: budget.NewPricer(cfg), BudgetGate: gate, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := routerRequest(t, h, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"code":"rate_limit_exceeded"`) {
+		t.Fatalf("response = %d %s, want OpenAI budget exhaustion", rec.Code, rec.Body)
+	}
+	if got, want := rec.Header().Get("X-Spillway-Route"), "rules; default; difficulty moderate; tier paid; exhausted (1 eligible)"; got != want {
+		t.Errorf("route = %q, want %q", got, want)
+	}
+	if paid.calls.Load() != 0 {
+		t.Errorf("paid calls = %d, want 0", paid.calls.Load())
+	}
+}
+
 func TestChat_BudgetExhaustionReturnsRetryAfter(t *testing.T) {
 	now := time.Date(2026, time.June, 12, 8, 0, 0, 0, time.UTC)
 	paid := &countingProvider{name: "openrouter", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {

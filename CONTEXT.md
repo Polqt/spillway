@@ -97,7 +97,12 @@ For requests with requirements, `auto` skips undeclared candidates; both virtual
 A declared context window filters either virtual model only when the conservative size estimate clearly exceeds it.
 Every chat response includes an `x-spillway-route` reason, such as `direct`, `tier demo; candidate 1/3` or `auto; needs tools; tier demo; candidate 1/1` (ADR 0008).
 
-The embedding classifier, LLM judge and cascade are planned for v0.5.
+An opt-in `router.mode: rules` selects a difficulty for `auto` using ordered, user-defined rules over bounded request features.
+Rules are first-match-wins; unmatched requests use `moderate`, whose configured tier list is tried in full before the request fails.
+Each difficulty maps to an ordered list of tiers from `router.auto`; tier order keeps zero-spend tiers before tiers that allow spending.
+Rules mode preserves capability and context filtering, quota and budget checks, spillover, and candidate de-duplication.
+Its bounded `x-spillway-route` reason names the matched rule or `default`, difficulty, tier, candidate position, and fallback tier without including prompt content (ADR 0014).
+The embedding classifier, LLM judge and cascade remain future v0.5 work.
 
 In v0.4, an opt-in SQLite store records usage metadata only; prompts, responses, headers, keys and provider error text are never written to disk (ADR 0009).
 The optional exact cache is memory-only, byte-exact and isolated by client app; it caches non-streaming successful responses and disappears on restart (ADR 0011).
@@ -168,7 +173,27 @@ The exact cache is opt-in, in memory, per client app, and bounded by `cache.max_
 Semantic caching is not supported.
 The mock provider is always treated as free, even when a price is declared for its model.
 Catalog output is partial: Gemini has no supported catalog fields, and Groq publishes only context length.
-Provider catalog discovery is advisory and does not change runtime routing or pricing; classifiers and `router.mode` are planned for v0.5.
+Provider catalog discovery is advisory and does not change runtime routing or pricing.
+Rules mode is opt-in; existing configurations without `router.mode` continue to use the legacy auto chain.
+When enabled, configure every difficulty and at least one ordered fallback tier for each label:
+
+```yaml
+router:
+  mode: rules
+  auto: [free, smart]
+  difficulty:
+    simple: [free]
+    moderate: [free, smart]
+    hard: [smart]
+  rules:
+    - when: {estimated_input_tokens_gte: 12000}
+      difficulty: hard
+    - when: {tools_present: true}
+      difficulty: moderate
+```
+
+Conditions within a rule are combined with AND; rules are evaluated in order and the first match wins.
+Supported bounded conditions are `estimated_input_tokens_gte`, `requested_output_tokens_gte`, and `tools_present`.
 
 ## 8. API Surface
 
@@ -248,7 +273,7 @@ A provider that speaks the OpenAI API is a preset in `openaicompat`, not a new p
 2. **v0.2 Spillover.** User-named tiers exposed as `spillway/<tier>` virtual models, spillover through candidates in tier order, quota tracking, and circuit breakers.
 3. **v0.3 Rules router.** Request requirement detection, user-declared capability filtering for virtual models, free-first `auto` chains, and `x-spillway-route` reasons.
 4. **v0.4 Observability.** Opt-in SQLite usage records, estimated costs, local soft budgets, in-memory exact cache, dashboard APIs and page, and advisory `spillway catalog` suggestions.
-5. **v0.5 Smart routing.** The embedding classifier, the Llama judge via Ollama, and the cascade mode.
+5. **v0.5 Smart routing.** Opt-in deterministic difficulty rules, then the embedding classifier, the Llama judge via Ollama, and the cascade mode.
 6. **v1.0.** GoReleaser binaries, a Docker image, docs, and `spillway init` for interactive setup.
 
 ## 12. Conventions

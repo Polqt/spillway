@@ -18,6 +18,9 @@ var (
 	ErrNoCapableModel = errors.New("no capable model")
 )
 
+const maxDifficultyRules = 32
+const maxDifficultyTokenThreshold = 2_000_000
+
 // Declaration describes the capabilities and context size the user declares
 // for one model (ADR 0007).
 type Declaration struct {
@@ -27,16 +30,28 @@ type Declaration struct {
 
 // Options supplies the validated tier configuration used to build a Router.
 type Options struct {
-	Tiers        map[string][]providers.ModelRef
-	Auto         []string
-	Declarations map[providers.ModelRef]Declaration
+	Tiers           map[string][]providers.ModelRef
+	Auto            []string
+	Declarations    map[providers.ModelRef]Declaration
+	DifficultyTiers map[string][]string
+	Rules           []Rule
+}
+
+// Rule is a first-match difficulty rule over bounded request features.
+type Rule struct {
+	EstimatedInputTokensGTE  *int
+	RequestedOutputTokensGTE *int
+	ToolsPresent             *bool
+	Difficulty               string
 }
 
 // Router resolves virtual models into ordered candidates.
 type Router struct {
-	tiers        map[string][]providers.ModelRef
-	auto         []string
-	declarations map[providers.ModelRef]Declaration
+	tiers           map[string][]providers.ModelRef
+	auto            []string
+	declarations    map[providers.ModelRef]Declaration
+	difficultyTiers map[string][]string
+	rules           []Rule
 }
 
 // Skip records why a configured candidate was excluded from a plan.
@@ -53,11 +68,15 @@ type candidate struct {
 
 // Plan is the deterministic result of resolving one virtual model.
 type Plan struct {
-	Source   string
-	Tiers    []string
-	Needs    []Capability
-	Eligible []providers.ModelRef
-	Skipped  []Skip
+	Source       string
+	Mode         string
+	Rule         int
+	Difficulty   string
+	SelectedTier string
+	Tiers        []string
+	Needs        []Capability
+	Eligible     []providers.ModelRef
+	Skipped      []Skip
 }
 
 // NoCapableModelError reports why candidate selection left no eligible model.
@@ -85,9 +104,11 @@ func (e *resolutionError) Unwrap() error { return e.kind }
 // routing decisions.
 func New(o Options) (*Router, error) {
 	r := &Router{
-		tiers:        make(map[string][]providers.ModelRef, len(o.Tiers)),
-		auto:         slices.Clone(o.Auto),
-		declarations: make(map[providers.ModelRef]Declaration, len(o.Declarations)),
+		tiers:           make(map[string][]providers.ModelRef, len(o.Tiers)),
+		auto:            slices.Clone(o.Auto),
+		declarations:    make(map[providers.ModelRef]Declaration, len(o.Declarations)),
+		difficultyTiers: make(map[string][]string, len(o.DifficultyTiers)),
+		rules:           slices.Clone(o.Rules),
 	}
 	for name, refs := range o.Tiers {
 		if name == "" || len(refs) == 0 {
@@ -103,6 +124,44 @@ func New(o Options) (*Router, error) {
 	for _, name := range r.auto {
 		if _, ok := r.tiers[name]; !ok {
 			return nil, fmt.Errorf("router: auto names unknown tier %q", name)
+		}
+	}
+	for label, names := range o.DifficultyTiers {
+		if label != "simple" && label != "moderate" && label != "hard" {
+			return nil, fmt.Errorf("router: unknown difficulty %q", label)
+		}
+		if len(names) == 0 {
+			return nil, fmt.Errorf("router: difficulty %q must list at least one tier", label)
+		}
+		for _, name := range names {
+			if !slices.Contains(r.auto, name) {
+				return nil, fmt.Errorf("router: difficulty %q names tier %q outside auto", label, name)
+			}
+		}
+		r.difficultyTiers[label] = slices.Clone(names)
+	}
+	if len(o.DifficultyTiers) > 0 || len(o.Rules) > 0 {
+		for _, label := range []string{"simple", "moderate", "hard"} {
+			if len(r.difficultyTiers[label]) == 0 {
+				return nil, fmt.Errorf("router: difficulty %q must list at least one tier", label)
+			}
+		}
+		if len(r.rules) > maxDifficultyRules {
+			return nil, errors.New("router: rules must contain at most 32 rules")
+		}
+		for i, rule := range r.rules {
+			if rule.Difficulty != "simple" && rule.Difficulty != "moderate" && rule.Difficulty != "hard" {
+				return nil, fmt.Errorf("router: rule %d has unknown difficulty %q", i+1, rule.Difficulty)
+			}
+			if rule.EstimatedInputTokensGTE == nil && rule.RequestedOutputTokensGTE == nil && rule.ToolsPresent == nil {
+				return nil, fmt.Errorf("router: rule %d has no conditions", i+1)
+			}
+			if rule.EstimatedInputTokensGTE != nil && (*rule.EstimatedInputTokensGTE < 1 || *rule.EstimatedInputTokensGTE > maxDifficultyTokenThreshold) {
+				return nil, fmt.Errorf("router: rule %d has an invalid input token threshold", i+1)
+			}
+			if rule.RequestedOutputTokensGTE != nil && (*rule.RequestedOutputTokensGTE < 1 || *rule.RequestedOutputTokensGTE > maxDifficultyTokenThreshold) {
+				return nil, fmt.Errorf("router: rule %d has an invalid output token threshold", i+1)
+			}
 		}
 	}
 	for ref, declaration := range o.Declarations {
@@ -135,6 +194,7 @@ func knownCapability(c Capability) bool {
 // for direct model references, which must pass through without inspection.
 func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error) {
 	var tierNames []string
+	useRules := false
 	switch {
 	case model == "auto":
 		if len(r.auto) == 0 {
@@ -142,6 +202,7 @@ func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error)
 		}
 		plan.Source = "auto"
 		tierNames = r.auto
+		useRules = len(r.difficultyTiers) > 0 || len(r.rules) > 0
 	case strings.HasPrefix(model, "spillway/"):
 		name := strings.TrimPrefix(model, "spillway/")
 		if _, exists := r.tiers[name]; !exists {
@@ -156,6 +217,11 @@ func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error)
 	requirements, err := Detect(body)
 	if err != nil {
 		return Plan{}, true, err
+	}
+	if useRules {
+		plan = r.difficultyPlan(requirements)
+		tierNames = r.difficultyTiers[plan.Difficulty]
+		plan.SelectedTier = tierNames[0]
 	}
 	plan.Needs = slices.Clone(requirements.Needs)
 
@@ -196,6 +262,24 @@ func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error)
 		return plan, true, nil
 	}
 	return plan, true, noCandidateError(model, tierNames, requirements.EstimatedTokens, plan)
+}
+
+func (r *Router) difficultyPlan(requirements Requirements) Plan {
+	plan := Plan{Source: "auto", Mode: "rules", Difficulty: "moderate"}
+	for i, rule := range r.rules {
+		if rule.matches(requirements) {
+			plan.Rule = i + 1
+			plan.Difficulty = rule.Difficulty
+			break
+		}
+	}
+	return plan
+}
+
+func (r Rule) matches(features Requirements) bool {
+	return (r.EstimatedInputTokensGTE == nil || features.EstimatedInputTokens >= *r.EstimatedInputTokensGTE) &&
+		(r.RequestedOutputTokensGTE == nil || features.RequestedOutputTokens >= *r.RequestedOutputTokensGTE) &&
+		(r.ToolsPresent == nil || features.ToolsPresent == *r.ToolsPresent)
 }
 
 func missingCapabilities(needs, declared []Capability) []Capability {

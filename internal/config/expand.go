@@ -365,7 +365,7 @@ func checkModelsShape(models *yaml.Node) error {
 
 // routerMilestone names router keys from CONTEXT section 7 that belong to
 // later milestones, so they get guidance instead of "unknown field".
-var routerMilestone = map[string]string{"mode": "v0.5", "judge_model": "v0.5", "confidence_threshold": "v0.5"}
+var routerMilestone = map[string]string{"judge_model": "v0.5", "confidence_threshold": "v0.5"}
 
 func checkRouterShape(router *yaml.Node) error {
 	if router == nil {
@@ -380,7 +380,7 @@ func checkRouterShape(router *yaml.Node) error {
 			return fmt.Errorf("router.%s is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
 		}
 	}
-	if err := rejectFields(router, "router", "auto"); err != nil {
+	if err := rejectFields(router, "router", "auto", "mode", "difficulty", "rules"); err != nil {
 		return err
 	}
 	auto := mappingValue(router, "auto")
@@ -392,6 +392,81 @@ func checkRouterShape(router *yaml.Node) error {
 	}
 	if len(auto.Content) == 0 {
 		return errors.New("router.auto must list at least one tier; zero-spend tiers come first")
+	}
+	mode := mappingValue(router, "mode")
+	if mode != nil && (mode.Kind != yaml.ScalarNode || mode.Tag != "!!str" || mode.Value != "rules") {
+		return fmt.Errorf("router.mode (line %d): must be rules", mode.Line)
+	}
+	if mode == nil && (mappingValue(router, "difficulty") != nil || mappingValue(router, "rules") != nil) {
+		return errors.New("router.difficulty and router.rules require router.mode: rules")
+	}
+	if err := checkDifficultyShape(mappingValue(router, "difficulty"), mappingValue(router, "rules")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkDifficultyShape(difficulty, rules *yaml.Node) error {
+	if difficulty != nil {
+		if difficulty.Kind != yaml.MappingNode {
+			return fmt.Errorf("router.difficulty (line %d): must be a mapping", difficulty.Line)
+		}
+		if err := rejectFields(difficulty, "router.difficulty", "simple", "moderate", "hard"); err != nil {
+			return err
+		}
+		for i := 0; i+1 < len(difficulty.Content); i += 2 {
+			key, value := difficulty.Content[i], difficulty.Content[i+1]
+			if value.Kind != yaml.SequenceNode || len(value.Content) == 0 {
+				return fmt.Errorf("router.difficulty.%s (line %d): must be a non-empty list of tiers", key.Value, value.Line)
+			}
+		}
+	}
+	if rules != nil {
+		if rules.Kind != yaml.SequenceNode || len(rules.Content) > maxDifficultyRules {
+			return fmt.Errorf("router.rules (line %d): must be a list with at most %d rules", rules.Line, maxDifficultyRules)
+		}
+		for i, rule := range rules.Content {
+			path := fmt.Sprintf("router.rules[%d]", i)
+			if rule.Kind != yaml.MappingNode {
+				return fmt.Errorf("%s (line %d): must be a mapping", path, rule.Line)
+			}
+			if err := rejectFields(rule, path, "when", "difficulty"); err != nil {
+				return err
+			}
+			when := mappingValue(rule, "when")
+			if when == nil || when.Kind != yaml.MappingNode {
+				return fmt.Errorf("%s.when (line %d): must be a mapping", path, rule.Line)
+			}
+			if err := rejectFields(when, path+".when", "estimated_input_tokens_gte", "requested_output_tokens_gte", "tools_present"); err != nil {
+				return err
+			}
+			if len(when.Content) == 0 {
+				return fmt.Errorf("%s.when must specify at least one condition", path)
+			}
+			for j := 0; j+1 < len(when.Content); j += 2 {
+				key, value := when.Content[j], when.Content[j+1]
+				if key.Value == "tools_present" {
+					if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+						return fmt.Errorf("%s.when.tools_present (line %d): must be true or false", path, value.Line)
+					}
+				} else if value.Kind != yaml.ScalarNode || value.Tag != "!!int" {
+					return fmt.Errorf("%s.when.%s (line %d): must be a positive bounded integer", path, key.Value, value.Line)
+				} else {
+					limit := maxDifficultyTokenThreshold
+					if value.Value == "" || strings.HasPrefix(value.Value, "-") {
+						return fmt.Errorf("%s.when.%s (line %d): must be a positive bounded integer", path, key.Value, value.Line)
+					}
+					n, err := strconv.Atoi(value.Value)
+					if err != nil || n < 1 || n > limit {
+						return fmt.Errorf("%s.when.%s (line %d): must be from 1 to %d", path, key.Value, value.Line, limit)
+					}
+				}
+			}
+			difficulty := mappingValue(rule, "difficulty")
+			if difficulty == nil || difficulty.Kind != yaml.ScalarNode || difficulty.Tag != "!!str" {
+				return fmt.Errorf("%s.difficulty: must be simple, moderate or hard", path)
+			}
+		}
 	}
 	return nil
 }

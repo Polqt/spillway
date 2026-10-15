@@ -174,6 +174,8 @@ func validateModels(models map[string]ModelDeclaration, tiers map[string]Tier) e
 // maxAutoCandidates keeps auto within the per-request attempt bound of one
 // tier (ADR 0008).
 const maxAutoCandidates = 16
+const maxDifficultyRules = 32
+const maxDifficultyTokenThreshold = 2_000_000
 
 func validateRouter(router Router, tiers map[string]Tier) error {
 	seenTier := make(map[string]bool, len(router.Auto))
@@ -200,6 +202,71 @@ func validateRouter(router Router, tiers map[string]Tier) error {
 	}
 	if len(candidates) > maxAutoCandidates {
 		return fmt.Errorf("router.auto resolves to %d candidates; at most %d are allowed, so list fewer tiers or models", len(candidates), maxAutoCandidates)
+	}
+	if router.Mode == "" {
+		if len(router.Difficulty) != 0 || len(router.Rules) != 0 {
+			return errors.New("router.difficulty and router.rules require router.mode: rules")
+		}
+		return nil
+	}
+	if router.Mode != "rules" {
+		return errors.New("router.mode must be rules")
+	}
+	for _, label := range []string{"simple", "moderate", "hard"} {
+		names, ok := router.Difficulty[label]
+		if !ok || len(names) == 0 {
+			return fmt.Errorf("router.difficulty.%s must list at least one tier", label)
+		}
+		seen := make(map[string]bool, len(names))
+		spendSeen := false
+		for i, name := range names {
+			if !seenTier[name] {
+				return fmt.Errorf("router.difficulty.%s[%d]: tier %s is not listed in router.auto", label, i, name)
+			}
+			if seen[name] {
+				return fmt.Errorf("router.difficulty.%s[%d] duplicates an earlier tier", label, i)
+			}
+			seen[name] = true
+			if tiers[name].AllowSpend {
+				spendSeen = true
+			} else if spendSeen {
+				return fmt.Errorf("router.difficulty.%s[%d]: zero-spend tiers must come before tiers that allow spending", label, i)
+			}
+		}
+	}
+	if len(router.Rules) > maxDifficultyRules {
+		return errors.New("router.rules must contain at most 32 rules")
+	}
+	seenRules := make(map[string]int, len(router.Rules))
+	for i, rule := range router.Rules {
+		if rule.Difficulty != "simple" && rule.Difficulty != "moderate" && rule.Difficulty != "hard" {
+			return fmt.Errorf("router.rules[%d].difficulty must be simple, moderate or hard", i)
+		}
+		when := rule.When
+		if when.EstimatedInputTokensGTE == nil && when.RequestedOutputTokensGTE == nil && when.ToolsPresent == nil {
+			return fmt.Errorf("router.rules[%d].when must specify at least one condition", i)
+		}
+		if when.EstimatedInputTokensGTE != nil && (*when.EstimatedInputTokensGTE < 1 || *when.EstimatedInputTokensGTE > maxDifficultyTokenThreshold) {
+			return fmt.Errorf("router.rules[%d].when.estimated_input_tokens_gte must be from 1 to 2000000", i)
+		}
+		if when.RequestedOutputTokensGTE != nil && (*when.RequestedOutputTokensGTE < 1 || *when.RequestedOutputTokensGTE > maxDifficultyTokenThreshold) {
+			return fmt.Errorf("router.rules[%d].when.requested_output_tokens_gte must be from 1 to 2000000", i)
+		}
+		input, output, tools := 0, 0, "unset"
+		if when.EstimatedInputTokensGTE != nil {
+			input = *when.EstimatedInputTokensGTE
+		}
+		if when.RequestedOutputTokensGTE != nil {
+			output = *when.RequestedOutputTokensGTE
+		}
+		if when.ToolsPresent != nil {
+			tools = fmt.Sprintf("%t", *when.ToolsPresent)
+		}
+		key := fmt.Sprintf("%d/%d/%s", input, output, tools)
+		if earlier, ok := seenRules[key]; ok {
+			return fmt.Errorf("router.rules[%d] duplicates conditions from rule %d", i, earlier)
+		}
+		seenRules[key] = i
 	}
 	return nil
 }

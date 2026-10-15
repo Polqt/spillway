@@ -50,6 +50,27 @@ func newRouterHandler(t *testing.T, ps []providers.Provider, tiers map[string][]
 	return h
 }
 
+func newRulesHandler(t *testing.T, ps []providers.Provider, tiers map[string][]providers.ModelRef, auto []string, difficulty map[string][]string, rules []router.Rule, declarations map[providers.ModelRef]router.Declaration) http.Handler {
+	t.Helper()
+	set, err := providers.NewSet(ps...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner, err := router.New(router.Options{Tiers: tiers, Auto: auto, DifficultyTiers: difficulty, Rules: rules, Declarations: declarations})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set, Router: planner,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
 func routerRequest(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -225,6 +246,113 @@ func TestChat_RouteHeaderUsesDocumentedGrammar(t *testing.T) {
 				t.Errorf("unsafe route header %q (%d bytes)", got, len(got))
 			}
 		})
+	}
+}
+
+func TestChat_RulesDifficultyRouting(t *testing.T) {
+	inputThreshold := 1
+	outputThreshold := 100
+	tools := true
+	tests := []struct {
+		name      string
+		rules     []router.Rule
+		body      string
+		failFirst bool
+		wantRoute string
+		wantModel string
+	}{
+		{
+			name:      "default moderate",
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`,
+			wantRoute: "rules; default; difficulty moderate; tier balanced; candidate 1/1",
+			wantModel: "m",
+		},
+		{
+			name:      "first matching rule wins",
+			rules:     []router.Rule{{EstimatedInputTokensGTE: &inputThreshold, Difficulty: "simple"}, {ToolsPresent: &tools, Difficulty: "hard"}},
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			wantRoute: "rules; rule 1; difficulty simple; tier cheap; candidate 1/1",
+			wantModel: "m",
+		},
+		{
+			name:      "requested output threshold",
+			rules:     []router.Rule{{RequestedOutputTokensGTE: &outputThreshold, Difficulty: "hard"}},
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":200}`,
+			wantRoute: "rules; rule 1; difficulty hard; tier free; candidate 1/1",
+			wantModel: "m",
+		},
+		{
+			name:      "fallback tier after spillover",
+			rules:     []router.Rule{{ToolsPresent: &tools, Difficulty: "hard"}},
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			failFirst: true,
+			wantRoute: "rules; rule 1; difficulty hard; tier free; fallback strong; candidate 1/1",
+			wantModel: "m",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			providersList := []providers.Provider{
+				&countingProvider{name: "cheap", chat: okChat("cheap")},
+				&countingProvider{name: "balanced", chat: okChat("balanced")},
+			}
+			freeChat := okChat("free")
+			if tt.failFirst {
+				freeChat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}
+			}
+			providersList = append(providersList,
+				&countingProvider{name: "free", chat: freeChat},
+				&countingProvider{name: "strong", chat: okChat("strong")},
+			)
+			tiers := map[string][]providers.ModelRef{
+				"cheap": {routerRef("cheap", "m")}, "balanced": {routerRef("balanced", "m")}, "free": {routerRef("free", "m")}, "strong": {routerRef("strong", "m")},
+			}
+			auto := []string{"cheap", "balanced", "free", "strong"}
+			difficulty := map[string][]string{"simple": {"cheap"}, "moderate": {"balanced"}, "hard": {"free", "strong"}}
+			declarations := make(map[providers.ModelRef]router.Declaration)
+			for _, candidates := range tiers {
+				for _, ref := range candidates {
+					declarations[ref] = router.Declaration{Capabilities: []router.Capability{router.Tools}}
+				}
+			}
+			h := newRulesHandler(t, providersList, tiers, auto, difficulty, tt.rules, declarations)
+			rec := routerRequest(t, h, tt.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, http.StatusOK, rec.Body)
+			}
+			if got := rec.Header().Get("X-Spillway-Route"); got != tt.wantRoute {
+				t.Errorf("route = %q, want %q", got, tt.wantRoute)
+			}
+			if got := rec.Header().Get("X-Spillway-Model"); got != tt.wantModel {
+				t.Errorf("model = %q, want %q", got, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestChat_RulesNoEligibleTierReportsSelectedDifficulty(t *testing.T) {
+	tools := true
+	ref := routerRef("plain", "text")
+	provider := &countingProvider{name: "plain", chat: okChat("text")}
+	h := newRulesHandler(t, []providers.Provider{provider}, map[string][]providers.ModelRef{
+		"cheap": {ref}, "balanced": {ref}, "strong": {ref},
+	}, []string{"cheap", "balanced", "strong"}, map[string][]string{
+		"simple": {"cheap"}, "moderate": {"balanced"}, "hard": {"strong"},
+	}, []router.Rule{{ToolsPresent: &tools, Difficulty: "hard"}}, map[providers.ModelRef]router.Declaration{
+		ref: {Capabilities: []router.Capability{}},
+	})
+	rec := routerRequest(t, h, `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"no_capable_model"`) {
+		t.Fatalf("response = %d %s, want OpenAI no-capable-model error", rec.Code, rec.Body)
+	}
+	if got, want := rec.Header().Get("X-Spillway-Route"), "rules; rule 1; difficulty hard; tier strong; no capable model"; got != want {
+		t.Errorf("route = %q, want %q", got, want)
+	}
+	if provider.calls.Load() != 0 {
+		t.Errorf("provider calls = %d, want 0", provider.calls.Load())
 	}
 }
 

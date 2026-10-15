@@ -175,7 +175,19 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		}
 		declarations[ref] = router.Declaration{Capabilities: capabilities, ContextWindow: declaration.ContextWindow}
 	}
-	planner, err := router.New(router.Options{Tiers: tiers, Auto: cfg.Router.Auto, Declarations: declarations})
+	rules := make([]router.Rule, len(cfg.Router.Rules))
+	for i, rule := range cfg.Router.Rules {
+		rules[i] = router.Rule{
+			EstimatedInputTokensGTE:  rule.When.EstimatedInputTokensGTE,
+			RequestedOutputTokensGTE: rule.When.RequestedOutputTokensGTE,
+			ToolsPresent:             rule.When.ToolsPresent,
+			Difficulty:               rule.Difficulty,
+		}
+	}
+	planner, err := router.New(router.Options{
+		Tiers: tiers, Auto: cfg.Router.Auto, Declarations: declarations,
+		DifficultyTiers: cfg.Router.Difficulty, Rules: rules,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("build router: %w", err)
 	}

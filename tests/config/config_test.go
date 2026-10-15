@@ -470,7 +470,7 @@ func TestParse_Errors(t *testing.T) {
 		{name: "insecure non-loopback base URL", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"http://example.com\"}\n", want: "providers.mock.base_url must use https"},
 		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
 		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
-		{name: "router mode milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.mode is not supported until v0.5"},
+		{name: "router mode requires auto", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.auto is required"},
 		{name: "cache semantic milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {semantic: true}\n", want: `cache.semantic is not supported`},
 		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  mock: {}\n", want: "server.listen must be host:port"},
 		{name: "port out of range", yaml: "server:\n  listen: \"127.0.0.1:70000\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},
@@ -684,6 +684,15 @@ func TestParse_ModelsAndRouterValidation(t *testing.T) {
 		{name: "router auto duplicate", extra: "router: {auto: [free, free]}\n", want: "router.auto[1] duplicates"},
 		{name: "router auto spend first", extra: "router: {auto: [smart, free]}\n", want: "router.auto[0]: tier smart allows spend and must come after every zero-spend tier (ADR 0008)"},
 		{name: "router auto too many candidates", full: big, want: "router.auto resolves to 17 candidates; at most 16 are allowed"},
+		{name: "rules require opt-in", extra: "router:\n  auto: [free]\n  rules: [{when: {tools_present: true}, difficulty: hard}]\n", want: "require router.mode: rules"},
+		{name: "rules require every difficulty", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {moderate: [free]}\n  rules: [{when: {tools_present: true}, difficulty: hard}]\n", want: "router.difficulty.simple must list at least one tier"},
+		{name: "unknown difficulty label", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free], trivial: [free]}\n  rules: [{when: {tools_present: true}, difficulty: hard}]\n", want: "router.difficulty (line"},
+		{name: "difficulty tier must be in auto", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [smart], moderate: [free], hard: [free]}\n  rules: [{when: {tools_present: true}, difficulty: hard}]\n", want: "router.difficulty.simple[0]: tier smart is not listed in router.auto"},
+		{name: "empty rule condition", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {}, difficulty: hard}]\n", want: "router.rules[0].when must specify at least one condition"},
+		{name: "unbounded threshold", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {estimated_input_tokens_gte: 2000001}, difficulty: hard}]\n", want: "must be from 1 to 2000000"},
+		{name: "unknown rule condition", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {prompt_contains: tool}, difficulty: hard}]\n", want: "router.rules[0].when (line"},
+		{name: "duplicate rule conditions", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules:\n    - when: {tools_present: true}\n      difficulty: simple\n    - when: {tools_present: true}\n      difficulty: hard\n", want: "router.rules[1] duplicates conditions from rule 0"},
+		{name: "invalid difficulty label", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {tools_present: true}, difficulty: trivial}]\n", want: "router.rules[0].difficulty must be simple, moderate or hard"},
 		{name: "tier reference with space", full: head + "tiers:\n  a:\n    models: [\"mock/echo two\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
 		{name: "tier reference with control character", full: head + "tiers:\n  a:\n    models: [\"mock/echo\\x01\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
 	}
@@ -703,6 +712,17 @@ func TestParse_ModelsAndRouterValidation(t *testing.T) {
 				t.Errorf("Parse error %q contains a key", err)
 			}
 		})
+	}
+}
+
+func TestParse_RulesRouter(t *testing.T) {
+	t.Parallel()
+	cfg, err := parseRouting("router:\n  mode: rules\n  auto: [free, smart]\n  difficulty:\n    simple: [free]\n    moderate: [free, smart]\n    hard: [smart]\n  rules:\n    - when: {tools_present: true}\n      difficulty: hard\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Router.Mode != "rules" || len(cfg.Router.Rules) != 1 || cfg.Router.Rules[0].Difficulty != "hard" || len(cfg.Router.Difficulty["moderate"]) != 2 {
+		t.Fatalf("Router = %+v, want rules mode with one rule and configured fallback tiers", cfg.Router)
 	}
 }
 

@@ -351,7 +351,23 @@ type ModelDeclaration struct {
 // Router configures the auto virtual model.
 type Router struct {
 	// Auto lists tier names in the order auto tries them (ADR 0008).
-	Auto []string `yaml:"auto,omitempty"`
+	Auto       []string            `yaml:"auto,omitempty"`
+	Mode       string              `yaml:"mode,omitempty"`
+	Difficulty map[string][]string `yaml:"difficulty,omitempty"`
+	Rules      []DifficultyRule    `yaml:"rules,omitempty"`
+}
+
+// DifficultyRule selects a difficulty when every specified condition matches.
+type DifficultyRule struct {
+	When       DifficultyConditions `yaml:"when"`
+	Difficulty string               `yaml:"difficulty"`
+}
+
+// DifficultyConditions contains the bounded request features rules may inspect.
+type DifficultyConditions struct {
+	EstimatedInputTokensGTE  *int  `yaml:"estimated_input_tokens_gte,omitempty"`
+	RequestedOutputTokensGTE *int  `yaml:"requested_output_tokens_gte,omitempty"`
+	ToolsPresent             *bool `yaml:"tools_present,omitempty"`
 }
 
 // Logging configures the program's structured logger.

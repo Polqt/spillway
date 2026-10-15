@@ -41,7 +41,10 @@ type Requirements struct {
 	Needs []Capability
 	// EstimatedTokens undercounts on purpose: text bytes / 6, rounded up,
 	// plus the requested output tokens. Images are not counted.
-	EstimatedTokens int
+	EstimatedTokens       int
+	EstimatedInputTokens  int
+	RequestedOutputTokens int
+	ToolsPresent          bool
 }
 
 // bytesPerToken is above the 4 to 5 bytes per token of English text, so the
@@ -81,6 +84,7 @@ func Detect(body []byte) (Requirements, error) {
 	needs := make(map[Capability]bool)
 	textBytes := 0
 
+	toolsPresent := false
 	for _, field := range []struct {
 		name string
 		raw  json.RawMessage
@@ -91,6 +95,7 @@ func Detect(body []byte) (Requirements, error) {
 		}
 		if n > 0 {
 			needs[Tools] = true
+			toolsPresent = true
 			textBytes += len(field.raw)
 		}
 	}
@@ -106,9 +111,11 @@ func Detect(body []byte) (Requirements, error) {
 	for i, m := range b.Messages {
 		if m.Role == "tool" || m.Role == "function" || !isNull(m.FunctionCall) {
 			needs[Tools] = true
+			toolsPresent = true
 		}
 		if n, err := arrayLen(m.ToolCalls); err == nil && n > 0 {
 			needs[Tools] = true
+			toolsPresent = true
 			textBytes += len(m.ToolCalls)
 		}
 		n, vision, err := contentText(m.Content)
@@ -125,7 +132,8 @@ func Detect(body []byte) (Requirements, error) {
 	if err != nil {
 		return Requirements{}, err
 	}
-	r := Requirements{EstimatedTokens: (textBytes+bytesPerToken-1)/bytesPerToken + output}
+	input := (textBytes + bytesPerToken - 1) / bytesPerToken
+	r := Requirements{EstimatedTokens: input + output, EstimatedInputTokens: input, RequestedOutputTokens: output, ToolsPresent: toolsPresent}
 	for _, c := range capabilityOrder {
 		if needs[c] {
 			r.Needs = append(r.Needs, c)
