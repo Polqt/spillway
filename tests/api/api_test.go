@@ -499,6 +499,7 @@ func TestChat_EchoMock(t *testing.T) {
 		"Content-Type":        "application/json",
 		"X-Spillway-Provider": "mock",
 		"X-Spillway-Model":    "echo",
+		"X-Spillway-Route":    "direct",
 	} {
 		if got := rec.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
@@ -527,7 +528,7 @@ func TestChat_AccessLog(t *testing.T) {
 	e.do(t, request{auth: "Bearer " + keyCI, body: echoBody})
 
 	log := e.logs.String()
-	for _, want := range []string{"msg=request", "method=POST", "path=/v1/chat/completions", "status=200", "client_app=ci", "provider=mock", "model=echo", "latency_ms="} {
+	for _, want := range []string{"msg=request", "method=POST", "path=/v1/chat/completions", "status=200", "client_app=ci", "provider=mock", "model=echo", "route=direct", "latency_ms="} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}

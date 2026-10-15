@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -44,6 +45,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
 	if err != nil {
+		setRoute(w, r, planErrorRoute(*body.Model, plan))
 		h.writePlanError(w, *body.Model, err)
 		return
 	}
@@ -51,6 +53,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.servePlan(w, r, plan, body)
 		return
 	}
+	setRoute(w, r, "direct")
 	ref, provider, ok := h.resolve(w, *body.Model)
 	if !ok {
 		return
@@ -146,6 +149,8 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			continue
 		}
 		clearCandidateHeaders(w)
+		route := candidateRoute(plan, candidateTier, i+1, len(candidates))
+		setRoute(w, r, route)
 		req := providers.ChatRequest{Model: ref.Model, Messages: body.Messages, RawBody: body.RawBody}
 		rec.attempts++
 		var err error
@@ -198,13 +203,13 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		}
 		h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
-			clearCandidateHeaders(w)
 			rec.err = err
 			writeProviderError(w, r, ref, err)
 			return
 		}
 	}
 	clearCandidateHeaders(w)
+	setRoute(w, r, exhaustedRoute(plan, tier, len(candidates)))
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
 	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
@@ -251,7 +256,83 @@ func earliestCooldown(failures []candidateFailure, candidateCount int, now time.
 func clearCandidateHeaders(w http.ResponseWriter) {
 	w.Header().Del("X-Spillway-Provider")
 	w.Header().Del("X-Spillway-Model")
+	w.Header().Del("X-Spillway-Route")
 	w.Header().Del("Retry-After")
+}
+
+func setRoute(w http.ResponseWriter, r *http.Request, route string) {
+	if len(route) > 256 {
+		route = route[:256]
+	}
+	w.Header().Set("X-Spillway-Route", route)
+	recordFrom(r.Context()).route = route
+}
+
+func candidateRoute(plan router.Plan, tier string, candidate, total int) string {
+	var parts []string
+	if plan.Source == "auto" {
+		parts = append(parts, "auto")
+	} else {
+		parts = append(parts, "tier "+safeTierName(tier))
+	}
+	if needs := routeNeeds(plan.Needs); needs != "" {
+		parts = append(parts, "needs "+needs)
+	}
+	if plan.Source == "auto" {
+		parts = append(parts, "tier "+safeTierName(tier))
+	}
+	parts = append(parts, fmt.Sprintf("candidate %d/%d", candidate, total))
+	return strings.Join(parts, "; ")
+}
+
+func planErrorRoute(model string, plan router.Plan) string {
+	var parts []string
+	if model == "auto" {
+		parts = append(parts, "auto")
+	} else if strings.HasPrefix(model, "spillway/") {
+		parts = append(parts, "tier "+safeTierName(strings.TrimPrefix(model, "spillway/")))
+	} else {
+		parts = append(parts, "auto")
+	}
+	if needs := routeNeeds(plan.Needs); needs != "" {
+		parts = append(parts, "needs "+needs)
+	}
+	parts = append(parts, "no capable model")
+	return strings.Join(parts, "; ")
+}
+
+func exhaustedRoute(plan router.Plan, tier string, eligible int) string {
+	var parts []string
+	if plan.Source == "auto" {
+		parts = append(parts, "auto")
+	} else {
+		parts = append(parts, "tier "+safeTierName(tier))
+	}
+	if needs := routeNeeds(plan.Needs); needs != "" {
+		parts = append(parts, "needs "+needs)
+	}
+	parts = append(parts, fmt.Sprintf("exhausted (%d eligible)", eligible))
+	return strings.Join(parts, "; ")
+}
+
+func routeNeeds(needs []router.Capability) string {
+	parts := make([]string, len(needs))
+	for i, need := range needs {
+		parts[i] = string(need)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func safeTierName(name string) string {
+	if name == "" || len(name) > 64 {
+		return "unknown"
+	}
+	for i := 0; i < len(name); i++ {
+		if (name[i] < 'a' || name[i] > 'z') && (name[i] < '0' || name[i] > '9') && name[i] != '-' {
+			return "unknown"
+		}
+	}
+	return name
 }
 
 func (h *chatHandler) logCandidateFailure(r *http.Request, tier string, ref providers.ModelRef, kind string) {

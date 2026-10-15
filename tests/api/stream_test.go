@@ -282,6 +282,12 @@ func TestStream_TierSpillsBeforeFirstChunk(t *testing.T) {
 			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" {
 				t.Fatalf("response = %d %v %s, want SSE 200", rec.Code, rec.Header(), rec.Body)
 			}
+			if got := rec.Header().Get("X-Spillway-Route"); got != "tier demo; candidate 2/2" {
+				t.Errorf("route = %q, want tier demo; candidate 2/2", got)
+			}
+			if got := rec.Header().Get("X-Spillway-Model"); got != "candidate" {
+				t.Errorf("model = %q, want candidate from the second provider after the stream spill", got)
+			}
 			if got := readEvents(t, rec.Body); !slices.Equal(got, []string{`{"model":"second"}`, "[DONE]"}) {
 				t.Errorf("events = %q, want only second candidate and [DONE]", got)
 			}

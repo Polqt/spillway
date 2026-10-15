@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -85,6 +86,116 @@ func TestChat_AutoSelectsFirstDeclaredCapableCandidate(t *testing.T) {
 	}
 	if undeclared.calls.Load() != 0 || textOnly.calls.Load() != 0 {
 		t.Errorf("skipped candidate calls = %d/%d, want 0/0", undeclared.calls.Load(), textOnly.calls.Load())
+	}
+	if got := rec.Header().Get("X-Spillway-Route"); got != "auto; needs tools; tier free; candidate 1/1" {
+		t.Errorf("route = %q, want auto; needs tools; tier free; candidate 1/1", got)
+	}
+}
+
+func TestChat_RouteHeaderUsesDocumentedGrammar(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		model     string
+		tiers     map[string][]providers.ModelRef
+		auto      []string
+		decls     map[providers.ModelRef]router.Declaration
+		providers []providers.Provider
+		body      string
+		wantRoute string
+		wantModel string
+		wantCode  int
+	}{
+		{
+			name: "direct", model: "plain/direct", providers: []providers.Provider{&countingProvider{name: "plain", chat: okChat("direct")}},
+			body:      `{"model":"plain/direct","messages":[{"role":"user","content":"hello"}]}`,
+			wantRoute: "direct", wantModel: "direct", wantCode: http.StatusOK,
+		},
+		{
+			name: "tier second of three", model: "spillway/free",
+			tiers: map[string][]providers.ModelRef{"free": {routerRef("first", "a"), routerRef("second", "b"), routerRef("third", "c")}},
+			providers: []providers.Provider{
+				&countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}},
+				&countingProvider{name: "second", chat: okChat("b")},
+				&countingProvider{name: "third", chat: okChat("c")},
+			},
+			body:      `{"model":"spillway/free","messages":[{"role":"user","content":"hello"}]}`,
+			wantRoute: "tier free; candidate 2/3", wantModel: "b", wantCode: http.StatusOK,
+		},
+		{
+			name: "tier needs tools", model: "spillway/free",
+			tiers:     map[string][]providers.ModelRef{"free": {routerRef("plain", "a"), routerRef("tools", "b"), routerRef("tools", "c")}},
+			decls:     map[providers.ModelRef]router.Declaration{routerRef("plain", "a"): {Capabilities: []router.Capability{}}, routerRef("tools", "b"): {Capabilities: []router.Capability{router.Tools}}, routerRef("tools", "c"): {Capabilities: []router.Capability{router.Tools}}},
+			providers: []providers.Provider{&countingProvider{name: "plain", chat: okChat("a")}, &countingProvider{name: "tools", chat: okChat("b")}},
+			body:      `{"model":"spillway/free","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			wantRoute: "tier free; needs tools; candidate 1/2", wantModel: "b", wantCode: http.StatusOK,
+		},
+		{
+			name: "auto crosses tiers", model: "auto",
+			tiers: map[string][]providers.ModelRef{"free": {routerRef("first", "a"), routerRef("second", "b")}, "smart": {routerRef("third", "c")}}, auto: []string{"free", "smart"},
+			decls: map[providers.ModelRef]router.Declaration{routerRef("first", "a"): {Capabilities: []router.Capability{router.Tools, router.Vision}}, routerRef("second", "b"): {Capabilities: []router.Capability{router.Tools, router.Vision}}, routerRef("third", "c"): {Capabilities: []router.Capability{router.Tools, router.Vision}}},
+			providers: []providers.Provider{
+				&countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}},
+				&countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}},
+				&countingProvider{name: "third", chat: okChat("c")},
+			},
+			body:      `{"model":"auto","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/x"}}]}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			wantRoute: "auto; needs tools, vision; tier smart; candidate 3/3", wantModel: "c", wantCode: http.StatusOK,
+		},
+		{
+			name: "no capable model", model: "auto",
+			tiers: map[string][]providers.ModelRef{"free": {routerRef("plain", "a")}}, auto: []string{"free"},
+			providers: []providers.Provider{&countingProvider{name: "plain", chat: okChat("a")}},
+			body:      `{"model":"auto","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"secret-prompt"}}]}]}`,
+			wantRoute: "auto; needs vision; no capable model", wantModel: "", wantCode: http.StatusBadRequest,
+		},
+		{
+			name: "eligible candidates exhausted", model: "auto",
+			tiers: map[string][]providers.ModelRef{"free": {routerRef("first", "a"), routerRef("plain", "b"), routerRef("second", "c")}}, auto: []string{"free"},
+			decls: map[providers.ModelRef]router.Declaration{routerRef("first", "a"): {Capabilities: []router.Capability{router.Tools}}, routerRef("plain", "b"): {Capabilities: []router.Capability{}}, routerRef("second", "c"): {Capabilities: []router.Capability{router.Tools}}},
+			providers: []providers.Provider{
+				&countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}},
+				&countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+					return providers.ChatResponse{}, providers.ErrRateLimited
+				}},
+				&countingProvider{name: "plain", chat: okChat("b")},
+			},
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			wantRoute: "auto; needs tools; exhausted (2 eligible)", wantModel: "", wantCode: http.StatusServiceUnavailable,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newRouterHandler(t, tt.providers, tt.tiers, tt.auto, tt.decls, nil, nil)
+			rec := routerRequest(t, h, tt.body)
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.wantCode, rec.Body)
+			}
+			if got := rec.Header().Get("X-Spillway-Route"); got != tt.wantRoute {
+				t.Errorf("route = %q, want %q", got, tt.wantRoute)
+			}
+			if got := rec.Header().Get("X-Spillway-Model"); got != tt.wantModel {
+				t.Errorf("model = %q, want %q", got, tt.wantModel)
+			}
+			if got := rec.Header().Get("X-Spillway-Route"); len(got) > 256 || strings.Contains(got, "secret-prompt") || strings.Contains(got, keyCI) {
+				t.Errorf("unsafe route header %q (%d bytes)", got, len(got))
+			}
+		})
+	}
+}
+
+func okChat(model string) func(providers.ChatRequest) (providers.ChatResponse, error) {
+	return func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: json.RawMessage(`{"model":"` + model + `"}`)}, nil
 	}
 }
 
@@ -180,11 +291,86 @@ func TestChat_PlanErrorsStayOpenAIJSONForStreamingRequests(t *testing.T) {
 	}, nil, nil)
 	rec := routerRequest(t, h, `{"model":"auto","stream":true,"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}]}]}`)
 	assertError(t, rec, http.StatusBadRequest, "invalid_request_error", "no_capable_model")
+	if got := rec.Header().Get("X-Spillway-Route"); got != "auto; needs vision; no capable model" {
+		t.Errorf("route = %q, want auto; needs vision; no capable model", got)
+	}
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") || strings.Contains(got, "text/event-stream") {
 		t.Errorf("content type = %q, want plain JSON", got)
 	}
 	if provider.calls.Load() != 0 {
 		t.Errorf("provider calls = %d, want 0", provider.calls.Load())
+	}
+}
+
+func TestChat_RouteHeaderIsBoundedForInvalidTierNames(t *testing.T) {
+	t.Parallel()
+	name := strings.Repeat("a", 300)
+	provider := &countingProvider{name: "plain", chat: okChat("text")}
+	h := newRouterHandler(t, []providers.Provider{provider}, map[string][]providers.ModelRef{name: {routerRef("plain", "text")}}, nil, nil, nil, nil)
+	rec := routerRequest(t, h, `{"model":"spillway/`+name+`","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("X-Spillway-Route"); len(got) > 256 || !strings.Contains(got, "tier unknown") {
+		t.Errorf("route = %q (%d bytes), want bounded safe tier name", got, len(got))
+	}
+}
+
+func TestChat_RouteHeaderDoesNotIncludeProviderErrorText(t *testing.T) {
+	t.Parallel()
+	provider := &countingProvider{name: "plain", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, fmt.Errorf("secret-upstream-message: %w", providers.ErrBadRequest)
+	}}
+	h := newRouterHandler(t, []providers.Provider{provider}, map[string][]providers.ModelRef{"free": {routerRef("plain", "text")}}, nil, nil, nil, nil)
+	rec := routerRequest(t, h, `{"model":"spillway/free","messages":[{"role":"user","content":"hello"}]}`)
+	if got := rec.Header().Get("X-Spillway-Route"); got != "tier free; candidate 1/1" {
+		t.Errorf("route = %q, want tier free; candidate 1/1", got)
+	}
+	if got := rec.Header().Get("X-Spillway-Route"); len(got) > 256 || strings.Contains(got, "secret-upstream-message") || strings.Contains(got, keyCI) {
+		t.Errorf("route leaks sensitive data or exceeds 256 bytes: %q", got)
+	}
+}
+
+func TestChat_PlanErrorRouteUsesDocumentedGrammar(t *testing.T) {
+	t.Parallel()
+	provider := &countingProvider{name: "plain", chat: okChat("text")}
+	tests := []struct {
+		name, model, body, wantRoute string
+		wantStatus                   int
+		auto                         []string
+	}{
+		{
+			name: "unknown tier", model: "spillway/missing",
+			body:      `{"model":"spillway/missing","messages":[{"role":"user","content":"hello"}]}`,
+			wantRoute: "tier missing; no capable model", wantStatus: http.StatusNotFound, auto: []string{"free"},
+		},
+		{
+			name: "auto not configured", model: "auto",
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`,
+			wantRoute: "auto; no capable model", wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "invalid request field", model: "auto",
+			body:      `{"model":"auto","messages":[{"role":"user","content":"hello"}],"tools":"bad"}`,
+			wantRoute: "auto; no capable model", wantStatus: http.StatusBadRequest, auto: []string{"free"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var tiers map[string][]providers.ModelRef
+			if len(tt.auto) > 0 {
+				tiers = map[string][]providers.ModelRef{"free": {routerRef("plain", "text")}}
+			}
+			h := newRouterHandler(t, []providers.Provider{provider}, tiers, tt.auto, nil, nil, nil)
+			rec := routerRequest(t, h, tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if got := rec.Header().Get("X-Spillway-Route"); got != tt.wantRoute {
+				t.Errorf("route = %q, want %q", got, tt.wantRoute)
+			}
+		})
 	}
 }
 
