@@ -143,6 +143,21 @@ func TestRun_CheckPrintsStoreConfig(t *testing.T) {
 	}
 }
 
+func TestRun_CheckPrintsDashboardKeyFlagWithoutKey(t *testing.T) {
+	path := writeConfig(t, "server:\n  api_keys: [{name: admin, key: sk-test-check-dashboard, dashboard: true}]\nproviders:\n  mock: {}\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	if code != 0 {
+		t.Fatalf("check exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "dashboard: true") {
+		t.Errorf("check output = %q, want dashboard flag", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "sk-test-check-dashboard") {
+		t.Errorf("check output exposed local key: %q", stdout.String())
+	}
+}
+
 func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  mock: {}\n")

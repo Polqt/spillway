@@ -148,7 +148,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 
 	keys := make([]api.LocalKey, len(cfg.Server.APIKeys))
 	for i, k := range cfg.Server.APIKeys {
-		keys[i] = api.LocalKey{Name: k.Name, Key: k.Key}
+		keys[i] = api.LocalKey{Name: k.Name, Key: k.Key, Dashboard: k.Dashboard}
 	}
 	tiers := make(map[string][]providers.ModelRef, len(cfg.Tiers))
 	for name, tier := range cfg.Tiers {
@@ -215,18 +215,19 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		usageRecorder = usageStore
 	}
 	return api.NewHandler(api.Options{
-		Providers:     set,
-		Router:        planner,
-		Tiers:         tiers,
-		Tracker:       tracker,
-		LocalKeys:     keys,
-		AllowedHosts:  allowedHosts,
-		Logger:        logger,
-		UsageRecorder: usageRecorder,
-		CostEstimator: budget.NewPricer(cfg),
-		BudgetGate:    budgetGate,
-		ExactCache:    exactCache,
-		Now:           now,
+		Providers:      set,
+		Router:         planner,
+		Tiers:          tiers,
+		Tracker:        tracker,
+		LocalKeys:      keys,
+		AllowedHosts:   allowedHosts,
+		Logger:         logger,
+		UsageRecorder:  usageRecorder,
+		DashboardStore: usageStore,
+		CostEstimator:  budget.NewPricer(cfg),
+		BudgetGate:     budgetGate,
+		ExactCache:     exactCache,
+		Now:            now,
 	})
 }
 

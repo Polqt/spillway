@@ -38,46 +38,46 @@ type Options struct {
 // It intentionally has no fields for prompts, responses, headers, keys or
 // provider error text.
 type Request struct {
-	At               time.Time
-	ClientApp        string
-	RequestedModel   string
-	Route            string
-	Tier             string
-	Provider         string
-	Model            string
-	Status           int
-	ErrorKind        string
-	Stream           bool
-	Cache            string
-	LatencyMS        int64
-	PromptTokens     int64
-	CompletionTokens int64
-	UsageSource      string
-	CostMicroUSD     int64
-	CostSource       string
-	Skips            []Skip
-	Attempts         []Attempt
+	At               time.Time `json:"at"`
+	ClientApp        string    `json:"client_app"`
+	RequestedModel   string    `json:"requested_model"`
+	Route            string    `json:"route"`
+	Tier             string    `json:"tier,omitempty"`
+	Provider         string    `json:"provider,omitempty"`
+	Model            string    `json:"model,omitempty"`
+	Status           int       `json:"status"`
+	ErrorKind        string    `json:"error_kind,omitempty"`
+	Stream           bool      `json:"stream"`
+	Cache            string    `json:"cache,omitempty"`
+	LatencyMS        int64     `json:"latency_ms"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	UsageSource      string    `json:"usage_source"`
+	CostMicroUSD     int64     `json:"cost_micro_usd"`
+	CostSource       string    `json:"cost_source"`
+	Skips            []Skip    `json:"skips"`
+	Attempts         []Attempt `json:"attempts"`
 }
 
 // Skip is a router candidate that was not sent to a provider.
 type Skip struct {
-	Provider string
-	Model    string
-	Reason   string
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Reason   string `json:"reason"`
 }
 
 // Attempt describes one provider request.
 type Attempt struct {
-	At               time.Time
-	Provider         string
-	Model            string
-	Outcome          string
-	LatencyMS        int64
-	PromptTokens     int64
-	CompletionTokens int64
-	UsageSource      string
-	CostMicroUSD     int64
-	CostSource       string
+	At               time.Time `json:"at"`
+	Provider         string    `json:"provider"`
+	Model            string    `json:"model"`
+	Outcome          string    `json:"outcome"`
+	LatencyMS        int64     `json:"latency_ms"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	UsageSource      string    `json:"usage_source"`
+	CostMicroUSD     int64     `json:"cost_micro_usd"`
+	CostSource       string    `json:"cost_source"`
 }
 
 // Store owns the database connection and hourly pruner.

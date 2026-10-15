@@ -14,8 +14,9 @@ const authFailedMessage = `Invalid API key. Provide a valid key in the Authoriza
 // so every comparison is over equal-length values and the key length cannot
 // leak through timing.
 type authenticator struct {
-	names   []string
-	digests [][sha256.Size]byte
+	names     []string
+	digests   [][sha256.Size]byte
+	dashboard []bool
 }
 
 func newAuthenticator(keys []LocalKey) (*authenticator, error) {
@@ -29,6 +30,7 @@ func newAuthenticator(keys []LocalKey) (*authenticator, error) {
 		}
 		a.names = append(a.names, k.Name)
 		a.digests = append(a.digests, sha256.Sum256([]byte(k.Key.Reveal())))
+		a.dashboard = append(a.dashboard, k.Dashboard)
 	}
 	return a, nil
 }
@@ -65,6 +67,27 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			return
 		}
 		recordFrom(r.Context()).clientApp = name
+		if strings.HasPrefix(r.URL.Path, "/api") && !a.hasDashboardKey(token) {
+			writeError(w, http.StatusForbidden, "This API key does not have dashboard access.", "permission_denied", "permission_denied")
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (a *authenticator) hasDashboardKey(token string) bool {
+	presented := sha256.Sum256([]byte(token))
+	allowed := 0
+	for i, digest := range a.digests {
+		equal := subtle.ConstantTimeCompare(presented[:], digest[:])
+		allowed |= equal & boolInt(a.dashboard[i])
+	}
+	return allowed == 1
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

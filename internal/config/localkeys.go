@@ -11,8 +11,9 @@ import (
 
 // LocalKey is one local key and the name of the client app that presents it.
 type LocalKey struct {
-	Name string        `yaml:"name"`
-	Key  redact.Secret `yaml:"key"`
+	Name      string        `yaml:"name"`
+	Key       redact.Secret `yaml:"key"`
+	Dashboard bool          `yaml:"dashboard,omitempty"`
 }
 
 // LocalKeys is the server.api_keys list. Each entry is either a plain string,
@@ -53,10 +54,17 @@ func decodeNamedKey(n *yaml.Node, path string) (LocalKey, error) {
 	var hasName, hasKey bool
 	for j := 0; j+1 < len(n.Content); j += 2 {
 		field, value := n.Content[j], n.Content[j+1]
-		if field.Value != "name" && field.Value != "key" {
+		if field.Value != "name" && field.Value != "key" && field.Value != "dashboard" {
 			// The field is not printed: a local key mistyped as a mapping
 			// key ("- sk-...:") would otherwise leak into the error.
-			return LocalKey{}, fmt.Errorf("%s (line %d): unknown field; an entry takes only name and key", path, field.Line)
+			return LocalKey{}, fmt.Errorf("%s (line %d): unknown field; an entry takes only name, key and dashboard", path, field.Line)
+		}
+		if field.Value == "dashboard" {
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+				return LocalKey{}, fmt.Errorf("%s.dashboard (line %d): must be true or false", path, value.Line)
+			}
+			k.Dashboard = value.Value == "true"
+			continue
 		}
 		if !isString(value) {
 			return LocalKey{}, fmt.Errorf("%s.%s (line %d): must be a string", path, field.Value, value.Line)

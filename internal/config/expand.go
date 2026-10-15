@@ -133,7 +133,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 			if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
 				for i, entry := range keys.Content {
 					if entry.Kind == yaml.MappingNode {
-						if err := rejectFields(entry, fmt.Sprintf("server.api_keys[%d]", i), "name", "key"); err != nil {
+						if err := rejectFields(entry, fmt.Sprintf("server.api_keys[%d]", i), "name", "key", "dashboard"); err != nil {
 							return err
 						}
 					}

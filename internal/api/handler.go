@@ -12,6 +12,7 @@ import (
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/cache"
 	"github.com/Polqt/spillway/internal/providers"
+	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
 	"github.com/Polqt/spillway/internal/store"
@@ -19,8 +20,9 @@ import (
 
 // LocalKey is one local key and the name of the client app that presents it.
 type LocalKey struct {
-	Name string
-	Key  redact.Secret
+	Name      string
+	Key       redact.Secret
+	Dashboard bool
 }
 
 // providerSet is the part of providers.Set the API uses.
@@ -32,6 +34,13 @@ type providerSet interface {
 type candidateTracker interface {
 	Available(ref providers.ModelRef) (bool, time.Time, string)
 	Observe(ref providers.ModelRef, err error, hint providers.RateLimit)
+	Snapshot() []quota.CandidateSnapshot
+}
+
+type dashboardStore interface {
+	Usage(context.Context, store.UsageQuery) ([]store.UsageRow, error)
+	Recent(context.Context, store.RecentQuery) ([]store.Request, string, error)
+	CostQuality(context.Context, time.Time) (store.CostQuality, error)
 }
 
 // Planner resolves virtual model requests and lists configured virtual models.
@@ -60,9 +69,10 @@ type Options struct {
 	UsageRecorder interface {
 		Record(context.Context, store.Request) error
 	}
-	CostEstimator attemptPricer
-	BudgetGate    *budget.Gate
-	ExactCache    *cache.Cache
+	DashboardStore dashboardStore
+	CostEstimator  attemptPricer
+	BudgetGate     *budget.Gate
+	ExactCache     *cache.Cache
 	// Now supplies the clock used to format cooldown retry times.
 	Now               func() time.Time
 	BodyReadTimeout   time.Duration
@@ -98,6 +108,14 @@ func NewHandler(o Options) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.Handle("GET /api/usage", dashboardEndpoint(o, serveUsage))
+	mux.Handle("GET /api/decisions", dashboardEndpoint(o, serveDecisions))
+	mux.Handle("GET /api/budget", dashboardEndpoint(o, serveBudget))
+	mux.Handle("GET /api/quotas", dashboardEndpoint(o, serveQuotas))
+	mux.Handle("/api/usage", methodNotAllowed("GET"))
+	mux.Handle("/api/decisions", methodNotAllowed("GET"))
+	mux.Handle("/api/budget", methodNotAllowed("GET"))
+	mux.Handle("/api/quotas", methodNotAllowed("GET"))
 	planner := o.Router
 	if planner == nil {
 		var err error
@@ -129,6 +147,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	}
 	h = accessLog(o.Logger, o.UsageRecorder, h)
 	h = recoverPanics(o.Logger, h)
+	h = noStoreAPI(h)
 	return h, nil
 }
 

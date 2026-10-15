@@ -36,6 +36,20 @@ type Gate struct {
 	monthly   int64
 }
 
+// PeriodStatus reports one configured UTC budget period.
+type PeriodStatus struct {
+	LimitMicroUSD     int64     `json:"limit_micro_usd"`
+	SpentMicroUSD     int64     `json:"spent_micro_usd"`
+	RemainingMicroUSD int64     `json:"remaining_micro_usd"`
+	ResetAt           time.Time `json:"reset_at"`
+}
+
+// Status is a read-only snapshot of the configured UTC budget periods.
+type Status struct {
+	Daily   *PeriodStatus `json:"daily,omitempty"`
+	Monthly *PeriodStatus `json:"monthly,omitempty"`
+}
+
 // NewGate creates a spend gate seeded from persisted usage totals.
 func NewGate(ctx context.Context, o GateOptions) (*Gate, error) {
 	if o.Limits.DailyMicroUSD < 0 || o.Limits.MonthlyMicroUSD < 0 {
@@ -93,6 +107,24 @@ func (g *Gate) Charge(at time.Time, costMicroUSD int64) {
 	g.roll(at.UTC())
 	g.daily = add(g.daily, costMicroUSD)
 	g.monthly = add(g.monthly, costMicroUSD)
+}
+
+// Status returns limits, spend, remaining amount and the next reset time.
+func (g *Gate) Status() Status {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now().UTC()
+	g.roll(now)
+	var status Status
+	if g.limits.DailyMicroUSD > 0 {
+		status.Daily = &PeriodStatus{LimitMicroUSD: g.limits.DailyMicroUSD, SpentMicroUSD: g.daily,
+			RemainingMicroUSD: max(0, g.limits.DailyMicroUSD-g.daily), ResetAt: g.day.AddDate(0, 0, 1)}
+	}
+	if g.limits.MonthlyMicroUSD > 0 {
+		status.Monthly = &PeriodStatus{LimitMicroUSD: g.limits.MonthlyMicroUSD, SpentMicroUSD: g.monthly,
+			RemainingMicroUSD: max(0, g.limits.MonthlyMicroUSD-g.monthly), ResetAt: g.month.AddDate(0, 1, 0)}
+	}
+	return status
 }
 
 func (g *Gate) roll(now time.Time) {

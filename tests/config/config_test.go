@@ -42,6 +42,35 @@ providers:
 	}
 }
 
+func TestParse_DashboardLocalKey(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: true}]\nproviders:\n  mock: {}\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Server.APIKeys[0].Dashboard {
+		t.Fatal("dashboard key flag = false, want true")
+	}
+	var output strings.Builder
+	if err := cfg.WriteRedacted(&output); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	if !strings.Contains(output.String(), "dashboard: true") {
+		t.Errorf("redacted config = %q, want dashboard flag", output.String())
+	}
+	if strings.Contains(output.String(), localKeyCI) {
+		t.Errorf("redacted config exposes local key: %q", output.String())
+	}
+}
+
+func TestParse_DashboardFlagMustBeBoolean(t *testing.T) {
+	t.Parallel()
+	_, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: yes}]\nproviders:\n  mock: {}\n"))
+	if err == nil || !strings.Contains(err.Error(), "server.api_keys[0].dashboard") {
+		t.Fatalf("Parse error = %v, want dashboard boolean validation", err)
+	}
+}
+
 func TestParse_StoreConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "usage.db")

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +37,15 @@ type candidateState struct {
 	cooldown
 	rateFailures     int
 	upstreamFailures int
+}
+
+// CandidateSnapshot describes the cooldown and circuit state of one candidate.
+type CandidateSnapshot struct {
+	Provider      string     `json:"provider"`
+	Model         string     `json:"model"`
+	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
+	Reason        string     `json:"reason,omitempty"`
+	Breaker       string     `json:"breaker_state"`
 }
 
 // Tracker tracks cooldowns for the configured model references only.
@@ -85,6 +96,40 @@ func (t *Tracker) Available(ref providers.ModelRef) (ok bool, until time.Time, r
 		return false, state.until, state.reason
 	}
 	return true, time.Time{}, ""
+}
+
+// Snapshot returns a sorted, read-only view of configured candidates.
+func (t *Tracker) Snapshot() []CandidateSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]CandidateSnapshot, 0, len(t.configured))
+	now := t.now()
+	for ref := range t.configured {
+		state := t.candidates[ref]
+		until, reason := state.until, state.reason
+		if provider, ok := t.providers[ref.Provider]; ok && provider.until.After(until) {
+			until, reason = provider.until, provider.reason
+		}
+		breaker := "closed"
+		if state.upstreamFailures >= 3 && now.Before(until) && reason == "circuit open" {
+			breaker = "open"
+		}
+		if !now.Before(until) {
+			until, reason = time.Time{}, ""
+		}
+		var cooldownUntil *time.Time
+		if !until.IsZero() {
+			cooldownUntil = &until
+		}
+		result = append(result, CandidateSnapshot{Provider: ref.Provider, Model: ref.Model, CooldownUntil: cooldownUntil, Reason: reason, Breaker: breaker})
+	}
+	slices.SortFunc(result, func(a, b CandidateSnapshot) int {
+		if a.Provider != b.Provider {
+			return strings.Compare(a.Provider, b.Provider)
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
+	return result
 }
 
 // Observe records an outcome for a configured candidate. Cancellation and
