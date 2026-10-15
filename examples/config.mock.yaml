@@ -14,3 +14,10 @@ tiers:
     models: [mock/rate-limited, mock/unavailable, mock/echo]
   dead:
     models: [mock/rate-limited, mock/unavailable]
+
+models:
+  mock/echo:
+    capabilities: [tools, json_mode]
+
+router:
+  auto: [demo]

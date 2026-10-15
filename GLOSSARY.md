@@ -26,6 +26,28 @@ _Avoid_: alias, meta-model
 A user-named, ordered list of model references, such as `cheap`, that a client can request as `spillway/<tier>`.
 _Avoid_: class, bucket
 
+**Capability**:
+A supported request feature a model can handle: `tools`, `vision`, `json_mode` or `structured_outputs`.
+_Avoid_: feature flag
+
+**Capability declaration**:
+The user's complete `models:` config entry for a model, listing its supported capabilities; `[]` means text only.
+Spillway does not infer capabilities from model names, providers or past requests (ADR 0007).
+_Avoid_: capability discovery
+
+**Requirement**:
+A capability or context size detected from a virtual-model request body and used to filter candidates.
+Direct model references are passed through without requirement detection.
+_Avoid_: constraint
+
+**Auto chain**:
+The ordered, de-duplicated candidates from the tiers in `router.auto`, with zero-spend tiers before tiers that allow spending.
+_Avoid_: fallback chain
+
+**Route reason**:
+The short explanation in `x-spillway-route` describing direct routing, a tier or auto candidate, and any detected requirements.
+_Avoid_: routing trace
+
 **Candidate**:
 A model in the requested tier that is still eligible for one request after quota, budget and health are considered.
 _Avoid_: option, target

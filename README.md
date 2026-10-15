@@ -26,6 +26,31 @@ That setting is your attestation that the Groq account has no paid plan or the G
 Spillway checks the setting but cannot verify the claim or detect later billing changes.
 Use `allow_spend: true` on a tier only when you intend to let that tier include paid models.
 
+## Declare model capabilities and use `auto`
+
+`models:` is the only capability source in v0.3.
+Declare a complete capability list for each model that `auto` may choose for requests with capability requirements; use `[]` for text-only models.
+Spillway does not infer support from model names or provider catalogs.
+
+```yaml
+models:
+  groq/llama-3.3-70b-versatile:
+    capabilities: [tools, json_mode]
+    context_window: 131072
+  ollama/llama3.2:3b:
+    capabilities: []
+
+router:
+  auto: [free, smart]
+```
+
+The accepted capabilities are `tools`, `vision`, `json_mode` and `structured_outputs`.
+`context_window` is optional; Spillway skips a candidate only when its conservative size estimate clearly exceeds the declaration.
+`router.auto` lists configured tiers in order, with every zero-spend tier before any tier that sets `allow_spend: true`.
+For requests that need capabilities, `auto` skips undeclared models; an explicit `spillway/<tier>` request can still try them.
+Direct model references pass through without capability checks.
+The `x-spillway-route` response header explains which route and candidate served the request.
+
 ## Provider data terms
 
 Free pricing does not guarantee that a provider will not use prompts to improve or train its models.
