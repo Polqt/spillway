@@ -89,6 +89,7 @@ Repeat the identical curl request to see `x-spillway-cache: hit`.
 For streaming usage capture, send `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"Stream this"}]}` and inspect `/api/decisions` with the dashboard key.
 Run `spillway catalog -config examples/config.mock.yaml` to see the mock-provider skip note.
 The database at `./spillway-mock.db` retains usage and budget totals after restart; the response cache does not.
+For a full curl and OpenAI Python SDK walkthrough, including a local paid-model fixture and budget persistence across restart, see the [v0.4 manual verification](docs/v0.4-manual-verification.md).
 
 ## Provider data terms
 
