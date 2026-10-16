@@ -17,27 +17,27 @@ var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var providerKeyReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error {
+	var expansionErrors []error
+	expand := func(value *yaml.Node, path string) {
+		if err := expandScalar(value, path, lookupEnv); err != nil {
+			expansionErrors = append(expansionErrors, err)
+		}
+	}
 	server := mappingValue(root, "server")
 	if server != nil {
 		if value := mappingValue(server, "listen"); value != nil {
-			if err := expandScalar(value, "server.listen", lookupEnv); err != nil {
-				return err
-			}
+			expand(value, "server.listen")
 		}
 		if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
 			for i, entry := range keys.Content {
 				path := fmt.Sprintf("server.api_keys[%d]", i)
 				if entry.Kind == yaml.ScalarNode {
-					if err := expandScalar(entry, path, lookupEnv); err != nil {
-						return err
-					}
+					expand(entry, path)
 					continue
 				}
-				for field, fieldPath := range map[string]string{"name": path + ".name", "key": path + ".key"} {
-					if value := mappingValue(entry, field); value != nil {
-						if err := expandScalar(value, fieldPath, lookupEnv); err != nil {
-							return err
-						}
+				for _, field := range []struct{ name, path string }{{"name", path + ".name"}, {"key", path + ".key"}} {
+					if value := mappingValue(entry, field.name); value != nil {
+						expand(value, field.path)
 					}
 				}
 			}
@@ -45,9 +45,7 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 	}
 	if logging := mappingValue(root, "logging"); logging != nil {
 		if value := mappingValue(logging, "level"); value != nil {
-			if err := expandScalar(value, "logging.level", lookupEnv); err != nil {
-				return err
-			}
+			expand(value, "logging.level")
 		}
 	}
 	if providers := mappingValue(root, "providers"); providers != nil {
@@ -56,9 +54,7 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 			provider := providers.Content[i+1]
 			for _, field := range []string{"api_key", "base_url", "timeout"} {
 				if value := mappingValue(provider, field); value != nil {
-					if err := expandScalar(value, "providers."+name+"."+field, lookupEnv); err != nil {
-						return err
-					}
+					expand(value, "providers."+name+"."+field)
 				}
 			}
 		}
@@ -66,13 +62,11 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 	if store := mappingValue(root, "store"); store != nil {
 		for _, field := range []string{"path", "retention"} {
 			if value := mappingValue(store, field); value != nil {
-				if err := expandScalar(value, "store."+field, lookupEnv); err != nil {
-					return err
-				}
+				expand(value, "store."+field)
 			}
 		}
 	}
-	return nil
+	return errors.Join(expansionErrors...)
 }
 
 func expandScalar(n *yaml.Node, path string, lookupEnv func(string) (string, bool)) error {
@@ -86,6 +80,7 @@ func expandScalar(n *yaml.Node, path string, lookupEnv func(string) (string, boo
 
 func expandValue(value, path string, line int, lookupEnv func(string) (string, bool)) (string, error) {
 	var out strings.Builder
+	var missing []error
 	for i := 0; i < len(value); {
 		if strings.HasPrefix(value[i:], "$${") {
 			out.WriteString("${")
@@ -107,12 +102,14 @@ func expandValue(value, path string, line int, lookupEnv func(string) (string, b
 		}
 		replacement, ok := lookupEnv(name)
 		if !ok || replacement == "" {
-			return "", fmt.Errorf("%s (line %d): environment variable %s is not set", path, line, name)
+			missing = append(missing, fmt.Errorf("%s (line %d): environment variable %s is not set", path, line, name))
+			i += end + 3
+			continue
 		}
 		out.WriteString(replacement)
 		i += end + 3
 	}
-	return out.String(), nil
+	return out.String(), errors.Join(missing...)
 }
 
 func rejectUnknownFields(root *yaml.Node) error {

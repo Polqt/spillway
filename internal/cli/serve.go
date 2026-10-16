@@ -37,7 +37,7 @@ const shutdownGrace = 10 * time.Second
 func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	configPath := fs.String("config", "config.yaml", "path to the config file")
+	configPath := fs.String("config", defaultConfigPath, "path to the config file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -48,7 +48,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 
 	cfg, err := config.LoadWithEnv(*configPath, lookupEnv)
 	if err != nil {
-		report(stderr, "spillway: %v\n", err)
+		reportConfigLoadError(stderr, *configPath, err)
 		return 1
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)

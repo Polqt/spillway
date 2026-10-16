@@ -939,6 +939,60 @@ func TestParse_UnsetEnvironmentNamesPathAndVariable(t *testing.T) {
 	}
 }
 
+func TestParseWithEnv_ReportsEveryMissingVariable(t *testing.T) {
+	t.Parallel()
+	input := []byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nlogging:\n  level: \"${SET_VALUE}\"\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n  gemini:\n    api_key: \"${GEMINI_API_KEY}\"\n")
+	values := map[string]string{"SET_VALUE": "sk-test-set-secret"}
+	_, err := config.ParseWithEnv(input, func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	})
+	if err == nil {
+		t.Fatal("ParseWithEnv succeeded, want missing environment variable errors")
+	}
+	for _, want := range []string{
+		"server.api_keys[0] (line 2)", "SPILLWAY_KEY",
+		"providers.groq.api_key (line 7)", "GROQ_API_KEY",
+		"providers.gemini.api_key (line 9)", "GEMINI_API_KEY",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want %q", err, want)
+		}
+	}
+	for _, secret := range values {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error = %q, must not contain environment values", err)
+		}
+	}
+}
+
+func TestParse_HistoricalExampleConfigsStillLoad(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("testdata", "compat")
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".yaml" {
+			return nil
+		}
+		data, err := os.ReadFile(path) // #nosec G304,G122 -- fixtures are repository-owned testdata.
+		if err != nil {
+			return err
+		}
+		_, err = config.ParseWithEnv(data, func(name string) (string, bool) {
+			return "sk-test-" + strings.ToLower(name), true
+		})
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParse_EnvironmentExpansionIsScalar(t *testing.T) {
 	t.Parallel()
 	input := []byte("server:\n  api_keys: [\"${KEY}\"]\nproviders:\n  mock: {}\n")

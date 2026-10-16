@@ -1,0 +1,19 @@
+# Copy this file and set the referenced environment variables before use.
+# Remove providers you do not use; Ollama runs locally and needs no provider key.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - "${SPILLWAY_KEY}"
+
+logging:
+  level: info
+
+providers:
+  groq:
+    api_key: "${GROQ_API_KEY}"
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+  ollama:
+    base_url: "http://localhost:11434/v1"

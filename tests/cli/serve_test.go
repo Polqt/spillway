@@ -23,6 +23,22 @@ import (
 
 const e2eKey = "sk-test-local-e2e"
 
+func TestRun_MissingDefaultConfigSuggestsInit(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, command := range []string{"serve", "check"} {
+		t.Run(command, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			code := cli.Run(t.Context(), []string{command}, &stdout, &stderr, noEnv)
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if !strings.Contains(stderr.String(), "spillway init") {
+				t.Errorf("stderr = %q, want init guidance", stderr.String())
+			}
+		})
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
