@@ -4,6 +4,7 @@
 
 GO      ?= go
 TOOL    := $(GO) tool -modfile tools/go.mod
+RELEASE_TOOL := $(GO) tool -modfile tools/release/go.mod
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
 VERSION ?= dev
@@ -52,8 +53,10 @@ cover:
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
 release-check:
-	$(TOOL) goreleaser check --config .goreleaser.yaml
+	$(GO) -C tools/release mod tidy -diff
+	$(RELEASE_TOOL) goreleaser check --config .goreleaser.yaml
 
 snapshot: export CGO_ENABLED=0
 snapshot:
-	$(TOOL) goreleaser release --snapshot --clean --config .goreleaser.yaml
+	$(GO) -C tools/release mod tidy -diff
+	$(RELEASE_TOOL) goreleaser release --snapshot --clean --config .goreleaser.yaml

@@ -28,7 +28,7 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
       - name: Run checks with race detector required
-        run: make ${{ matrix.go == '1.26.x' && 'build test' || 'check' }} RACE=-race
+        run: make check RACE=-race
 
   vuln:
     name: vulnerability scan
