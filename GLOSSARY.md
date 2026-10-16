@@ -44,6 +44,16 @@ _Avoid_: constraint
 The ordered, de-duplicated candidates from the tiers in `router.auto`, with zero-spend tiers before tiers that allow spending.
 _Avoid_: fallback chain
 
+**Difficulty**:
+One of the closed labels `simple`, `moderate` or `hard` that selects a user's configured tier list for `auto` routing.
+Rules choose the label deterministically; an optional local classifier can choose it when explicitly configured (ADR 0014).
+_Avoid_: intelligence level
+
+**Local difficulty classifier**:
+The explicitly configured, pinned Ollama model that may classify a bounded request into a difficulty label.
+It is opt-in, never chooses a provider model, and falls back to deterministic rules on errors or uncertain output.
+_Avoid_: AI router
+
 **Route reason**:
 The short explanation in `x-spillway-route` describing direct routing, a tier or auto candidate, and any detected requirements.
 _Avoid_: routing trace

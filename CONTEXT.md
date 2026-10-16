@@ -59,7 +59,7 @@ client app (OpenAI SDK)
 ┌──────────────────── spillway (single Go binary) ────────────────────┐
 │ API layer       /v1/chat/completions, /v1/embeddings, /v1/models    │
 │                 SSE streaming, OpenAI request/response schema       │
-│ Router          rules → embedding classifier → LLM judge → cascade │
+│ Router          difficulty rules → optional local classifier      │
 │ Quota tracker   per-key RPM/TPM/daily limits, 429 + retry-after     │
 │ Spillover       ordered candidates per tier, circuit breakers       │
 │ Cache           opt-in in-memory exact response cache               │
@@ -80,9 +80,9 @@ client app (OpenAI SDK)
 6. On a 429, 5xx, or timeout, mark the key, then **spill over** to the next candidate.
 7. Log usage, cost, latency, and the routing decision with its reason. Update quota state.
 
-## 6. Routing Design (v0.3 rules)
+## 6. Routing Design (v0.3-v0.5)
 
-Routing is deterministic and uses only the request body and local configuration; v0.3 does not call a classifier or judge.
+Legacy routing and Stage 1 rules are deterministic and use only the request body and local configuration; v0.3 does not call a classifier or judge.
 
 1. **Direct model reference.** A reference such as `groq/llama-3.1-8b-instant` passes through unchanged, without capability detection or filtering.
 2. **Tier virtual model.** `spillway/<tier>` checks detected requirements against declared capabilities when declarations exist, then tries eligible candidates in tier order with v0.2 spillover behavior.
@@ -105,7 +105,9 @@ Its bounded `x-spillway-route` reason names the matched rule or `default`, diffi
 An optional `router.classifier.model` enables Stage 2 difficulty classification through the explicitly configured loopback Ollama provider.
 The model reference must include a pinned tag, and requests send at most 4 KiB of extracted text, allow at most 32 generated tokens, and have a three-second timeout.
 Classifier errors, invalid labels, or the closed `uncertain` reason code use the same deterministic rules and a fixed `classifier fallback` route marker.
-Classifier prompts and outputs are never logged or persisted; the Llama judge and cascade remain future v0.5 work.
+Classifier prompts and outputs are never logged or persisted.
+The v0.5 evaluation did not establish a promotion case: its offline mock run used an unavailable classifier, zero-cost echo answers and no blinded ratings, so the classifier remains optional and disabled unless configured.
+A model-backed comparison with known costs and independent blinded ratings is still needed before recommending default enablement.
 
 In v0.4, an opt-in SQLite store records usage metadata only; prompts, responses, headers, keys and provider error text are never written to disk (ADR 0009).
 The optional exact cache is memory-only, byte-exact and isolated by client app; it caches non-streaming successful responses and disappears on restart (ADR 0011).
@@ -233,7 +235,7 @@ spillway/
 │       └── web/                # dashboard (embedded via go:embed)
 ├── internal/
 │   ├── api/                    # OpenAI-compatible handlers, SSE
-│   ├── router/                 # rules, classifier, judge, cascade
+│   ├── router/                 # difficulty rules, local classifier; future judge/cascade
 │   ├── quota/                  # limit tracking, circuit breakers
 │   ├── providers/              # Provider interface, shared types, registry
 │   │   ├── openaicompat/       # one client for OpenAI-compatible APIs (Groq, OpenRouter, Ollama presets)
@@ -276,7 +278,7 @@ A provider that speaks the OpenAI API is a preset in `openaicompat`, not a new p
 2. **v0.2 Spillover.** User-named tiers exposed as `spillway/<tier>` virtual models, spillover through candidates in tier order, quota tracking, and circuit breakers.
 3. **v0.3 Rules router.** Request requirement detection, user-declared capability filtering for virtual models, free-first `auto` chains, and `x-spillway-route` reasons.
 4. **v0.4 Observability.** Opt-in SQLite usage records, estimated costs, local soft budgets, in-memory exact cache, dashboard APIs and page, and advisory `spillway catalog` suggestions.
-5. **v0.5 Smart routing.** Opt-in deterministic difficulty rules, then the embedding classifier, the Llama judge via Ollama, and the cascade mode.
+5. **v0.5 Smart routing.** Opt-in deterministic difficulty rules and an optional local Ollama classifier; evaluation did not justify default enablement.
 6. **v1.0.** GoReleaser binaries, a Docker image, docs, and `spillway init` for interactive setup.
 
 ## 12. Conventions
