@@ -12,3 +12,5 @@
 - **Untested target:** GoReleaser builds `windows/arm64`, but that binary has not been run-tested.
 - **Docker and Ollama:** Docker can reach host Ollama using `--network host` only on Linux under the documented setup. Host Ollama access from the Docker image is unsupported on macOS and Windows. Non-loopback plaintext Ollama URLs are rejected.
 - **No hosted service or telemetry:** Spillway is self-hosted and makes no telemetry calls. Outbound requests are limited to the providers configured by the user.
+- **Live-provider smoke checks:** The optional Groq, Gemini, OpenRouter, Ollama, spillover, Linux Docker/Ollama, and live catalog checks were not run for the v1.0 release audit. They require provider credentials, a local Ollama setup, or a Linux Docker host. See [the smoke-check record](v1.0-live-smoke.md). These checks remain unverified.
+- **Release candidate verification:** Downloaded `v1.0.0-rc.1` artifacts, provenance attestations, Docker image, and the final `v1.0.0` installation were not verified because no release candidate or final release has been approved and published. The ticket requires owner approval before tagging.
