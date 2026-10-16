@@ -1,6 +1,7 @@
 package router_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,17 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/router"
 )
+
+type fixedClassifier struct {
+	difficulty string
+	err        error
+}
+
+func intPointer(value int) *int { return &value }
+
+func (c fixedClassifier) Classify(context.Context, []byte) (string, error) {
+	return c.difficulty, c.err
+}
 
 func ref(t *testing.T, s string) providers.ModelRef {
 	t.Helper()
@@ -132,6 +144,61 @@ func TestNew_CopiesDifficultyRuleConditions(t *testing.T) {
 	}
 	if plan.Rule != 1 || plan.Difficulty != "hard" {
 		t.Errorf("Plan = rule %d difficulty %q, want rule 1 difficulty hard", plan.Rule, plan.Difficulty)
+	}
+}
+
+func TestPlanContext_ClassifierSelectsClosedDifficultyAndFallsBack(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		classifier fixedClassifier
+		wantMode   string
+		wantDiff   string
+		fallback   bool
+	}{
+		{name: "classified", classifier: fixedClassifier{difficulty: "simple"}, wantMode: "classifier", wantDiff: "simple"},
+		{name: "unknown label", classifier: fixedClassifier{difficulty: "ollama/model"}, wantMode: "rules", wantDiff: "hard", fallback: true},
+		{name: "classifier error", classifier: fixedClassifier{err: errors.New("offline")}, wantMode: "rules", wantDiff: "hard", fallback: true},
+		{name: "classifier timeout", classifier: fixedClassifier{err: context.DeadlineExceeded}, wantMode: "rules", wantDiff: "hard", fallback: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := router.New(router.Options{
+				Tiers:           map[string][]providers.ModelRef{"free": refs(t, "mock/free"), "smart": refs(t, "mock/smart")},
+				Auto:            []string{"free", "smart"},
+				DifficultyTiers: map[string][]string{"simple": {"free"}, "moderate": {"free"}, "hard": {"smart"}},
+				Rules:           []router.Rule{{EstimatedInputTokensGTE: intPointer(1), Difficulty: "hard"}}, Classifier: tt.classifier,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, _, err := r.PlanContext(t.Context(), "auto", []byte(`{"messages":[{"role":"user","content":"hi"}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Mode != tt.wantMode || plan.Difficulty != tt.wantDiff || plan.ClassifierFallback != tt.fallback {
+				t.Fatalf("Plan = mode %q difficulty %q fallback %t", plan.Mode, plan.Difficulty, plan.ClassifierFallback)
+			}
+		})
+	}
+}
+
+func TestPlan_ClassifierDisabledUsesDeterministicRules(t *testing.T) {
+	t.Parallel()
+	r, err := router.New(router.Options{
+		Tiers:           map[string][]providers.ModelRef{"free": refs(t, "mock/free")},
+		Auto:            []string{"free"},
+		DifficultyTiers: map[string][]string{"simple": {"free"}, "moderate": {"free"}, "hard": {"free"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := r.PlanContext(t.Context(), "auto", []byte(`{"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Mode != "rules" || plan.Difficulty != "moderate" || plan.ClassifierFallback {
+		t.Fatalf("Plan = mode %q difficulty %q fallback %t, want deterministic moderate rules", plan.Mode, plan.Difficulty, plan.ClassifierFallback)
 	}
 }
 

@@ -72,7 +72,7 @@ func (h *chatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Spillway-Cache", "miss")
 		}
 	}
-	plan, virtual, err := h.router.Plan(*body.Model, body.RawBody)
+	plan, virtual, err := h.router.PlanContext(r.Context(), *body.Model, body.RawBody)
 	if err != nil {
 		rec := recordFrom(r.Context())
 		rec.addPlanSkips(plan.Skipped)
@@ -459,12 +459,21 @@ func setRoute(w http.ResponseWriter, r *http.Request, route string) {
 
 func candidateRoute(plan router.Plan, tier string, candidate, total int) string {
 	var parts []string
-	if plan.Mode == "rules" {
-		parts = append(parts, "rules")
-		if plan.Rule == 0 {
-			parts = append(parts, "default")
+	if plan.Mode == "rules" || plan.Mode == "classifier" {
+		if plan.Mode == "classifier" {
+			parts = append(parts, "classifier")
 		} else {
-			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			parts = append(parts, "rules")
+		}
+		if plan.ClassifierFallback {
+			parts = append(parts, "classifier fallback")
+		}
+		if plan.Mode == "rules" {
+			if plan.Rule == 0 {
+				parts = append(parts, "default")
+			} else {
+				parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			}
 		}
 		parts = append(parts, "difficulty "+plan.Difficulty, "tier "+safeTierName(plan.SelectedTier))
 		if tier != plan.SelectedTier {
@@ -475,12 +484,12 @@ func candidateRoute(plan router.Plan, tier string, candidate, total int) string 
 	} else {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
-	if plan.Mode != "rules" {
+	if plan.Mode != "rules" && plan.Mode != "classifier" {
 		if needs := routeNeeds(plan.Needs); needs != "" {
 			parts = append(parts, "needs "+needs)
 		}
 	}
-	if plan.Source == "auto" && plan.Mode != "rules" {
+	if plan.Source == "auto" && plan.Mode != "rules" && plan.Mode != "classifier" {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
 	parts = append(parts, fmt.Sprintf("candidate %d/%d", candidate, total))
@@ -489,12 +498,21 @@ func candidateRoute(plan router.Plan, tier string, candidate, total int) string 
 
 func planErrorRoute(model string, plan router.Plan) string {
 	var parts []string
-	if plan.Mode == "rules" {
-		parts = append(parts, "rules")
-		if plan.Rule == 0 {
-			parts = append(parts, "default")
+	if plan.Mode == "rules" || plan.Mode == "classifier" {
+		if plan.Mode == "classifier" {
+			parts = append(parts, "classifier")
 		} else {
-			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			parts = append(parts, "rules")
+		}
+		if plan.ClassifierFallback {
+			parts = append(parts, "classifier fallback")
+		}
+		if plan.Mode == "rules" {
+			if plan.Rule == 0 {
+				parts = append(parts, "default")
+			} else {
+				parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			}
 		}
 		parts = append(parts, "difficulty "+plan.Difficulty)
 		if plan.SelectedTier != "" {
@@ -518,12 +536,21 @@ func planErrorRoute(model string, plan router.Plan) string {
 
 func exhaustedRoute(plan router.Plan, tier string, eligible int) string {
 	var parts []string
-	if plan.Mode == "rules" {
-		parts = append(parts, "rules")
-		if plan.Rule == 0 {
-			parts = append(parts, "default")
+	if plan.Mode == "rules" || plan.Mode == "classifier" {
+		if plan.Mode == "classifier" {
+			parts = append(parts, "classifier")
 		} else {
-			parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			parts = append(parts, "rules")
+		}
+		if plan.ClassifierFallback {
+			parts = append(parts, "classifier fallback")
+		}
+		if plan.Mode == "rules" {
+			if plan.Rule == 0 {
+				parts = append(parts, "default")
+			} else {
+				parts = append(parts, fmt.Sprintf("rule %d", plan.Rule))
+			}
 		}
 		parts = append(parts, "difficulty "+plan.Difficulty, "tier "+safeTierName(plan.SelectedTier))
 		if tier != plan.SelectedTier {
@@ -534,7 +561,7 @@ func exhaustedRoute(plan router.Plan, tier string, eligible int) string {
 	} else {
 		parts = append(parts, "tier "+safeTierName(tier))
 	}
-	if plan.Mode != "rules" {
+	if plan.Mode != "rules" && plan.Mode != "classifier" {
 		if needs := routeNeeds(plan.Needs); needs != "" {
 			parts = append(parts, "needs "+needs)
 		}
@@ -544,7 +571,7 @@ func exhaustedRoute(plan router.Plan, tier string, eligible int) string {
 }
 
 func candidatePosition(plan router.Plan, index int, tier string, total int) (int, int) {
-	if plan.Mode != "rules" {
+	if plan.Mode != "rules" && plan.Mode != "classifier" {
 		return index + 1, total
 	}
 	position, count := 0, 0

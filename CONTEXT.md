@@ -102,7 +102,10 @@ Rules are first-match-wins; unmatched requests use `moderate`, whose configured 
 Each difficulty maps to an ordered list of tiers from `router.auto`; tier order keeps zero-spend tiers before tiers that allow spending.
 Rules mode preserves capability and context filtering, quota and budget checks, spillover, and candidate de-duplication.
 Its bounded `x-spillway-route` reason names the matched rule or `default`, difficulty, tier, candidate position, and fallback tier without including prompt content (ADR 0014).
-The embedding classifier, LLM judge and cascade remain future v0.5 work.
+An optional `router.classifier.model` enables Stage 2 difficulty classification through the explicitly configured loopback Ollama provider.
+The model reference must include a pinned tag, and requests send at most 4 KiB of extracted text, allow at most 32 generated tokens, and have a three-second timeout.
+Classifier errors, invalid labels, or the closed `uncertain` reason code use the same deterministic rules and a fixed `classifier fallback` route marker.
+Classifier prompts and outputs are never logged or persisted; the Llama judge and cascade remain future v0.5 work.
 
 In v0.4, an opt-in SQLite store records usage metadata only; prompts, responses, headers, keys and provider error text are never written to disk (ADR 0009).
 The optional exact cache is memory-only, byte-exact and isolated by client app; it caches non-streaming successful responses and disappears on restart (ADR 0011).

@@ -358,6 +358,13 @@ type Router struct {
 	Difficulty map[string][]string `yaml:"difficulty,omitempty"`
 	// Rules are evaluated in order for auto requests; the first match wins.
 	Rules []DifficultyRule `yaml:"rules,omitempty"`
+	// Classifier optionally enables local Ollama difficulty classification.
+	Classifier *Classifier `yaml:"classifier,omitempty"`
+}
+
+// Classifier selects a pinned local Ollama model for difficulty classification.
+type Classifier struct {
+	Model string `yaml:"model"`
 }
 
 // DifficultyRule selects a difficulty when every specified condition matches.

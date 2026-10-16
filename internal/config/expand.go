@@ -380,8 +380,20 @@ func checkRouterShape(router *yaml.Node) error {
 			return fmt.Errorf("router.%s is not supported until %s; remove it (line %d)", key.Value, milestone, key.Line)
 		}
 	}
-	if err := rejectFields(router, "router", "auto", "mode", "difficulty", "rules"); err != nil {
+	if err := rejectFields(router, "router", "auto", "mode", "difficulty", "rules", "classifier"); err != nil {
 		return err
+	}
+	if classifier := mappingValue(router, "classifier"); classifier != nil {
+		if classifier.Kind != yaml.MappingNode {
+			return fmt.Errorf("router.classifier (line %d): must be a mapping", classifier.Line)
+		}
+		if err := rejectFields(classifier, "router.classifier", "model"); err != nil {
+			return err
+		}
+		model := mappingValue(classifier, "model")
+		if model == nil || model.Kind != yaml.ScalarNode || model.Tag != "!!str" || model.Value == "" {
+			return errors.New("router.classifier.model is required; set a pinned ollama model reference")
+		}
 	}
 	auto := mappingValue(router, "auto")
 	if auto == nil {
@@ -397,8 +409,8 @@ func checkRouterShape(router *yaml.Node) error {
 	if mode != nil && (mode.Kind != yaml.ScalarNode || mode.Tag != "!!str" || mode.Value != "rules") {
 		return fmt.Errorf("router.mode (line %d): must be rules", mode.Line)
 	}
-	if mode == nil && (mappingValue(router, "difficulty") != nil || mappingValue(router, "rules") != nil) {
-		return errors.New("router.difficulty and router.rules require router.mode: rules")
+	if mode == nil && (mappingValue(router, "difficulty") != nil || mappingValue(router, "rules") != nil || mappingValue(router, "classifier") != nil) {
+		return errors.New("router.difficulty, router.rules and router.classifier require router.mode: rules")
 	}
 	if err := checkDifficultyShape(mappingValue(router, "difficulty"), mappingValue(router, "rules")); err != nil {
 		return err

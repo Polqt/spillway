@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -37,6 +38,8 @@ type Options struct {
 	DifficultyTiers map[string][]string
 	// Rules are evaluated in order for auto requests; the first match wins.
 	Rules []Rule
+	// Classifier optionally selects a difficulty for auto requests before rules run.
+	Classifier DifficultyClassifier
 }
 
 // Rule is a first-match difficulty rule over bounded request features.
@@ -58,6 +61,7 @@ type Router struct {
 	declarations    map[providers.ModelRef]Declaration
 	difficultyTiers map[string][]string
 	rules           []Rule
+	classifier      DifficultyClassifier
 }
 
 // Skip records why a configured candidate was excluded from a plan.
@@ -81,6 +85,8 @@ type Plan struct {
 	Rule int
 	// Difficulty is the selected closed difficulty label.
 	Difficulty string
+	// ClassifierFallback marks deterministic routing after classification failed.
+	ClassifierFallback bool
 	// SelectedTier is the first configured tier for the selected difficulty.
 	SelectedTier string
 	Tiers        []string
@@ -119,6 +125,7 @@ func New(o Options) (*Router, error) {
 		declarations:    make(map[providers.ModelRef]Declaration, len(o.Declarations)),
 		difficultyTiers: make(map[string][]string, len(o.DifficultyTiers)),
 		rules:           slices.Clone(o.Rules),
+		classifier:      o.Classifier,
 	}
 	for i := range r.rules {
 		if value := r.rules[i].EstimatedInputTokensGTE; value != nil {
@@ -217,6 +224,11 @@ func knownCapability(c Capability) bool {
 // Plan resolves a virtual model for one raw chat request body. ok is false
 // for direct model references, which must pass through without inspection.
 func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error) {
+	return r.PlanContext(context.Background(), model, body)
+}
+
+// PlanContext resolves a virtual model and honors cancellation during local classification.
+func (r *Router) PlanContext(ctx context.Context, model string, body []byte) (plan Plan, ok bool, err error) {
 	var tierNames []string
 	useRules := false
 	switch {
@@ -244,6 +256,19 @@ func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error)
 	}
 	if useRules {
 		plan = r.difficultyPlan(requirements)
+		if r.classifier != nil {
+			difficulty, classifyErr := "", ctx.Err()
+			if classifyErr == nil {
+				difficulty, classifyErr = r.classifier.Classify(ctx, body)
+			}
+			if classifyErr == nil && validDifficulty(difficulty) {
+				plan.Mode = "classifier"
+				plan.Rule = 0
+				plan.Difficulty = difficulty
+			} else {
+				plan.ClassifierFallback = true
+			}
+		}
 		tierNames = r.difficultyTiers[plan.Difficulty]
 		plan.SelectedTier = tierNames[0]
 	}
@@ -286,6 +311,10 @@ func (r *Router) Plan(model string, body []byte) (plan Plan, ok bool, err error)
 		return plan, true, nil
 	}
 	return plan, true, noCandidateError(model, tierNames, requirements.EstimatedTokens, plan)
+}
+
+func validDifficulty(label string) bool {
+	return label == "simple" || label == "moderate" || label == "hard"
 }
 
 func (r *Router) difficultyPlan(requirements Requirements) Plan {

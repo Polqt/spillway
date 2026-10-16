@@ -46,6 +46,9 @@ func (c Config) validate() error {
 	if err := validateRouter(c.Router, c.Tiers); err != nil {
 		return err
 	}
+	if err := validateClassifier(c.Router, c.Providers); err != nil {
+		return err
+	}
 	if err := validateStore(c.Store); err != nil {
 		return err
 	}
@@ -267,6 +270,31 @@ func validateRouter(router Router, tiers map[string]Tier) error {
 			return fmt.Errorf("router.rules[%d] duplicates conditions from rule %d", i, earlier)
 		}
 		seenRules[key] = i
+	}
+	return nil
+}
+
+func validateClassifier(router Router, configured map[string]Provider) error {
+	if router.Classifier == nil {
+		return nil
+	}
+	if router.Mode != "rules" {
+		return errors.New("router.classifier requires router.mode: rules")
+	}
+	ollama, ok := configured["ollama"]
+	if !ok {
+		return errors.New("router.classifier requires an explicitly configured providers.ollama section")
+	}
+	ref, err := providers.ParseModelRef(router.Classifier.Model)
+	tagSeparator := strings.LastIndexByte(ref.Model, ':')
+	if err != nil || ref.Provider != "ollama" || tagSeparator <= 0 || tagSeparator == len(ref.Model)-1 || strings.HasSuffix(strings.ToLower(ref.Model), ":latest") {
+		return errors.New("router.classifier.model must be a pinned ollama model reference with a tag other than latest")
+	}
+	if ollama.BaseURL != "" {
+		parsed, err := url.Parse(ollama.BaseURL)
+		if err != nil || !isLoopbackHost(parsed.Hostname()) {
+			return errors.New("router.classifier requires providers.ollama.base_url to use a loopback host")
+		}
 	}
 	return nil
 }

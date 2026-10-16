@@ -46,6 +46,7 @@ type dashboardStore interface {
 // Planner resolves virtual model requests and lists configured virtual models.
 type Planner interface {
 	Plan(model string, body []byte) (router.Plan, bool, error)
+	PlanContext(ctx context.Context, model string, body []byte) (router.Plan, bool, error)
 	VirtualModels() []string
 }
 

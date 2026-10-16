@@ -726,6 +726,51 @@ func TestParse_RulesRouter(t *testing.T) {
 	}
 }
 
+func TestParse_LocalClassifierRequiresConfiguredPinnedOllama(t *testing.T) {
+	t.Parallel()
+	const base = `server:
+  api_keys: [sk-test-local-ci]
+providers:
+  mock: {}
+  ollama: {base_url: "http://localhost:11434"}
+tiers:
+  free:
+    models: [mock/echo]
+router:
+  mode: rules
+  auto: [free]
+  difficulty: {simple: [free], moderate: [free], hard: [free]}
+  classifier: {model: "ollama/llama3.2:3b"}
+`
+	cfg, err := config.Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Router.Classifier == nil || cfg.Router.Classifier.Model != "ollama/llama3.2:3b" {
+		t.Fatalf("Classifier = %+v, want configured pinned Ollama model", cfg.Router.Classifier)
+	}
+	for _, tt := range []struct{ name, replace, with, want string }{
+		{name: "missing provider", replace: "  ollama: {base_url: \"http://localhost:11434\"}\n", want: "explicitly configured providers.ollama"},
+		{name: "unpinned model", replace: "ollama/llama3.2:3b", with: "ollama/llama3.2", want: "pinned ollama model reference"},
+		{name: "latest model", replace: "ollama/llama3.2:3b", with: "ollama/llama3.2:latest", want: "pinned ollama model reference"},
+		{name: "wrong provider", replace: "ollama/llama3.2:3b", with: "mock/echo:3b", want: "pinned ollama model reference"},
+		{name: "remote host", replace: "http://localhost:11434", with: "https://ollama.example", want: "loopback host"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := base
+			if tt.name == "missing provider" {
+				input = strings.Replace(input, tt.replace, "", 1)
+			} else {
+				input = strings.Replace(input, tt.replace, tt.with, 1)
+			}
+			if _, err := config.Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Parse error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParse_RulesRouterRejectsDuplicateFields(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

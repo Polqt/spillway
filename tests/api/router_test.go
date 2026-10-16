@@ -84,6 +84,102 @@ func routerRef(provider, model string) providers.ModelRef {
 	return providers.ModelRef{Provider: provider, Model: model}
 }
 
+type fixedDifficultyClassifier struct {
+	difficulty string
+	err        error
+}
+
+func (c fixedDifficultyClassifier) Classify(context.Context, []byte) (string, error) {
+	return c.difficulty, c.err
+}
+
+func TestChat_ClassifierUsesClosedLabelAndFixedFallbackReason(t *testing.T) {
+	t.Parallel()
+	threshold := 1
+	for _, tt := range []struct {
+		name, wantRoute string
+		classifier      fixedDifficultyClassifier
+	}{
+		{name: "classified", classifier: fixedDifficultyClassifier{difficulty: "simple"}, wantRoute: "classifier; difficulty simple; tier cheap; candidate 1/1"},
+		{name: "unknown label falls back", classifier: fixedDifficultyClassifier{difficulty: "ollama/unsafe"}, wantRoute: "rules; classifier fallback; rule 1; difficulty hard; tier strong; candidate 1/1"},
+		{name: "timeout falls back", classifier: fixedDifficultyClassifier{err: context.DeadlineExceeded}, wantRoute: "rules; classifier fallback; rule 1; difficulty hard; tier strong; candidate 1/1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider := &countingProvider{name: "model", chat: okChat("m")}
+			ref := routerRef("model", "m")
+			set, err := providers.NewSet(provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			planner, err := router.New(router.Options{
+				Tiers:           map[string][]providers.ModelRef{"cheap": {ref}, "strong": {ref}},
+				Auto:            []string{"cheap", "strong"},
+				DifficultyTiers: map[string][]string{"simple": {"cheap"}, "moderate": {"cheap"}, "hard": {"strong"}},
+				Rules:           []router.Rule{{EstimatedInputTokensGTE: &threshold, Difficulty: "hard"}},
+				Classifier:      tt.classifier,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, err := api.NewHandler(api.Options{
+				Providers: set, Router: planner,
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+				Logger:    slog.New(slog.DiscardHandler),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := routerRequest(t, h, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+			if got := rec.Header().Get("X-Spillway-Route"); got != tt.wantRoute {
+				t.Errorf("route = %q, want %q", got, tt.wantRoute)
+			}
+		})
+	}
+}
+
+func TestChat_ClassifierFallbackUsesTierLocalCandidatePosition(t *testing.T) {
+	t.Parallel()
+	threshold := 1
+	free := &countingProvider{name: "free", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{}, providers.ErrRateLimited
+	}}
+	strong := &countingProvider{name: "strong", chat: okChat("m")}
+	set, err := providers.NewSet(free, strong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeRef, strongRef := routerRef("free", "m"), routerRef("strong", "m")
+	planner, err := router.New(router.Options{
+		Tiers:           map[string][]providers.ModelRef{"free": {freeRef}, "strong": {strongRef}},
+		Auto:            []string{"free", "strong"},
+		DifficultyTiers: map[string][]string{"simple": {"free"}, "moderate": {"free"}, "hard": {"free", "strong"}},
+		Rules:           []router.Rule{{EstimatedInputTokensGTE: &threshold, Difficulty: "simple"}},
+		Classifier:      fixedDifficultyClassifier{difficulty: "hard"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set, Router: planner,
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := routerRequest(t, h, `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if got, want := rec.Header().Get("X-Spillway-Route"), "classifier; difficulty hard; tier free; fallback strong; candidate 1/1"; got != want {
+		t.Errorf("route = %q, want %q", got, want)
+	}
+}
+
 func TestChat_AutoSelectsFirstDeclaredCapableCandidate(t *testing.T) {
 	undeclared := &countingProvider{name: "undeclared", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
 		return providers.ChatResponse{}, errors.New("undeclared candidate was called")

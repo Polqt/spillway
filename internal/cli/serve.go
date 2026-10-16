@@ -184,9 +184,24 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 			Difficulty:               rule.Difficulty,
 		}
 	}
+	var classifier router.DifficultyClassifier
+	if cfg.Router.Classifier != nil {
+		baseURL := cfg.Providers["ollama"].BaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		model, err := providers.ParseModelRef(cfg.Router.Classifier.Model)
+		if err != nil {
+			return nil, fmt.Errorf("parse router.classifier.model: %w", err)
+		}
+		classifier, err = router.NewOllamaClassifier(baseURL, model.Model)
+		if err != nil {
+			return nil, fmt.Errorf("build local router classifier: %w", err)
+		}
+	}
 	planner, err := router.New(router.Options{
 		Tiers: tiers, Auto: cfg.Router.Auto, Declarations: declarations,
-		DifficultyTiers: cfg.Router.Difficulty, Rules: rules,
+		DifficultyTiers: cfg.Router.Difficulty, Rules: rules, Classifier: classifier,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build router: %w", err)
