@@ -83,6 +83,47 @@ func TestParse_StoreConfig(t *testing.T) {
 	}
 }
 
+func TestParse_ShutdownTimeoutBounds(t *testing.T) {
+	t.Parallel()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	cfg, err := config.Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("Parse default: %v", err)
+	}
+	if cfg.Server.ShutdownTimeout != 10*time.Second {
+		t.Errorf("ShutdownTimeout = %s, want 10s", cfg.Server.ShutdownTimeout)
+	}
+	for _, value := range []string{"1s", "5m"} {
+		t.Run("accept "+value, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := config.Parse([]byte(strings.Replace(base, "server:\n", "server:\n  shutdown_timeout: "+value+"\n", 1)))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			want, _ := time.ParseDuration(value)
+			if parsed.Server.ShutdownTimeout != want {
+				t.Errorf("ShutdownTimeout = %s, want %s", parsed.Server.ShutdownTimeout, want)
+			}
+		})
+	}
+	for _, value := range []string{"0s", "-1s", "5m1s", "nope"} {
+		t.Run("reject "+value, func(t *testing.T) {
+			t.Parallel()
+			input := strings.Replace(base, "server:\n", "server:\n  shutdown_timeout: "+value+"\n", 1)
+			if _, err := config.Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), "server.shutdown_timeout") {
+				t.Errorf("Parse error = %v, want server.shutdown_timeout validation", err)
+			}
+		})
+	}
+	var output strings.Builder
+	if err := cfg.WriteRedacted(&output); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	if !strings.Contains(output.String(), "shutdown_timeout: 10s") {
+		t.Errorf("redacted config = %q, want shutdown timeout", output.String())
+	}
+}
+
 func TestParse_ExactCacheConfig(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Parse([]byte(`server:

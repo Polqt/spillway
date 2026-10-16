@@ -3,7 +3,7 @@
 # Environment is set with target-specific exports instead.
 
 GO      ?= go
-TOOL    := $(GO) tool -modfile=tools/go.mod
+TOOL    := $(GO) tool -modfile tools/go.mod
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
 VERSION ?= dev
@@ -11,7 +11,7 @@ LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
-.PHONY: build test fuzz lint check run mock vuln cover
+.PHONY: build test fuzz lint check run mock vuln cover release-check snapshot
 
 build: export CGO_ENABLED=0
 build:
@@ -50,3 +50,10 @@ vuln:
 cover:
 	$(GO) test -count=1 -coverpkg=./... -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
+
+release-check:
+	$(TOOL) goreleaser check --config .goreleaser.yaml
+
+snapshot: export CGO_ENABLED=0
+snapshot:
+	$(TOOL) goreleaser release --snapshot --clean --config .goreleaser.yaml

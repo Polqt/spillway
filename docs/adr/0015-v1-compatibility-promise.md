@@ -27,6 +27,8 @@ The Go module proxy caches every published version permanently, so a released ta
 - Every example config from the final commit of v0.1 through v0.5 must load unchanged; fixtures copied from those commits lock this in the test suite.
 - Minor releases may add config fields, subcommands, flags and response fields.
   An older binary rejects a config that uses a newer field, because unknown fields are errors; release notes name every new field.
+- `server.shutdown_timeout` is an additive config field with a 10s default and a supported range of 1s to 5m.
+  It sets the graceful drain period before remaining request contexts are cancelled.
 - v1.0 itself changes no store schema, so a database written by v1.0 still opens with v0.5.
 - Default routing does not change in a minor release: configs without `router.mode` keep legacy `auto`, and the classifier stays disabled unless configured.
 - A broken release is fixed forward with a patch release; it is never deleted or re-tagged, and a release unsafe to use is retracted in `go.mod`.

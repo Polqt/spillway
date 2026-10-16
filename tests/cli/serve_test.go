@@ -19,6 +19,7 @@ import (
 
 	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/config"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 const e2eKey = "sk-test-local-e2e"
@@ -382,6 +383,230 @@ func TestRun_ServeCreatesStoreOnlyWhenConfigured(t *testing.T) {
 		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
 	}
 	<-logs.done
+}
+
+func TestRun_ServeShutdownDrainsInFlightStreamAndRecordsUsage(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	storePath := filepath.Join(t.TempDir(), "usage.db")
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-shutdown-drain]\nproviders:\n  openrouter:\n    api_key: \"${OPENROUTER_API_KEY}\"\n    base_url: \""+upstream.URL+"/v1\"\nstore:\n  path: '"+storePath+"'\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, func(name string) (string, bool) {
+			return "sk-test-provider", name == "OPENROUTER_API_KEY"
+		})
+		_ = pw.Close()
+	}()
+	var addr string
+	select {
+	case addr = <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+"/v1/chat/completions", strings.NewReader(`{"model":"openrouter/test-model","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer sk-test-shutdown-drain")
+	request.Header.Set("Content-Type", "application/json")
+	responseCh := make(chan struct {
+		status int
+		body   []byte
+		err    error
+	}, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			responseCh <- struct {
+				status int
+				body   []byte
+				err    error
+			}{err: err}
+			return
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if readErr == nil {
+			readErr = closeErr
+		}
+		responseCh <- struct {
+			status int
+			body   []byte
+			err    error
+		}{status: response.StatusCode, body: body, err: readErr}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not receive the streaming request")
+	}
+	cancel()
+	close(release)
+	result := <-responseCh
+	if result.err != nil {
+		t.Fatalf("stream request: %v", result.err)
+	}
+	if result.status != http.StatusOK {
+		t.Errorf("stream status = %d, want 200", result.status)
+	}
+	if !strings.Contains(string(result.body), "data: [DONE]") {
+		t.Errorf("stream body = %q, want data: [DONE]", result.body)
+	}
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+	usageStore, err := store.Open(t.Context(), store.Options{Path: storePath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := usageStore.Recent(t.Context(), store.RecentQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := usageStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Status != http.StatusOK {
+		t.Errorf("usage rows = %+v, want one status 200 row", rows)
+	}
+}
+
+func TestRun_ServeShutdownTimeoutCancelsAndStillRecords(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"waiting\"},\"finish_reason\":null}]}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(release)
+		upstream.Close()
+	}()
+	storePath := filepath.Join(t.TempDir(), "usage.db")
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  shutdown_timeout: 1s\n  api_keys: [sk-test-shutdown-timeout]\nproviders:\n  openrouter:\n    api_key: \"${OPENROUTER_API_KEY}\"\n    base_url: \""+upstream.URL+"/v1\"\nstore:\n  path: '"+storePath+"'\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, func(name string) (string, bool) {
+			return "sk-test-provider", name == "OPENROUTER_API_KEY"
+		})
+		_ = pw.Close()
+	}()
+	var addr string
+	select {
+	case addr = <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	defer cancelRequest()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "http://"+addr+"/v1/chat/completions", strings.NewReader(`{"model":"openrouter/test-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer sk-test-shutdown-timeout")
+	request.Header.Set("Content-Type", "application/json")
+	releaseResponse := make(chan struct{})
+	clientDone := make(chan struct{})
+	defer func() {
+		cancelRequest()
+		close(releaseResponse)
+		<-clientDone
+	}()
+	responseCh := make(chan struct {
+		status int
+		err    error
+	}, 1)
+	go func() {
+		defer close(clientDone)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			responseCh <- struct {
+				status int
+				err    error
+			}{err: err}
+			return
+		}
+		defer func() { _ = response.Body.Close() }()
+		responseCh <- struct {
+			status int
+			err    error
+		}{status: response.StatusCode}
+		<-releaseResponse
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not receive the streaming request")
+	}
+	select {
+	case result := <-responseCh:
+		if result.err != nil {
+			t.Fatalf("stream request: %v", result.err)
+		}
+		if result.status != http.StatusOK {
+			t.Fatalf("stream status = %d, want 200", result.status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream response headers were not returned")
+	}
+	cancel()
+	select {
+	case code := <-exit:
+		if code != 1 {
+			t.Errorf("serve exit code = %d, want 1; logs:\n%s", code, logs)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("serve did not honor the 1s shutdown timeout")
+	}
+	<-logs.done
+	if !strings.Contains(logs.String(), "cancelled 1 in-flight request") {
+		t.Errorf("logs = %s, want cancellation count", logs)
+	}
+	if strings.Contains(logs.String(), "database is closed") {
+		t.Errorf("logs contain store close race: %s", logs)
+	}
+	usageStore, err := store.Open(t.Context(), store.Options{Path: storePath, Retention: 90 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := usageStore.Recent(t.Context(), store.RecentQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := usageStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("usage rows = %d, want 1", len(rows))
+	} else if rows[0].ErrorKind == "" {
+		t.Errorf("usage row = %+v, want an error kind for the cancelled upstream", rows[0])
+	}
 }
 
 func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {

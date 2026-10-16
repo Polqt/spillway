@@ -654,7 +654,15 @@ func TestStream_ClientDisconnectRecordsEstimatedUsage(t *testing.T) {
 			chunks: []providers.ChatChunk{{Data: json.RawMessage(`{"choices":[{"delta":{"content":"1234567"}}]}`)}},
 		}, nil
 	}}
-	handler := newUsageStreamHandler(t, provider, usageStore)
+	recorded := make(chan struct{})
+	recorder := usageRecorderFunc(func(ctx context.Context, request store.Request) error {
+		if err := usageStore.Record(ctx, request); err != nil {
+			return err
+		}
+		close(recorded)
+		return nil
+	})
+	handler := newUsageStreamHandler(t, provider, recorder)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -677,6 +685,11 @@ func TestStream_ClientDisconnectRecordsEstimatedUsage(t *testing.T) {
 	cancel()
 	if err := response.Body.Close(); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-recorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage record was not written after client disconnect")
 	}
 	var prompt, completion int
 	var source string
@@ -706,17 +719,13 @@ func TestStream_StoreOffDoesNotChangeRequestOrChunks(t *testing.T) {
 	}
 }
 
-func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore *store.Store, estimators ...*budget.Pricer) http.Handler {
+func newUsageStreamHandler(t *testing.T, provider providers.Provider, recorder interface {
+	Record(context.Context, store.Request) error
+}, estimators ...*budget.Pricer) http.Handler {
 	t.Helper()
 	set, err := providers.NewSet(provider)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var recorder interface {
-		Record(context.Context, store.Request) error
-	}
-	if usageStore != nil {
-		recorder = usageStore
 	}
 	var estimator *budget.Pricer
 	if len(estimators) > 0 {
@@ -736,6 +745,12 @@ func newUsageStreamHandler(t *testing.T, provider providers.Provider, usageStore
 		t.Fatal(err)
 	}
 	return handler
+}
+
+type usageRecorderFunc func(context.Context, store.Request) error
+
+func (f usageRecorderFunc) Record(ctx context.Context, request store.Request) error {
+	return f(ctx, request)
 }
 
 func sendUsageStreamRequest(ctx context.Context, t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {

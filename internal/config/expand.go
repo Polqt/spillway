@@ -25,8 +25,10 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 	}
 	server := mappingValue(root, "server")
 	if server != nil {
-		if value := mappingValue(server, "listen"); value != nil {
-			expand(value, "server.listen")
+		for _, field := range []string{"listen", "shutdown_timeout"} {
+			if value := mappingValue(server, field); value != nil {
+				expand(value, "server."+field)
+			}
 		}
 		if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
 			for i, entry := range keys.Content {
@@ -125,7 +127,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 			return fmt.Errorf("server (line %d): must be a mapping", server.Line)
 		}
 		if server.Kind == yaml.MappingNode {
-			if err := rejectFields(server, "server", "listen", "api_keys"); err != nil {
+			if err := rejectFields(server, "server", "listen", "api_keys", "shutdown_timeout"); err != nil {
 				return err
 			}
 			if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
