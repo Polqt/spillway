@@ -39,6 +39,11 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+release:
+  prerelease: auto
+  header: |
+    Built with Go {{ .Env.GO_VERSION }}.
+
 dockers_v2:
   - id: spillway
     dockerfile: apps/spillway/Dockerfile
@@ -46,12 +51,13 @@ dockers_v2:
       - ghcr.io/polqt/spillway
     tags:
       - "{{ .Version }}"
-      - "{{ .Major }}.{{ .Minor }}"
-      - "{{ .Major }}"
     platforms:
       - linux/amd64
       - linux/arm64
     disable: "{{ .IsSnapshot }}"
+
+docker_digest:
+  name_template: digests.txt
 
 changelog:
   use: github
