@@ -16,6 +16,7 @@ This file adds only the Claude Code specific parts.
 | 4. Verify | `verifier` agent |
 | 5. Review | `/code-review` since the milestone's starting commit |
 | 6. Security audit | `security-auditor` agent |
+| Feature branches and pull requests | Follow the branch, rebase, and PR standards in `AGENTS.md` |
 | Hard bug | `/diagnosing-bugs` |
 
 Project agents live in `.claude/agents/`; the slash skills are global.

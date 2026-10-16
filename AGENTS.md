@@ -107,6 +107,18 @@ Record hard-to-reverse decisions as ADRs in `docs/adr/`.
 - Conventional Commits in the imperative, explaining why: `feat(router): ...`, `fix(quota): ...`, `docs: ...`.
 - One ticket per commit. Never add an agent as co-author.
 - Never commit `bin/`, coverage output, or real keys. `go.sum` is committed.
+- Apply these commit rules on the current working branch, including branches other than `main`; do not switch branches just to create a ticket commit.
+
+## Feature branches and pull requests
+
+- Create a short-lived branch for each feature from its intended target branch, using `feat/` or `fix/` followed by a hyphenated two- or three-word phrase, such as `feat/config-dx-fixtures`.
+- Keep unrelated feature work out of release-named branches.
+- Before opening a pull request, rebase the private feature branch onto the latest target branch, resolve conflicts, and rerun `make check`.
+- Rebase only the feature branch owned by the task; do not rewrite shared branch history, and ask before force-pushing.
+- Prepare a concise pull request title in imperative Conventional Commit style, with a scope when it helps, and describe the user-visible outcome.
+- Write the pull request description for reviewers with the context, key changes, verification commands and results, and any material risks or rollout notes.
+- Link the issue or plan when available, and do not claim checks that were not run.
+- After verification and review, push the feature branch and open the pull request against its intended target branch.
 
 ## Issue tracker and domain docs
 
