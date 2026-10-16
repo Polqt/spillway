@@ -23,8 +23,9 @@ commands:
   check     validate config and print it with secrets redacted (flags: -config path)
   catalog   suggest model declarations and pricing from configured providers (flags: -config path)
   init      create a zero-spend config and local key (flags: -config, -providers, -attest-free-tier, -store, -yes)
-  eval      run a paired routing evaluation against an OpenAI-compatible endpoint
-  eval-score summarize a completed blinded evaluation score sheet
+  eval      run a paired routing evaluation (experimental)
+  eval-score summarize a completed blinded evaluation score sheet (experimental)
+  eval-report compare run artifacts and rater sheets against ADR 0014 gates (experimental)
   version   print the version and exit
 `
 
@@ -55,6 +56,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
 	case "eval-score":
 		return evalScoreCommand(args[1:], stdout, stderr)
+	case "eval-report":
+		return evalReportCommand(args[1:], stdout, stderr)
 	case "version", "-version", "--version":
 		_, err := fmt.Fprintln(stdout, versionLine())
 		if err != nil {

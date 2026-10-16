@@ -11,6 +11,7 @@ import (
 
 // Score is one blinded human rating of a completion.
 type Score struct {
+	RaterID                string
 	AnswerID               string
 	Correctness            int
 	Completeness           int
@@ -35,12 +36,28 @@ type QualityMetrics struct {
 // LoadScores reads a completed score sheet and validates its rubric values.
 func LoadScores(r io.Reader) ([]Score, error) {
 	reader := csv.NewReader(r)
-	reader.FieldsPerRecord = 6
+	reader.FieldsPerRecord = -1
 	header, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("read score sheet header: %w", err)
 	}
 	want := []string{"answer_id", "correctness_1_to_5", "completeness_1_to_5", "instruction_following_1_to_5", "severe_correctness_failure", "adjudication_note"}
+	raterIndex := -1
+	if len(header) == len(want)+1 {
+		for index, field := range header {
+			if field == "rater_id" {
+				if raterIndex >= 0 {
+					return nil, errors.New("score sheet has an invalid header")
+				}
+				raterIndex = index
+			}
+		}
+		if raterIndex != 0 && raterIndex != len(header)-1 {
+			return nil, errors.New("score sheet has an invalid header")
+		}
+		withoutRater := append([]string(nil), header[:raterIndex]...)
+		header = append(withoutRater, header[raterIndex+1:]...)
+	}
 	if len(header) != len(want) {
 		return nil, errors.New("score sheet has an invalid header")
 	}
@@ -59,10 +76,22 @@ func LoadScores(r io.Reader) ([]Score, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read score row %d: %w", row, err)
 		}
-		if record[0] == "" || seen[record[0]] {
+		raterID := ""
+		if len(record) != len(want)+boolInt(raterIndex >= 0) {
+			return nil, fmt.Errorf("score row %d has an invalid number of fields", row)
+		}
+		if raterIndex >= 0 {
+			raterID = record[raterIndex]
+			record = append(append([]string(nil), record[:raterIndex]...), record[raterIndex+1:]...)
+			if !label(raterID) {
+				return nil, fmt.Errorf("score row %d has an invalid rater id", row)
+			}
+		}
+		seenKey := raterID + "\x00" + record[0]
+		if record[0] == "" || seen[seenKey] {
 			return nil, fmt.Errorf("score row %d has an empty or duplicate answer id", row)
 		}
-		seen[record[0]] = true
+		seen[seenKey] = true
 		values := [3]int{}
 		for i, field := range record[1:4] {
 			value, err := strconv.Atoi(field)
@@ -79,12 +108,19 @@ func LoadScores(r io.Reader) ([]Score, error) {
 		default:
 			return nil, fmt.Errorf("score row %d severe correctness failure must be true or false", row)
 		}
-		scores = append(scores, Score{AnswerID: record[0], Correctness: values[0], Completeness: values[1], InstructionFollowing: values[2], SevereCorrectnessFault: severe})
+		scores = append(scores, Score{RaterID: raterID, AnswerID: record[0], Correctness: values[0], Completeness: values[1], InstructionFollowing: values[2], SevereCorrectnessFault: severe})
 	}
 	if len(scores) == 0 {
 		return nil, errors.New("score sheet has no scored answers")
 	}
 	return scores, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // SummarizeScores combines blinded scores with the separate assignment key.

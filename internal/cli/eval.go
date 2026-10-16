@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -146,6 +147,123 @@ func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func evalReportCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("eval-report", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	runDir := fs.String("run", "", "evaluation artifact directory")
+	scorePaths := fs.String("scores", "", "comma-separated completed rater CSV sheets")
+	baseline := fs.String("baseline", "", "baseline arm name")
+	seed := fs.Int64("seed", 1, "paired bootstrap random seed")
+	replicates := fs.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 || *runDir == "" || *baseline == "" {
+		report(stderr, "spillway: eval-report requires -run and -baseline\n")
+		return 2
+	}
+	var run evaluation.Report
+	if err := readJSON(filepath.Join(*runDir, "metrics.json"), &run); err != nil {
+		report(stderr, "spillway: eval-report: read metrics: %v\n", err)
+		return 1
+	}
+	var assignments []evaluation.Assignment
+	if err := readJSON(filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
+		report(stderr, "spillway: eval-report: read assignment key: %v\n", err)
+		return 1
+	}
+	var paths []string
+	if *scorePaths != "" {
+		paths = strings.Split(*scorePaths, ",")
+	}
+	sheets := make([][]evaluation.Score, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			report(stderr, "spillway: eval-report: score paths cannot be empty\n")
+			return 2
+		}
+		// #nosec G304 -- path is an operator-selected local score sheet.
+		file, err := os.Open(path)
+		if err != nil {
+			report(stderr, "spillway: eval-report: open score sheet: %v\n", err)
+			return 1
+		}
+		scores, loadErr := evaluation.LoadScores(file)
+		if closeErr := file.Close(); loadErr == nil {
+			loadErr = closeErr
+		}
+		if loadErr != nil {
+			report(stderr, "spillway: eval-report: load score sheet: %v\n", loadErr)
+			return 1
+		}
+		sheets = append(sheets, scores)
+	}
+	gateReport, err := evaluation.BuildGateReport(run, assignments, sheets, evaluation.GateOptions{Baseline: *baseline, Seed: *seed, Replicates: *replicates})
+	if err != nil {
+		report(stderr, "spillway: eval-report: %v\n", err)
+		return 1
+	}
+	if err := printGateReport(stdout, gateReport); err != nil {
+		report(stderr, "spillway: eval-report: write report: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func printGateReport(w io.Writer, result evaluation.GateReport) error {
+	if _, err := fmt.Fprintf(w, "baseline=%s seed=%d replicates=%d\n", result.Baseline, result.Seed, result.Replicates); err != nil {
+		return err
+	}
+	for _, gate := range result.Results {
+		unit := gate.Unit
+		if gate.Gate == "quality_difference" {
+			unit = "points"
+		}
+		estimate, interval := "n/a", "[n/a, n/a]"
+		if gate.Available {
+			estimate = fmt.Sprintf("%.4f", gate.Estimate)
+			interval = fmt.Sprintf("[%.4f, %.4f]", gate.Lower, gate.Upper)
+		}
+		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s gate=%s estimate=%s %s interval=%s %s verdict=%s", gate.Arm, gate.Difficulty, gate.Gate, estimate, unit, interval, unit, gate.Verdict); err != nil {
+			return err
+		}
+		if gate.Reason != "" {
+			if _, err := fmt.Fprintf(w, " reason=%s", gate.Reason); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+	for _, cost := range result.Cost {
+		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s known_cost=%.1f%%", cost.Arm, cost.Difficulty, cost.KnownCostShare*100); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(cost.CostSourceShares))
+		for key := range cost.CostSourceShares {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if _, err := fmt.Fprintf(w, " %s=%.1f%%", key, cost.CostSourceShares[key]*100); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+	agreement := result.Agreement
+	if !agreement.Available {
+		_, err := fmt.Fprintln(w, "inter_rater_agreement=INCONCLUSIVE (fewer than two raters with overlapping answers)")
+		return err
+	}
+	_, err := fmt.Fprintf(w, "inter_rater_agreement raters=%s paired_ratings=%d exact=%.4f quadratic_weighted_kappa=%.4f\n", strings.Join(agreement.Raters, ","), agreement.PairedRatings, agreement.ExactAgreement, agreement.QuadraticWeightedKappa)
+	return err
 }
 
 func readJSON(path string, value any) error {
