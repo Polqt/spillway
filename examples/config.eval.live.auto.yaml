@@ -1,0 +1,42 @@
+# Candidate references and prices are the 2026-10-16 catalog snapshot in docs/v1.0-routing-evaluation.md.
+# Refresh candidates and prices from the current catalog before a new run.
+# The auto baseline uses one low-cost candidate to prevent same-provider spillover.
+server:
+  listen: "127.0.0.1:18790"
+  api_keys: ["${SPILLWAY_EVAL_KEY}"]
+
+logging:
+  level: warn
+
+providers:
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+
+tiers:
+  free:
+    models: ["openrouter/google/gemma-4-31b-it:free"]
+  low:
+    allow_spend: true
+    models: ["openrouter/anthropic/claude-haiku-5.5"]
+  strong:
+    allow_spend: true
+    models: ["openrouter/google/gemini-4-argon"]
+  classifier-model:
+    models: ["ollama/llama3.2:3b-instruct-q4_K_M"]
+
+router:
+  auto: [low]
+
+store:
+  path: ".scratch/v1.0-live-run-auto.db"
+  retention: 2d
+
+budgets:
+  daily_usd: 1.66
+
+pricing:
+  "openrouter/google/gemma-4-31b-it:free": { input_usd_per_mtok: 0, output_usd_per_mtok: 0 }
+  "openrouter/anthropic/claude-haiku-5.5": { input_usd_per_mtok: 0.1, output_usd_per_mtok: 0.5 }
+  "openrouter/google/gemini-4-argon": { input_usd_per_mtok: 2, output_usd_per_mtok: 10 }
