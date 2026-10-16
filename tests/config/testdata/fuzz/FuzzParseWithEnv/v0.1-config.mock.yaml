@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("# Mock-only config for local development. No real provider keys.\n# A local key is required even on loopback (ADR 0003).\n# The key below is a fake local key for curl and SDK testing on loopback only.\nserver:\n  listen: \"127.0.0.1:8080\"\n  api_keys:\n    - name: demo\n      key: \"sk-test-spillway-mock\"\nproviders:\n  mock: {}\n")

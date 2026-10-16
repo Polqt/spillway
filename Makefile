@@ -11,7 +11,7 @@ LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
-.PHONY: build test lint check run mock vuln cover
+.PHONY: build test fuzz lint check run mock vuln cover
 
 build: export CGO_ENABLED=0
 build:
@@ -19,6 +19,11 @@ build:
 
 test:
 	$(GO) test $(RACE) -count=1 ./...
+
+fuzz:
+	$(GO) test ./tests/config -run=^$$ -fuzz=FuzzParseWithEnv -fuzztime=60s
+	$(GO) test ./tests/router -run=^$$ -fuzz=FuzzDetect -fuzztime=60s
+	$(GO) test ./tests/providers/openaicompat -run=^$$ -parallel=1 -fuzz=FuzzStreamRecv -fuzztime=60s
 
 # CGO_ENABLED=0 makes the build step prove the no-cgo hard rule on every check.
 lint: export CGO_ENABLED=0

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"id\":\"chatcmpl-openrouter-fixture\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"meta-llama/llama-3.1-8b-instruct:free\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-openrouter-fixture\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"meta-llama/llama-3.1-8b-instruct:free\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6,\"cost\":0.000001}}\n\ndata: [DONE]\n")
