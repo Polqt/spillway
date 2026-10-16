@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
 	"go.yaml.in/yaml/v3"
 )
@@ -152,19 +153,21 @@ func rejectUnknownFields(root *yaml.Node) error {
 			}
 		}
 	}
-	providers := mappingValue(root, "providers")
-	if providers != nil {
-		if providers.Kind != yaml.MappingNode && providers.Tag != "!!null" {
-			return fmt.Errorf("providers (line %d): must be a mapping", providers.Line)
+	providerConfig := mappingValue(root, "providers")
+	if providerConfig != nil {
+		if providerConfig.Kind != yaml.MappingNode && providerConfig.Tag != "!!null" {
+			return fmt.Errorf("providers (line %d): must be a mapping", providerConfig.Line)
 		}
-		if providers.Kind == yaml.MappingNode {
-			for i := 0; i+1 < len(providers.Content); i += 2 {
-				key, value := providers.Content[i], providers.Content[i+1]
+		if providerConfig.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(providerConfig.Content); i += 2 {
+				key, value := providerConfig.Content[i], providerConfig.Content[i+1]
 				if key.Value == "spillway" || key.Value == "auto" {
 					return fmt.Errorf("providers.%s is reserved (line %d)", key.Value, key.Line)
 				}
-				if !slices.Contains(knownProviders, key.Value) {
-					return fmt.Errorf("providers: unknown provider; supported: %s", strings.Join(knownProviders, ", "))
+				preset, known := providers.LookupPreset(key.Value)
+				if !known {
+					names := knownProviders()
+					return fmt.Errorf("providers: unknown provider; supported: %s", strings.Join(names, ", "))
 				}
 				if value.Kind != yaml.MappingNode {
 					return fmt.Errorf("providers.%s (line %d): must be a mapping", key.Value, value.Line)
@@ -175,12 +178,12 @@ func rejectUnknownFields(root *yaml.Node) error {
 				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && freeTier.Tag != "!!bool" {
 					return fmt.Errorf("providers.%s.free_tier (line %d): must be true or false", key.Value, freeTier.Line)
 				}
-				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && key.Value != "groq" && key.Value != "gemini" {
+				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && !preset.FreeTierAttestable {
 					return fmt.Errorf("providers.%s.free_tier is only supported for groq and gemini; OpenRouter is checked per model and local providers are always free", key.Value)
 				}
 				apiKey := mappingValue(value, "api_key")
-				if key.Value != "mock" && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
-					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s_API_KEY}\"", key.Value, apiKey.Line, strings.ToUpper(key.Value))
+				if preset.AcceptsKey && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
+					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s}\"", key.Value, apiKey.Line, preset.KeyEnv)
 				}
 			}
 		}

@@ -1,0 +1,35 @@
+package providers
+
+// Preset describes a built-in provider's defaults and accepted config.
+type Preset struct {
+	Name               string
+	DefaultBaseURL     string
+	KeyEnv             string
+	RequiresKey        bool
+	AcceptsKey         bool
+	FreeTierAttestable bool
+	SuggestedModel     string
+}
+
+var presets = [...]Preset{
+	{Name: "gemini", DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", KeyEnv: "GEMINI_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "gemini-2.5-flash"},
+	{Name: "groq", DefaultBaseURL: "https://api.groq.com/openai/v1", KeyEnv: "GROQ_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "llama-3.3-70b-versatile"},
+	{Name: "mock", SuggestedModel: "echo"},
+	{Name: "ollama", DefaultBaseURL: "http://localhost:11434", SuggestedModel: "llama3.2:3b"},
+	{Name: "openrouter", DefaultBaseURL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY", RequiresKey: true, AcceptsKey: true, SuggestedModel: "meta-llama/llama-3.3-70b-instruct:free"},
+}
+
+// Presets returns the built-in provider presets in stable name order.
+func Presets() []Preset {
+	return append([]Preset(nil), presets[:]...)
+}
+
+// LookupPreset returns the preset for a built-in provider.
+func LookupPreset(name string) (Preset, bool) {
+	for _, preset := range presets {
+		if preset.Name == name {
+			return preset, true
+		}
+	}
+	return Preset{}, false
+}

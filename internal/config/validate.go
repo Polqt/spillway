@@ -21,8 +21,14 @@ import (
 // enough to use in paths and log lines.
 var configName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
-// knownProviders lists the provider names this release can build.
-var knownProviders = []string{"gemini", "groq", "mock", "ollama", "openrouter"}
+func knownProviders() []string {
+	presets := providers.Presets()
+	names := make([]string, len(presets))
+	for i, preset := range presets {
+		names[i] = preset.Name
+	}
+	return names
+}
 
 func (c Config) validate() error {
 	if err := validateListen(c.Server.Listen); err != nil {
@@ -449,21 +455,18 @@ func validateProviders(ps map[string]Provider) error {
 	slices.Sort(names)
 	for _, name := range names {
 		if name == "spillway" || name == "auto" {
-			return fmt.Errorf("providers.%s is reserved; use a provider name: %s", name, strings.Join(knownProviders, ", "))
+			return fmt.Errorf("providers.%s is reserved; use a provider name: %s", name, strings.Join(knownProviders(), ", "))
 		}
-		if !slices.Contains(knownProviders, name) {
-			return fmt.Errorf("providers.%s: unknown provider; supported: %s", name, strings.Join(knownProviders, ", "))
+		preset, ok := providers.LookupPreset(name)
+		if !ok {
+			return fmt.Errorf("providers.%s: unknown provider; supported: %s", name, strings.Join(knownProviders(), ", "))
 		}
 		p := ps[name]
-		requiresKey := name == "gemini" || name == "groq" || name == "openrouter"
-		if requiresKey && p.APIKey.IsZero() {
-			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s_API_KEY}\"", name, strings.ToUpper(name))
+		if preset.RequiresKey && p.APIKey.IsZero() {
+			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s}\"", name, preset.KeyEnv)
 		}
-		if name == "ollama" && !p.APIKey.IsZero() {
-			return errors.New("providers.ollama.api_key is not supported; remove it")
-		}
-		if name == "mock" && !p.APIKey.IsZero() {
-			return errors.New("providers.mock.api_key is not supported; remove it")
+		if !preset.AcceptsKey && !p.APIKey.IsZero() {
+			return fmt.Errorf("providers.%s.api_key is not supported; remove it", name)
 		}
 		if p.Timeout <= 0 || p.Timeout > 30*time.Minute {
 			return fmt.Errorf("providers.%s.timeout must be positive and at most 30m", name)

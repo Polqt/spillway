@@ -110,6 +110,10 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 			ps = append(ps, p)
 		case "gemini":
 			baseURL := cfg.Providers[name].BaseURL
+			if baseURL == "" {
+				preset, _ := providers.LookupPreset(name)
+				baseURL = preset.DefaultBaseURL
+			}
 			p, err := gemini.New(gemini.Options{
 				APIKey: cfg.Providers[name].APIKey, BaseURL: baseURL, Timeout: cfg.Providers[name].Timeout,
 			})
@@ -120,13 +124,10 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		case "groq", "openrouter", "ollama":
 			baseURL := cfg.Providers[name].BaseURL
 			if baseURL == "" {
-				switch name {
-				case "groq":
-					baseURL = "https://api.groq.com/openai/v1"
-				case "openrouter":
-					baseURL = "https://openrouter.ai/api/v1"
-				case "ollama":
-					baseURL = "http://localhost:11434/v1"
+				preset, _ := providers.LookupPreset(name)
+				baseURL = preset.DefaultBaseURL
+				if name == "ollama" {
+					baseURL += "/v1"
 				}
 			} else if name == "ollama" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
 				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
@@ -188,7 +189,8 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 	if cfg.Router.Classifier != nil {
 		baseURL := cfg.Providers["ollama"].BaseURL
 		if baseURL == "" {
-			baseURL = "http://localhost:11434"
+			preset, _ := providers.LookupPreset("ollama")
+			baseURL = preset.DefaultBaseURL
 		}
 		model, err := providers.ParseModelRef(cfg.Router.Classifier.Model)
 		if err != nil {
