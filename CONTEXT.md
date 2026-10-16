@@ -44,7 +44,7 @@ Spillway runs on the developer's own machine or server as one binary. Their app 
 | Config | YAML (`config.yaml`, parsed with `go.yaml.in/yaml/v3`) + env vars for secrets | Human-editable; `gopkg.in/yaml.v3` is archived |
 | Dashboard | Small web UI embedded with `go:embed` | Ships inside the binary |
 | Local router model | **Ollama** HTTP API (e.g., Llama 3.2 1B/3B) | Optional; no model code linked into the binary |
-| Embeddings (router) | Local embedding model via Ollama, or provider embeddings | Fast prompt classification |
+| Difficulty routing | Deterministic rules, with an optional local Ollama classifier | Bounded and offline by default |
 | Release | GoReleaser; Linux/macOS/Windows, amd64/arm64; Docker image on distroless static | One-command installs |
 | Dev tools | golangci-lint, govulncheck, pinned via `tool` directives in `tools/go.mod` | Reproducible, nothing installed globally |
 
@@ -57,15 +57,14 @@ client app (OpenAI SDK)
    │  base_url = http://localhost:8080/v1
    ▼
 ┌──────────────────── spillway (single Go binary) ────────────────────┐
-│ API layer       /v1/chat/completions, /v1/embeddings, /v1/models    │
+│ API layer       /v1/chat/completions, /v1/models                    │
 │                 SSE streaming, OpenAI request/response schema       │
 │ Router          difficulty rules → optional local classifier      │
 │ Quota tracker   per-key RPM/TPM/daily limits, 429 + retry-after     │
 │ Spillover       ordered candidates per tier, circuit breakers       │
 │ Cache           opt-in in-memory exact response cache               │
 │ Budgets         local daily and monthly spend caps                  │
-│ Adapters        gemini, groq, mistral, openrouter, anthropic,       │
-│                 openai, ollama (each translates to/from OpenAI fmt) │
+│ Adapters        gemini, groq, openrouter, ollama and mock           │
 │ Store           SQLite: usage metadata, attempts and decisions     │
 │ Dashboard       embedded UI: usage, cost, routing explanations      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -128,7 +127,6 @@ server:
 providers:
   gemini:     { api_key: "${GEMINI_API_KEY}", free_tier: true }
   groq:       { api_key: "${GROQ_API_KEY}", free_tier: true }
-  mistral:    { api_key: "${MISTRAL_API_KEY}" }
   openrouter: { api_key: "${OPENROUTER_API_KEY}" }
   ollama:     { base_url: "http://localhost:11434" }
 
@@ -137,13 +135,13 @@ tiers:
     models: [groq/llama-3.3-70b-versatile, gemini/gemini-2.5-flash, ollama/llama3.2:3b]
   smart:
     allow_spend: true
-    models: [openrouter/anthropic/claude-sonnet-4.5]
+    models: [openrouter/meta-llama/llama-3.3-70b-instruct]
 
 models:
   groq/llama-3.3-70b-versatile: { capabilities: [tools, json_mode], context_window: 131072 }
   gemini/gemini-2.5-flash: { capabilities: [tools, vision, json_mode, structured_outputs], context_window: 1048576 }
   ollama/llama3.2:3b: { capabilities: [] }
-  openrouter/anthropic/claude-sonnet-4.5: { capabilities: [tools, vision, json_mode, structured_outputs] }
+  openrouter/meta-llama/llama-3.3-70b-instruct: { capabilities: [tools, vision, json_mode, structured_outputs] }
 
 router:
   auto: [free, smart]  # zero-spend tiers first; only listed tiers can spend
@@ -153,7 +151,7 @@ store:
   retention: 90d
 
 pricing:
-  openrouter/anthropic/claude-sonnet-4.5: { input_usd_per_mtok: 3.00, output_usd_per_mtok: 15.00 }
+  openrouter/meta-llama/llama-3.3-70b-instruct: { input_usd_per_mtok: 0.59, output_usd_per_mtok: 0.79 }
 
 budgets:
   monthly_usd: 5.00
@@ -203,7 +201,6 @@ Supported bounded conditions are `estimated_input_tokens_gte`, `requested_output
 ## 8. API Surface
 
 - `POST /v1/chat/completions`: OpenAI-compatible, with streaming and tools.
-- `POST /v1/embeddings`
 - `GET  /v1/models`: configured provider models, `spillway/<tier>` virtual models and `auto` when `router.auto` is configured.
 - `GET  /healthz`
 - `GET  /dashboard`: the embedded static dashboard shell.
@@ -211,6 +208,8 @@ Supported bounded conditions are `estimated_input_tokens_gte`, `requested_output
 - `GET  /api/budget`: current local daily and monthly budget status.
 - Dashboard data APIs require a key marked `dashboard: true`.
 - `spillway catalog`: explicit advisory provider catalog suggestions; it writes no config and changes no routing.
+
+`/v1/embeddings` and Mistral, Anthropic and OpenAI provider adapters are unsupported in v1.0. Use OpenRouter when you need access to models from other providers.
 
 Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`, `x-spillway-cache`.
 
