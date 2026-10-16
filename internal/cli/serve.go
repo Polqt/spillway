@@ -52,7 +52,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		return 1
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
-	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, nil), scrubber))
+	var logLevel slog.Level
+	if err := logLevel.UnmarshalText([]byte(cfg.Logging.Level)); err != nil {
+		report(stderr, "spillway: invalid logging level: %v\n", err)
+		return 1
+	}
+	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}), scrubber))
 	var usageStore *store.Store
 	if cfg.Store != nil {
 		usageStore, err = store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})

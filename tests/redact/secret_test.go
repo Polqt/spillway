@@ -175,6 +175,33 @@ func TestHandler_ScrubsMessageAndAttributes(t *testing.T) {
 	}
 }
 
+func TestHandler_ScrubsAttributesAtEveryLevel(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		level slog.Level
+		log   func(*slog.Logger, string, ...any)
+	}{
+		{name: "debug", level: slog.LevelDebug, log: (*slog.Logger).Debug},
+		{name: "info", level: slog.LevelInfo, log: (*slog.Logger).Info},
+		{name: "warn", level: slog.LevelWarn, log: (*slog.Logger).Warn},
+		{name: "error", level: slog.LevelError, log: (*slog.Logger).Error},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: tt.level})
+			logger := slog.New(redact.NewHandler(handler, redact.NewScrubber(redact.NewSecret(testKey))))
+
+			tt.log(logger, "provider response", "api_key", testKey)
+
+			if strings.Contains(buf.String(), testKey) || !strings.Contains(buf.String(), "api_key=[REDACTED]") {
+				t.Errorf("log output = %q, want the provider key redacted", buf.String())
+			}
+		})
+	}
+}
+
 // TestSecret_UnexportedFieldLimitation documents why Secret fields must be
 // exported: fmt cannot call methods on unexported fields, so the raw value
 // prints under %+v.

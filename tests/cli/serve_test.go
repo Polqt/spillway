@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/config"
@@ -72,6 +74,85 @@ func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), e2eKey) {
 		t.Errorf("stderr contains the local key: %q", stderr.String())
+	}
+}
+
+func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		level         string
+		wantListening bool
+	}{
+		{level: "debug", wantListening: true},
+		{level: "info", wantListening: true},
+		{level: "warn"},
+		{level: "error"},
+	} {
+		t.Run(tt.level, func(t *testing.T) {
+			t.Parallel()
+			var listenConfig net.ListenConfig
+			probe, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := probe.Addr().String()
+			if err := probe.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			path := writeConfig(t, "server:\n  listen: \""+addr+"\"\n  api_keys: ["+e2eKey+"]\nlogging:\n  level: "+tt.level+"\nproviders:\n  mock: {}\n")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			pr, pw := io.Pipe()
+			logs := readLogs(pr)
+			exit := make(chan int, 1)
+			go func() {
+				var stdout strings.Builder
+				exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, noEnv)
+				_ = pw.Close()
+			}()
+
+			if tt.wantListening {
+				select {
+				case <-logs.addr:
+				case code := <-exit:
+					t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+				}
+			} else {
+				waitForListener(t, addr, exit, logs)
+			}
+
+			cancel()
+			if code := <-exit; code != 0 {
+				t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+			}
+			<-logs.done
+
+			gotListening := strings.Contains(logs.String(), "msg=listening")
+			if gotListening != tt.wantListening {
+				t.Errorf("listening log present = %t, want %t; logs:\n%s", gotListening, tt.wantListening, logs)
+			}
+		})
+	}
+}
+
+func waitForListener(t *testing.T, addr string, exit <-chan int, logs *logLines) {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		select {
+		case code := <-exit:
+			t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+		case <-timer.C:
+			t.Fatalf("serve did not listen on %s:\n%s", addr, logs)
+		default:
+		}
 	}
 }
 
