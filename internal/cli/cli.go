@@ -22,6 +22,7 @@ commands:
   serve     serve the OpenAI-compatible API (flags: -config path, default config.yaml)
   check     validate config and print it with secrets redacted (flags: -config path)
   catalog   suggest model declarations and pricing from configured providers (flags: -config path)
+  init      create a zero-spend config and local key (flags: -config, -providers, -attest-free-tier, -store, -yes)
   eval      run a paired routing evaluation against an OpenAI-compatible endpoint
   eval-score summarize a completed blinded evaluation score sheet
   version   print the version and exit
@@ -29,7 +30,7 @@ commands:
 
 // Run executes one CLI invocation and returns the process exit code:
 // 0 on success, 1 on failure, 2 on a usage error.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	if len(args) == 0 {
 		report(stderr, "%s", usage)
 		return 2
@@ -48,6 +49,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		return check(args[1:], stdout, stderr, lookupEnv)
 	case "catalog":
 		return catalogCommand(ctx, args[1:], stdout, stderr, lookupEnv)
+	case "init":
+		return initCommand(ctx, args[1:], stdin, stdout, stderr, lookupEnv)
 	case "eval":
 		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
 	case "eval-score":

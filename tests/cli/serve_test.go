@@ -28,7 +28,7 @@ func TestRun_MissingDefaultConfigSuggestsInit(t *testing.T) {
 	for _, command := range []string{"serve", "check"} {
 		t.Run(command, func(t *testing.T) {
 			var stdout, stderr strings.Builder
-			code := cli.Run(t.Context(), []string{command}, &stdout, &stderr, noEnv)
+			code := cli.Run(t.Context(), []string{command}, nil, &stdout, &stderr, noEnv)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
@@ -57,7 +57,7 @@ func TestRun_ServeRejectsMissingLocalKey(t *testing.T) {
 			path := writeConfig(t, "server:\n  listen: \""+listen+"\"\nproviders:\n  mock: {}\n")
 			var stdout, stderr strings.Builder
 
-			code := cli.Run(t.Context(), []string{"serve", "-config", path}, &stdout, &stderr, noEnv)
+			code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
 
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
@@ -80,7 +80,7 @@ func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 	path := writeConfig(t, "server:\n  listen: \"192.0.2.1:0\"\n  api_keys: [sk-test-local-e2e]\nproviders:\n  mock: {}\n")
 	var stdout, stderr strings.Builder
 
-	code := cli.Run(t.Context(), []string{"serve", "-config", path}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
 
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1 (bind to a non-local address fails)", code)
@@ -124,7 +124,7 @@ func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
 			exit := make(chan int, 1)
 			go func() {
 				var stdout strings.Builder
-				exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, noEnv)
+				exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, noEnv)
 				_ = pw.Close()
 			}()
 
@@ -188,7 +188,7 @@ func TestRun_ServeErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var stdout, stderr strings.Builder
-			code := cli.Run(t.Context(), tt.args, &stdout, &stderr, noEnv)
+			code := cli.Run(t.Context(), tt.args, nil, &stdout, &stderr, noEnv)
 			if code != tt.code {
 				t.Errorf("exit code = %d, want %d", code, tt.code)
 			}
@@ -204,7 +204,7 @@ func TestRun_ServeDefaultConfigPath(t *testing.T) {
 	t.Chdir(t.TempDir())
 	var stdout, stderr strings.Builder
 
-	code := cli.Run(t.Context(), []string{"serve"}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"serve"}, nil, &stdout, &stderr, noEnv)
 
 	if code != 1 || !strings.Contains(stderr.String(), "config.yaml") {
 		t.Errorf("exit %d, stderr %q; want 1 and an error naming config.yaml", code, stderr.String())
@@ -254,7 +254,7 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, noEnv)
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, noEnv)
 		_ = pw.Close()
 	}()
 
@@ -362,7 +362,7 @@ func TestRun_ServeCreatesStoreOnlyWhenConfigured(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, &stdout, pw, noEnv)
+		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, nil, &stdout, pw, noEnv)
 		_ = pw.Close()
 	}()
 	select {
@@ -398,7 +398,7 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, &stdout, pw, noEnv)
+		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, nil, &stdout, pw, noEnv)
 		_ = pw.Close()
 	}()
 	var base string
@@ -448,7 +448,7 @@ func TestRun_ServeRejectsStorePathThatCannotOpen(t *testing.T) {
 	}
 	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-bad-path]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n")
 	var stdout, stderr strings.Builder
-	code := cli.Run(t.Context(), []string{"serve", "-config", path}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 1 || !strings.Contains(stderr.String(), "spillway: ") || strings.Contains(stderr.String(), "listening") {
 		t.Errorf("serve = %d, stderr %q; want startup failure before listening", code, stderr.String())
 	}
@@ -467,7 +467,7 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, lookup)
 		_ = pw.Close()
 	}()
 
@@ -515,7 +515,7 @@ func TestRun_ServeGroqEndToEnd(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, lookup)
 		_ = pw.Close()
 	}()
 	var base string
@@ -583,7 +583,7 @@ func TestRun_ServeGeminiEndToEnd(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, lookup)
 		_ = pw.Close()
 	}()
 	var base string
@@ -684,7 +684,7 @@ func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, &stdout, pw, lookup)
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, lookup)
 		_ = pw.Close()
 	}()
 	var base string
