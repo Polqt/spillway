@@ -1,0 +1,14 @@
+# Known limitations
+
+- **Provider and API scope:** v1.0 supports chat completions, model listing and health checks. It does not implement embeddings. Built-in provider presets are Gemini, Groq, OpenRouter, Ollama and mock; other providers may be reachable through OpenRouter where available.
+- **No quota evasion:** Spillover is across configured providers only. Spillway does not rotate accounts or pool keys on one provider.
+- **Provider behavior:** rate limits, free tiers, prices, model names, service availability and provider data retention are controlled by each provider and can change. Review current terms before sending sensitive prompts.
+- **Free-tier attestation:** Spillway cannot verify whether a Groq account has a paid plan or a Gemini project has billing enabled. `free_tier: true` is the user's responsibility and must be kept accurate.
+- **Cost estimates:** estimates depend on provider-reported usage or conservative token estimates and configured prices. They may differ from provider bills; cached-input discounts, hidden reasoning usage, multimodal pricing, per-request fees, minimum charges, taxes and currency conversion may not be represented. Failed paid attempts without reported usage are estimated and can overcount or undercount actual billing. Budgets cover only spend observed by this process, stop paid models only, and may overshoot for in-flight requests.
+- **Store:** SQLite is optional, local metadata storage for one Spillway process. It is not a shared database or a multi-instance coordination mechanism. Store records may reveal usage patterns and should be protected.
+- **Cache:** exact caching is opt-in, process-memory only, per client app and based on byte-identical request bodies. It is not semantic caching, clears on restart, and can reuse a response despite a changed temperature. Streaming requests bypass it.
+- **Routing declarations:** Spillway does not discover capabilities or infer them from model names. The user maintains capability declarations and prices. A local classifier is opt-in and falls back to deterministic rules; v0.5 evaluation did not justify enabling it by default.
+- **Local key storage:** `spillway init` writes local keys to the config file. On Unix it creates the file with owner-only mode 0600. Windows does not enforce Unix file modes; use Windows ACLs to restrict the file to the account that runs Spillway.
+- **Untested target:** GoReleaser builds `windows/arm64`, but that binary has not been run-tested.
+- **Docker and Ollama:** Docker can reach host Ollama using `--network host` only on Linux under the documented setup. Host Ollama access from the Docker image is unsupported on macOS and Windows. Non-loopback plaintext Ollama URLs are rejected.
+- **No hosted service or telemetry:** Spillway is self-hosted and makes no telemetry calls. Outbound requests are limited to the providers configured by the user.

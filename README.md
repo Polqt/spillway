@@ -1,99 +1,86 @@
 # Spillway
 
-Spillway is a self-hosted gateway that exposes an OpenAI-compatible API and routes requests through configured providers.
+Spillway is a self-hosted LLM gateway with one OpenAI-compatible API. It routes requests to configured providers, spills over across providers when an upstream is temporarily unavailable, and can record local usage metadata, estimate costs and enforce local budgets.
 
-## Run the mock setup
+Spillway is a single Go binary. It has no telemetry and sends requests only to providers you configure. You bring your own provider keys; Spillway stores no provider credentials for you.
 
-Run `make mock` to start the server with the offline mock provider.
-The local demo key is `sk-test-spillway-mock` and the configured virtual model is `spillway/demo`.
+## Install
 
-```shell
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-test-spillway-mock" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"spillway/demo","messages":[{"role":"user","content":"Hello"}]}'
+Download a release archive for Linux, macOS or Windows from [GitHub Releases](https://github.com/Polqt/spillway/releases), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
+
+Install a tagged Go release with:
+
+```sh
+go install github.com/Polqt/spillway/apps/spillway@v1.0.0
 ```
 
-## Configure tiers
+Or pull the pinned Docker image:
 
-Tiers list candidate models in priority order.
-Requests for `spillway/<tier>` try eligible candidates in that order and spill over when a provider fails before any response reaches the client.
-
-Tiers are zero-spend by default.
-Ollama and the mock provider are local, and OpenRouter models ending in `:free` are identified by their model id.
-Groq and Gemini do not expose plan or billing status to Spillway, so their provider entries require `free_tier: true` for a zero-spend tier.
-That setting is your attestation that the Groq account has no paid plan or the Gemini project has no billing.
-Spillway checks the setting but cannot verify the claim or detect later billing changes.
-Use `allow_spend: true` on a tier only when you intend to let that tier include paid models.
-
-## Declare model capabilities and use `auto`
-
-`models:` is the only capability source in v0.3.
-Declare a complete capability list for each model that `auto` may choose for requests with capability requirements; use `[]` for text-only models.
-Spillway does not infer support from model names or provider catalogs.
-
-```yaml
-models:
-  groq/llama-3.3-70b-versatile:
-    capabilities: [tools, json_mode]
-    context_window: 131072
-  ollama/llama3.2:3b:
-    capabilities: []
-
-router:
-  auto: [free, smart]
+```sh
+docker pull ghcr.io/polqt/spillway:1.0.0
 ```
 
-The accepted capabilities are `tools`, `vision`, `json_mode` and `structured_outputs`.
-`context_window` is optional; Spillway skips a candidate only when its conservative size estimate clearly exceeds the declaration.
-`router.auto` lists configured tiers in order, with every zero-spend tier before any tier that sets `allow_spend: true`.
-For requests that need capabilities, `auto` skips undeclared models; an explicit `spillway/<tier>` request can still try them.
-Direct model references pass through without capability checks.
-The `x-spillway-route` response header explains which route and candidate served the request.
+Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
 
-## Usage, cost, budgets and dashboard
+## Five-minute offline quickstart
 
-SQLite usage history is opt-in through `store.path`; it records request metadata, not prompts, responses, keys, headers or provider error text.
-The database still reveals usage patterns and should be treated as sensitive; only one Spillway process may use a database file at a time.
+This starts a mock provider that needs no provider account, provider key, network access or Docker. The mock answers with the user's message, so it is useful for checking the API wiring but does not call a language model.
 
-Cost figures are estimates, not provider invoices.
-Spillway uses provider-reported usage when available and otherwise uses conservative token estimates with prices from `pricing:`.
-Prices can become stale, and cached-input discounts, reasoning tokens, image and audio pricing, per-request fees, minimum charges, taxes and currency conversion are not modelled.
-Provider billing, balances and plan status are invisible to Spillway.
-Groq and Gemini models configured with `free_tier: true` are counted as free based on the user's attestation, even if billing later becomes enabled.
-Providers may ignore injected stream usage requests, and disconnects or mid-stream failures can leave usage estimated.
-Failed paid attempts without reported usage are charged the estimated prompt cost; this can overcount a request rejected before processing or undercount hidden output generated before failure.
-
-Daily and monthly budgets are soft caps on paid-model spend observed by this Spillway process.
-Requests already in flight can overshoot a cap; spend made by other tools, machines or Spillway processes is not counted, and deleting the database resets the recorded spend.
-Budgets never block free models.
-The in-memory exact cache is opt-in, per client app and byte-exact; it ignores temperature, can return a stale or non-deterministic answer until expiry, and is cleared on restart.
-Catalog suggestions are advisory, may be incomplete or stale, and never affect routing or pricing until reviewed and copied into config.
-Gemini has no supported catalog fields, and Groq catalog data includes only context length.
-
-The mock setup enables all v0.4 features for local exploration.
-Mock models are always treated as free, so the sample price is illustrative and cannot exhaust its budget.
-Paid-budget behavior is covered by the offline cross-feature test with a fake paid provider.
-
-Use the `dashboard` key from `examples/config.mock.yaml` at `http://127.0.0.1:8080/dashboard`.
-The `demo` key can call chat endpoints but cannot read dashboard APIs.
-
-```shell
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Authorization: Bearer sk-test-spillway-mock" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"mock/echo","messages":[{"role":"user","content":"Cache me"}]}'
+```sh
+spillway init -yes -providers mock -store
+spillway check
+spillway serve
 ```
 
-Repeat the identical curl request to see `x-spillway-cache: hit`.
-For streaming usage capture, send `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"Stream this"}]}` and inspect `/api/decisions` with the dashboard key.
-Run `spillway catalog -config examples/config.mock.yaml` to see the mock-provider skip note.
-The database at `./spillway-mock.db` retains usage and budget totals after restart; the response cache does not.
-For a full curl and OpenAI Python SDK walkthrough, including a local paid-model fixture and budget persistence across restart, see the [v0.4 manual verification](docs/v0.4-manual-verification.md).
+The generated config contains a local app key and, because `-store` was selected, a separate dashboard key. Keep `config.yaml` private and copy the generated app key from it into your client. The CLI never prints either key. In another terminal, replace `<LOCAL_APP_KEY>` with that value:
 
-## Provider data terms
+```powershell
+curl.exe http://127.0.0.1:8080/v1/chat/completions `
+  -H 'Authorization: Bearer <LOCAL_APP_KEY>' `
+  -H 'Content-Type: application/json' `
+  -d '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}'
+```
 
-Free pricing does not guarantee that a provider will not use prompts to improve or train its models.
-Gemini's free tier and some OpenRouter free endpoints may use submitted prompts under their provider terms.
-Review the current terms for each model before routing sensitive data through a free tier.
-Spillway sends requests to the providers in your configuration and cannot change their data handling policies.
+Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. The response contains `Hello from Spillway`.
+
+To use an OpenAI SDK, set its base URL to `http://127.0.0.1:8080/v1` and its API key to the same local app key. See [configuration](docs/configuration.md) and [provider guides](docs/providers/) for setup details.
+
+## Use a real provider
+
+For example, configure Groq. Set the provider key in your environment, then create a config that refers to it:
+
+```powershell
+$env:GROQ_API_KEY = "your-provider-key"
+```
+
+```sh
+spillway init -yes -providers groq -attest-free-tier groq
+```
+
+`init` generates a local key in `config.yaml`, but does not print it. Copy it from the private file for your client. Only use `-attest-free-tier groq` if the Groq account has no paid plan; otherwise omit the attestation and configure a spend-enabled tier and prices as described in the [Groq guide](docs/providers/groq.md). `GROQ_API_KEY` must be present before `spillway check` or `serve`.
+
+Then validate and start Spillway:
+
+```sh
+spillway check
+spillway serve
+```
+
+For local inference, use Ollama instead: install Ollama, pull a model such as `llama3.2:3b`, then run `spillway init -yes -providers ollama`. See the [Ollama guide](docs/providers/ollama.md), especially its Docker limitation.
+
+## Verification status
+
+| Status | Evidence | Scope |
+|---|---|---|
+| Tested offline in CI | `make check`; mock binary quickstart; provider adapter fixture tests; configuration examples are parsed by an end-to-end test. | Local behavior and recorded fixtures only; no live provider is contacted. |
+| Tested manually | 2026-10-16, Docker mock smoke recorded in ticket 13. | Local Docker image, loopback port publishing, read-only root filesystem, container UID and graceful stop. This is not a release-artifact test. |
+| Unverified | Live provider smoke, downloaded release archives and attestations, and the release-candidate Docker image. | Check ticket 20 and the release notes for results before relying on these claims. |
+| Unverified | Windows/arm64 execution. | The binary target is built, but this platform has not been run-tested. |
+
+## Operations and limitations
+
+Read [operations](docs/operations.md) for shutdown, store backup, retention and upgrade guidance. Known limits are listed in [limitations](docs/limitations.md); common failures are covered in [troubleshooting](docs/troubleshooting.md).
+
+## License
+
+See [LICENSE](LICENSE).

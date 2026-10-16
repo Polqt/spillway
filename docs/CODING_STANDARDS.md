@@ -51,7 +51,7 @@ Anything `make lint` already enforces is not repeated here.
 - `log/slog` only, with a logger passed in, never the package default inside libraries.
 - Log stable keys (`provider`, `model`, `status`, `latency_ms`), not formatted sentences.
 - Secrets are `redact.Secret` so they log as `[REDACTED]` even by mistake.
-- Bodies are logged only when `logging.bodies: true`.
+- Request and response bodies are never logged; configuration has no body-logging option.
 
 ## Testing
 

@@ -209,7 +209,7 @@ Supported bounded conditions are `estimated_input_tokens_gte`, `requested_output
 - Dashboard data APIs require a key marked `dashboard: true`.
 - `spillway catalog`: explicit advisory provider catalog suggestions; it writes no config and changes no routing.
 
-`/v1/embeddings` and Mistral, Anthropic and OpenAI provider adapters are unsupported in v1.0. Use OpenRouter when you need access to models from other providers.
+The v1.0 provider presets are Gemini, Groq, OpenRouter, Ollama and mock. Other providers may be reachable through OpenRouter where available.
 
 Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`, `x-spillway-cache`.
 
