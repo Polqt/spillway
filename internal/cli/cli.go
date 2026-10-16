@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"runtime/debug"
+	"strings"
+	"time"
 )
 
 // version is set at build time with
@@ -32,6 +35,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		return 2
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		_, err := fmt.Fprint(stdout, usage)
+		if err != nil {
+			report(stderr, "spillway: write help: %v\n", err)
+			return 1
+		}
+		return 0
 	case "serve":
 		return serve(ctx, args[1:], stderr, lookupEnv)
 	case "check":
@@ -42,8 +52,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
 	case "eval-score":
 		return evalScoreCommand(args[1:], stdout, stderr)
-	case "version":
-		_, err := fmt.Fprintf(stdout, "spillway %s %s %s/%s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	case "version", "-version", "--version":
+		_, err := fmt.Fprintln(stdout, versionLine())
 		if err != nil {
 			report(stderr, "spillway: write version: %v\n", err)
 			return 1
@@ -53,6 +63,33 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 		report(stderr, "spillway: unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+func versionLine() string {
+	fields := []string{"spillway", version}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			fields[1] = info.Main.Version
+		}
+		settings := make(map[string]string, len(info.Settings))
+		for _, setting := range info.Settings {
+			settings[setting.Key] = setting.Value
+		}
+		if revision := settings["vcs.revision"]; revision != "" {
+			if len(revision) > 7 {
+				revision = revision[:7]
+			}
+			fields = append(fields, "commit", revision)
+		}
+		if built, err := time.Parse(time.RFC3339, settings["vcs.time"]); err == nil {
+			fields = append(fields, "built", built.Format(time.RFC3339))
+		}
+		if settings["vcs.modified"] == "true" {
+			fields = append(fields, "[modified]")
+		}
+	}
+	fields = append(fields, runtime.Version(), runtime.GOOS+"/"+runtime.GOARCH)
+	return strings.Join(fields, " ")
 }
 
 // report writes a diagnostic to stderr. A failed write is ignored because

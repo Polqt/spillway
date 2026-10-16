@@ -31,6 +31,49 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
+func TestRun_VersionAliases(t *testing.T) {
+	t.Parallel()
+	var expected string
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-version"}} {
+		var stdout, stderr bytes.Buffer
+		code := cli.Run(t.Context(), args, &stdout, &stderr, noEnv)
+		if code != 0 {
+			t.Errorf("args %q: exit code = %d, want 0; stderr: %q", args, code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("args %q: stderr = %q, want empty", args, stderr.String())
+		}
+		if expected == "" {
+			expected = stdout.String()
+		} else if stdout.String() != expected {
+			t.Errorf("args %q: stdout = %q, want %q", args, stdout.String(), expected)
+		}
+	}
+}
+
+func TestRun_HelpAliases(t *testing.T) {
+	t.Parallel()
+	var expected string
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		var stdout, stderr bytes.Buffer
+		code := cli.Run(t.Context(), args, &stdout, &stderr, noEnv)
+		if code != 0 {
+			t.Errorf("args %q: exit code = %d, want 0; stderr: %q", args, code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("args %q: stderr = %q, want empty", args, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "usage: spillway <command>") {
+			t.Errorf("args %q: stdout = %q, want usage", args, stdout.String())
+		}
+		if expected == "" {
+			expected = stdout.String()
+		} else if stdout.String() != expected {
+			t.Errorf("args %q: stdout = %q, want %q", args, stdout.String(), expected)
+		}
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
