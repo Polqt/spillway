@@ -22,6 +22,11 @@ func readInitFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+func writeInitFile(path string, data []byte) error {
+	// #nosec G703 -- tests pass config paths created under t.TempDir.
+	return os.WriteFile(path, data, 0o600)
+}
+
 type promptWriter struct{ wrote chan struct{} }
 
 func (w promptWriter) Write(data []byte) (int, error) {
@@ -249,6 +254,17 @@ func TestRun_InitMockQuickstartServes(t *testing.T) {
 	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("init = %d; stderr %s", code, stderr.String())
+	}
+	data, err := readInitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEphemeralPort := bytes.Replace(data, []byte("listen: 127.0.0.1:8080"), []byte("listen: 127.0.0.1:0"), 1)
+	if bytes.Equal(data, withEphemeralPort) {
+		t.Fatal("generated config has no default listen address")
+	}
+	if err := writeInitFile(path, withEphemeralPort); err != nil {
+		t.Fatal(err)
 	}
 	cfg, err := config.LoadWithEnv(path, noEnv)
 	if err != nil {
