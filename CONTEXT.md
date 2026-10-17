@@ -8,7 +8,7 @@ The name comes from a dam's spillway: when one reservoir is full, the overflow i
 
 ## 1. Problem
 
-Developers building with AI juggle many providers (Gemini, Groq, Mistral, OpenRouter, Anthropic, OpenAI, local models). Each has its own SDK, rate limits, free tier, and pricing. When one hits a rate limit or quota, apps break. Most prompts don't need a frontier model, but developers default to expensive ones because routing by hand is tedious.
+Developers building with AI juggle provider APIs, models and keys. Each provider has its own SDK, rate limits, free tier and pricing. When one hits a rate limit or quota, apps break. Most prompts don't need a frontier model, but developers default to expensive ones because routing by hand is tedious.
 
 ## 2. Solution
 

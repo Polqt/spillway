@@ -258,7 +258,9 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 	out.WriteString(localKey)
 	out.WriteString("\"\n")
 	if storeEnabled {
-		out.WriteString("    - name: dashboard\n      key: \"" + dashboardKey + "\"\n      dashboard: true\n")
+		out.WriteString("    - name: dashboard\n      key: \"")
+		out.WriteString(dashboardKey)
+		out.WriteString("\"\n      dashboard: true\n")
 	}
 	out.WriteString("providers:\n")
 	statuses := make([]string, 0)
@@ -266,7 +268,11 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 	for _, name := range selected {
 		preset, _ := providers.LookupPreset(name)
 		if preset.KeyEnv != "" {
-			out.WriteString("  " + name + ":\n    api_key: \"${" + preset.KeyEnv + "}\"\n")
+			out.WriteString("  ")
+			out.WriteString(name)
+			out.WriteString(":\n    api_key: \"${")
+			out.WriteString(preset.KeyEnv)
+			out.WriteString("}\"\n")
 			if preset.FreeTierAttestable && attested[name] {
 				out.WriteString("    free_tier: true\n")
 			}
@@ -280,7 +286,9 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 			}
 			statuses = append(statuses, preset.KeyEnv+": "+label)
 		} else {
-			out.WriteString("  " + name + ": {}\n")
+			out.WriteString("  ")
+			out.WriteString(name)
+			out.WriteString(": {}\n")
 		}
 		if !preset.FreeTierAttestable || attested[name] {
 			eligible = append(eligible, name+"/"+preset.SuggestedModel)
@@ -290,7 +298,9 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 		out.WriteString("# Suggested model IDs may be outdated; check current provider documentation.\n")
 		out.WriteString("tiers:\n  free:\n    models:\n")
 		for _, model := range eligible {
-			out.WriteString("      - " + model + "\n")
+			out.WriteString("      - ")
+			out.WriteString(model)
+			out.WriteString("\n")
 		}
 		out.WriteString("router:\n  auto:\n    - free\n")
 	}
