@@ -58,7 +58,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		report(stderr, "spillway: init: %v\n", err)
 		return 1
 	}
-	if err := writeInitConfig(*configPath, content); err != nil {
+	if err := writeInitConfig(ctx, *configPath, content); err != nil {
 		report(stderr, "spillway: init: create %s: %v\n", *configPath, err)
 		return 1
 	}

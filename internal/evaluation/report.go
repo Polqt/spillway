@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,8 @@ type GateOptions struct {
 	Seed       int64
 	Replicates int
 }
+
+const maxBootstrapReplicates = 100_000
 
 // GateVerdict is the result of comparing a candidate to the baseline.
 type GateVerdict string
@@ -75,12 +78,18 @@ type promptCluster struct {
 }
 
 // BuildGateReport calculates ADR 0014 gates using paired prompt-cluster resampling.
-func BuildGateReport(run Report, assignments []Assignment, scoreSheets [][]Score, options GateOptions) (GateReport, error) {
+func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, scoreSheets [][]Score, options GateOptions) (GateReport, error) {
+	if err := ctx.Err(); err != nil {
+		return GateReport{}, err
+	}
 	if options.Baseline == "" {
 		return GateReport{}, errors.New("evaluation baseline is required")
 	}
 	if options.Replicates < 100 {
 		return GateReport{}, errors.New("bootstrap replicates must be at least 100")
+	}
+	if options.Replicates > maxBootstrapReplicates {
+		return GateReport{}, fmt.Errorf("bootstrap replicates must not exceed %d", maxBootstrapReplicates)
 	}
 	clusters, arms, err := makeClusters(run.Trials, assignments, scoreSheets)
 	if err != nil {
@@ -104,13 +113,20 @@ func BuildGateReport(run Report, assignments []Assignment, scoreSheets [][]Score
 	gates := gateNames()
 	result.Cost = summarizeCost(clusters, armNames, difficulties)
 	for _, difficulty := range difficulties {
+		if err := ctx.Err(); err != nil {
+			return GateReport{}, err
+		}
 		selected := selectClusters(clusters, difficulty)
 		for _, arm := range armNames {
 			if arm == options.Baseline {
 				continue
 			}
 			for gateIndex, gate := range gates {
-				result.Results = append(result.Results, calculateGate(selected, difficulty, options, arm, gate, gateIndex))
+				gateResult, err := calculateGate(ctx, selected, difficulty, options, arm, gate, gateIndex)
+				if err != nil {
+					return GateReport{}, err
+				}
+				result.Results = append(result.Results, gateResult)
 			}
 		}
 	}
@@ -216,7 +232,7 @@ func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (m
 	return clusters, arms, nil
 }
 
-func calculateGate(clusters map[string]*promptCluster, difficulty string, options GateOptions, arm, gate string, gateIndex int) GateResult {
+func calculateGate(ctx context.Context, clusters map[string]*promptCluster, difficulty string, options GateOptions, arm, gate string, gateIndex int) (GateResult, error) {
 	result := GateResult{Arm: arm, Difficulty: difficulty, Gate: gate, Unit: "%", Prompts: len(clusters), Verdict: VerdictInconclusive}
 	switch gate {
 	case "quality_difference":
@@ -226,21 +242,21 @@ func calculateGate(clusters map[string]*promptCluster, difficulty string, option
 	}
 	if len(clusters) == 0 {
 		result.Reason = "no paired prompt clusters"
-		return result
+		return result, nil
 	}
 	baseline := options.Baseline
 	if gateIndex == 2 || gateIndex == 3 {
 		for _, cluster := range clusters {
 			if len(cluster.scores[baseline]) == 0 || len(cluster.scores[arm]) == 0 {
 				result.Reason = "one or more prompt clusters lack paired ratings"
-				return result
+				return result, nil
 			}
 		}
 	}
 	point, valid := gateEstimate(clusters, baseline, arm, gateIndex)
 	if !valid {
 		result.Reason = "required paired data are unavailable or baseline cost is zero"
-		return result
+		return result, nil
 	}
 	result.Estimate = point
 	ids := sortedKeys(clusters)
@@ -248,6 +264,9 @@ func calculateGate(clusters map[string]*promptCluster, difficulty string, option
 	// #nosec G404 -- deterministic bootstrap sampling is not used for security.
 	rng := rand.New(rand.NewSource(options.Seed))
 	for replicate := 0; replicate < options.Replicates; replicate++ {
+		if err := ctx.Err(); err != nil {
+			return GateResult{}, err
+		}
 		sample := make(map[string]*promptCluster, len(ids))
 		for range ids {
 			id := ids[rng.Intn(len(ids))]
@@ -266,14 +285,14 @@ func calculateGate(clusters map[string]*promptCluster, difficulty string, option
 	}
 	if len(values) != options.Replicates {
 		result.Reason = "bootstrap produced incomplete paired samples"
-		return result
+		return result, nil
 	}
 	sort.Float64s(values)
 	result.Lower = values[int(.025*float64(len(values)))]
 	result.Upper = values[int(.975*float64(len(values)))]
 	result.Available = true
 	result.Verdict, result.Reason = verdictFor(gate, point, result.Lower, result.Upper)
-	return result
+	return result, nil
 }
 
 func gateEstimate(clusters map[string]*promptCluster, baseline, arm string, gate int) (float64, bool) {

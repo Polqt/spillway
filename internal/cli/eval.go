@@ -153,22 +153,17 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	qualityPath := filepath.Join(*runDir, "quality.json")
 	// #nosec G304 -- path is within the operator-selected evaluation directory.
 	file, err := os.OpenFile(qualityPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	opened := err == nil
-	if err == nil {
-		encoder := json.NewEncoder(file)
-		encoder.SetIndent("", "  ")
-		err = encoder.Encode(metrics)
-		if ctxErr := ctx.Err(); err == nil && ctxErr != nil {
-			err = ctxErr
-		}
-		if closeErr := file.Close(); err == nil {
-			err = closeErr
-		}
+	if err != nil {
+		report(stderr, "spillway: eval-score: write quality summary: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	err = encoder.Encode(metrics)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
 	}
 	if err != nil {
-		if opened {
-			_ = os.Remove(qualityPath)
-		}
 		report(stderr, "spillway: eval-score: write quality summary: %v\n", err)
 		return 1
 	}
@@ -239,7 +234,7 @@ func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		sheets = append(sheets, scores)
 	}
-	gateReport, err := evaluation.BuildGateReport(run, assignments, sheets, evaluation.GateOptions{Baseline: *baseline, Seed: *seed, Replicates: *replicates})
+	gateReport, err := evaluation.BuildGateReport(ctx, run, assignments, sheets, evaluation.GateOptions{Baseline: *baseline, Seed: *seed, Replicates: *replicates})
 	if err != nil {
 		report(stderr, "spillway: eval-report: %v\n", err)
 		return 1
