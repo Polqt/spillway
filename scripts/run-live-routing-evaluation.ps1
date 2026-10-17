@@ -1,17 +1,21 @@
 <#+
 .SYNOPSIS
-Runs the v1.0 live routing evaluation pilot, then asks before the paid full run.
+Runs the v1.0 live routing evaluation pilot, then optionally runs the paid full comparison.
 
 .DESCRIPTION
-Prompts for the OpenRouter key without saving it, selects three models from
+Prompts for the OpenRouter key without saving it, validates pinned models against
 OpenRouter's current catalog, writes private run configs under .scratch, starts
 three local Spillway servers, runs a stratified 10-prompt pilot, and estimates
-whether the full run fits the $5 cap. The full run is opt-in at the prompt.
+whether the full run fits the $5 cap. The full run is opt-in unless -RunFull is set.
 #>
 [CmdletBinding()]
 param(
     [string]$ClassifierModel = 'llama3.2:3b-instruct-q4_K_M',
-    [int64]$Seed = 20261016
+    [int64]$Seed = 20261016,
+    [string]$CheapModelId = 'upstage/solar-mini4',
+    [string]$LowCostModelId = 'anthropic/claude-haiku-5.5',
+    [string]$StrongModelId = 'nvidia/nemotron-3.5-super-vl',
+    [switch]$RunFull
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,29 +59,12 @@ function Get-ModelById([object[]]$Catalog, [string]$Id) {
     [pscustomobject]@{ Id = [string]$item.id; Input = $inputPerMillion; Output = $outputPerMillion }
 }
 
-function Select-CatalogModel([object[]]$Catalog, [string]$Label, [string]$Hint, [scriptblock]$Filter) {
-    $candidates = @($Catalog | Where-Object $Filter | Select-Object -First 15)
-    if ($candidates.Count -gt 0) {
-        Write-Host "$Label examples from today's catalog ($Hint):"
-        foreach ($candidate in $candidates) {
-            $inputPrice = [decimal]::Parse([string]$candidate.pricing.prompt, [Globalization.CultureInfo]::InvariantCulture) * 1000000
-            $outputPrice = [decimal]::Parse([string]$candidate.pricing.completion, [Globalization.CultureInfo]::InvariantCulture) * 1000000
-            Write-Host ('  {0}  input ${1}/M, output ${2}/M' -f $candidate.id, $inputPrice, $outputPrice)
-        }
-    }
-    while ($true) {
-        $id = Read-Host "Enter the exact model id for $Label"
-        try { return Get-ModelById $Catalog $id }
-        catch { Write-Warning $_ }
-    }
-}
-
 function Format-Price([decimal]$Value) {
     $Value.ToString('0.######', [Globalization.CultureInfo]::InvariantCulture)
 }
 
-function Write-RunConfig([string]$Path, [string]$Listen, [string]$Name, [object]$Free, [object]$Low, [object]$Strong, [string]$Classifier) {
-    $freeRef = "openrouter/$($Free.Id)"
+function Write-RunConfig([string]$Path, [string]$Listen, [string]$Name, [object]$Cheap, [object]$Low, [object]$Strong, [string]$Classifier) {
+    $cheapRef = "openrouter/$($Cheap.Id)"
     $lowRef = "openrouter/$($Low.Id)"
     $strongRef = "openrouter/$($Strong.Id)"
     $classifierRef = "ollama/$Classifier"
@@ -87,9 +74,9 @@ function Write-RunConfig([string]$Path, [string]$Listen, [string]$Name, [object]
         $router = @'
 router:
   mode: rules
-  auto: [free, low, strong]
+  auto: [cheap, low, strong]
   difficulty:
-    simple: [free]
+    simple: [cheap]
     moderate: [low]
     hard: [strong]
 '@
@@ -110,8 +97,9 @@ providers:
   ollama:
     base_url: "http://localhost:11434"
 tiers:
-  free:
-    models: ["$freeRef"]
+  cheap:
+    allow_spend: true
+    models: ["$cheapRef"]
   low:
     allow_spend: true
     models: ["$lowRef"]
@@ -126,7 +114,7 @@ store:
 budgets:
   daily_usd: 1.66
 pricing:
-  "$freeRef": { input_usd_per_mtok: $(Format-Price $Free.Input), output_usd_per_mtok: $(Format-Price $Free.Output) }
+  "$cheapRef": { input_usd_per_mtok: $(Format-Price $Cheap.Input), output_usd_per_mtok: $(Format-Price $Cheap.Output) }
   "$lowRef": { input_usd_per_mtok: $(Format-Price $Low.Input), output_usd_per_mtok: $(Format-Price $Low.Output) }
   "$strongRef": { input_usd_per_mtok: $(Format-Price $Strong.Input), output_usd_per_mtok: $(Format-Price $Strong.Output) }
 $router
@@ -181,24 +169,17 @@ try {
 
     Write-Step 'Reading current OpenRouter model prices'
     $catalog = Get-OpenRouterModels $openRouterKey
-    $freeModel = Select-CatalogModel $catalog 'free model' 'choose an eligible :free model' { $_.id.EndsWith(':free') }
-    if (-not $freeModel.Id.EndsWith(':free') -or $freeModel.Input -ne 0 -or $freeModel.Output -ne 0) {
-        throw 'The first model must be a zero-priced OpenRouter model whose id ends in :free. Start again and choose one of the free examples.'
+    $cheapModel = Get-ModelById $catalog $CheapModelId
+    $lowModel = Get-ModelById $catalog $LowCostModelId
+    $strongModel = Get-ModelById $catalog $StrongModelId
+    foreach ($candidate in @($cheapModel, $lowModel, $strongModel)) {
+        if (($candidate.Input + $candidate.Output) / 2 -gt 0.60) {
+            throw ('The selected model exceeds the roughly $0.60/M blended price limit: ' + $candidate.Id)
+        }
     }
-    $lowModel = Select-CatalogModel $catalog 'low-cost model' 'roughly $0.60/M blended or less' {
-        -not $_.id.EndsWith(':free') -and
-        [decimal]::Parse([string]$_.pricing.prompt, [Globalization.CultureInfo]::InvariantCulture) -ge 0 -and
-        [decimal]::Parse([string]$_.pricing.completion, [Globalization.CultureInfo]::InvariantCulture) -ge 0 -and
-        ([decimal]::Parse([string]$_.pricing.prompt, [Globalization.CultureInfo]::InvariantCulture) + [decimal]::Parse([string]$_.pricing.completion, [Globalization.CultureInfo]::InvariantCulture)) * 500000 -le 0.60
-    }
-    $strongModel = Select-CatalogModel $catalog 'strong model' 'frontier-class model; inspect the displayed price' {
-        -not $_.id.EndsWith(':free') -and
-        [decimal]::Parse([string]$_.pricing.prompt, [Globalization.CultureInfo]::InvariantCulture) -ge 0 -and
-        [decimal]::Parse([string]$_.pricing.completion, [Globalization.CultureInfo]::InvariantCulture) -ge 0
-    }
-    if ($freeModel.Id -eq $lowModel.Id -or $freeModel.Id -eq $strongModel.Id -or $lowModel.Id -eq $strongModel.Id) { throw 'Choose three different model ids.' }
-    if ($freeModel.Input -ne 0 -or $freeModel.Output -ne 0) { throw 'The selected :free model has a non-zero catalog price. Choose a zero-priced free model.' }
+    if ($cheapModel.Id -eq $lowModel.Id -or $cheapModel.Id -eq $strongModel.Id -or $lowModel.Id -eq $strongModel.Id) { throw 'Choose three different model ids.' }
     if ($strongModel.Input -le $lowModel.Input -and $strongModel.Output -le $lowModel.Output) { throw 'Choose a stronger paid model priced above the low-cost model.' }
+    Write-Host ('Pinned candidates from current catalog: {0} (cheap), {1} (low), {2} (strong)' -f $cheapModel.Id, $lowModel.Id, $strongModel.Id)
 
     Write-Step 'Preparing private run files'
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
@@ -207,11 +188,11 @@ try {
     foreach ($name in @('auto', 'rules', 'classifier')) {
         $port = $ports[$name]
         $configPath = Join-Path $outputRoot "config-$name.yaml"
-        Write-RunConfig $configPath "127.0.0.1:$port" $name $freeModel $lowModel $strongModel $ClassifierModel
+        Write-RunConfig $configPath "127.0.0.1:$port" $name $cheapModel $lowModel $strongModel $ClassifierModel
         $configs[$name] = $configPath
     }
     $priceRows = @{
-        "openrouter/$($freeModel.Id)" = @{ input_usd_per_mtok = $freeModel.Input; output_usd_per_mtok = $freeModel.Output }
+        "openrouter/$($cheapModel.Id)" = @{ input_usd_per_mtok = $cheapModel.Input; output_usd_per_mtok = $cheapModel.Output }
         "openrouter/$($lowModel.Id)" = @{ input_usd_per_mtok = $lowModel.Input; output_usd_per_mtok = $lowModel.Output }
         "openrouter/$($strongModel.Id)" = @{ input_usd_per_mtok = $strongModel.Input; output_usd_per_mtok = $strongModel.Output }
     }
@@ -221,7 +202,7 @@ try {
         openrouter_catalog_date = (Get-Date).ToString('yyyy-MM-dd')
         classifier_model = $ClassifierModel
         classifier_digest = $ollamaDigest
-        free_model = $freeModel.Id
+        cheap_model = $cheapModel.Id
         low_cost_model = $lowModel.Id
         strong_model = $strongModel.Id
         ollama_version = ((& ollama --version 2>&1 | Out-String).Trim())
@@ -287,14 +268,30 @@ try {
 
     Write-Host ('Pilot spend: ${0:N4}. Projected pilot plus full run: ${1:N4}, using {2} full-run repeats.' -f $pilotTotal, $projectedTotal, $repeatCount)
     Write-Host "Private run directory: $outputRoot"
-    $confirm = Read-Host 'Run the paid 90-prompt evaluation now? Type RUN to continue'
-    if ($confirm -cne 'RUN') { Write-Host 'Stopped after pilot. No full run was started.'; return }
+    if (-not $RunFull) {
+        $confirm = Read-Host 'Run the paid 90-prompt evaluation now? Type RUN to continue'
+        if ($confirm -cne 'RUN') { Write-Host 'Stopped after pilot. No full run was started.'; return }
+    }
 
     Write-Step "Running the full 90-prompt comparison ($repeatCount repeats)"
     $fullPath = Join-Path $outputRoot 'full'
     Invoke-Eval $fullDatasetPath $repeatCount $fullPath
-    Copy-Item -LiteralPath (Join-Path $fullPath 'scores.csv') -Destination (Join-Path $fullPath 'rater-a.csv')
-    Copy-Item -LiteralPath (Join-Path $fullPath 'scores.csv') -Destination (Join-Path $fullPath 'rater-b.csv')
+    $fullMetrics = Get-Content -LiteralPath (Join-Path $fullPath 'metrics.json') -Raw | ConvertFrom-Json
+    $ratedTrials = @($fullMetrics.trials | Where-Object { $_.repeat -eq 1 } | Sort-Object prompt_id, arm)
+    $expectedRatedTrials = @($fullMetrics.trials.prompt_id | Sort-Object -Unique).Count * @($fullMetrics.trials.arm | Sort-Object -Unique).Count
+    if ($ratedTrials.Count -ne $expectedRatedTrials) { throw 'Could not prepare exactly one blinded rating row per prompt and arm.' }
+    $scoreRows = @($ratedTrials | ForEach-Object {
+        [pscustomobject]@{
+            answer_id = $_.answer_id
+            correctness_1_to_5 = ''
+            completeness_1_to_5 = ''
+            instruction_following_1_to_5 = ''
+            severe_correctness_failure = ''
+            adjudication_note = ''
+        }
+    })
+    $scoreRows | Export-Csv -LiteralPath (Join-Path $fullPath 'rater-a.csv') -NoTypeInformation -Encoding utf8NoBOM
+    $scoreRows | Export-Csv -LiteralPath (Join-Path $fullPath 'rater-b.csv') -NoTypeInformation -Encoding utf8NoBOM
     Write-Host "Completed. Private artifacts are in: $fullPath" -ForegroundColor Green
     Write-Host 'Do not share or commit answers.jsonl or blind-key.json. Two independent raters still need to score the blinded answers.'
 } finally {
