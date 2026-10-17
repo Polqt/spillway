@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,26 @@ import (
 	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/evaluation"
 )
+
+func TestRun_EvalFileCommandsHonorCanceledContext(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "eval-score", args: []string{"eval-score", "-run", t.TempDir()}},
+		{name: "eval-report", args: []string{"eval-report", "-run", t.TempDir(), "-baseline", "auto"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			var stdout, stderr bytes.Buffer
+			if code := cli.Run(ctx, tc.args, nil, &stdout, &stderr, noEnv); code != 1 || !strings.Contains(stderr.String(), "context canceled") {
+				t.Fatalf("exit = %d; stderr = %q; want cancellation error", code, stderr.String())
+			}
+		})
+	}
+}
 
 func TestRun_EvalReportPrintsGatesAndAgreement(t *testing.T) {
 	runDir := t.TempDir()
