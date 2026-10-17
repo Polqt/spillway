@@ -33,6 +33,76 @@ func TestRun_EvalFileCommandsHonorCanceledContext(t *testing.T) {
 	}
 }
 
+func TestRun_EvalScoreReplacesQualitySummaryAtomically(t *testing.T) {
+	runDir := t.TempDir()
+	writeEvalScoreInputs(t, runDir)
+	qualityPath := filepath.Join(runDir, "quality.json")
+	if err := os.WriteFile(qualityPath, []byte(`{"old":"summary"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run(t.Context(), []string{"eval-score", "-run", runDir}, nil, &stdout, &stderr, noEnv); code != 0 {
+		t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
+	}
+	var metrics []evaluation.QualityMetrics
+	// #nosec G304 -- this path is inside the test's temporary directory.
+	data, err := os.ReadFile(qualityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &metrics); err != nil {
+		t.Fatalf("quality.json is invalid JSON: %v", err)
+	}
+	if len(metrics) != 4 || metrics[0].Arm == "" {
+		t.Fatalf("quality summary metrics = %#v, want four nonempty grouped summaries", metrics)
+	}
+}
+
+func TestRun_EvalScorePreservesQualitySummaryWhenReplaceFails(t *testing.T) {
+	runDir := t.TempDir()
+	writeEvalScoreInputs(t, runDir)
+	qualityDir := filepath.Join(runDir, "quality.json")
+	if err := os.Mkdir(qualityDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(qualityDir, "keep")
+	if err := os.WriteFile(sentinelPath, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run(t.Context(), []string{"eval-score", "-run", runDir}, nil, &stdout, &stderr, noEnv); code != 1 {
+		t.Fatalf("exit = %d; stderr = %q, want replace failure", code, stderr.String())
+	}
+	// #nosec G304 -- this path is inside the test's temporary directory.
+	data, err := os.ReadFile(sentinelPath)
+	if err != nil || string(data) != "preserve" {
+		t.Fatalf("existing quality summary sentinel = %q, err = %v", data, err)
+	}
+	entries, err := os.ReadDir(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".quality-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Errorf("temporary summary %q left behind after failed replace", entry.Name())
+		}
+	}
+}
+
+func writeEvalScoreInputs(t *testing.T, runDir string) {
+	t.Helper()
+	files := map[string]string{
+		"answers.jsonl":  `{"answer_id":"answer-1","prompt_id":"prompt-1","difficulty":"simple","category":"code","completion":"ok"}` + "\n",
+		"blind-key.json": `[{"answer_id":"answer-1","prompt_id":"prompt-1","arm":"rules","repeat":1}]`,
+		"scores.csv":     "answer_id,correctness_1_to_5,completeness_1_to_5,instruction_following_1_to_5,severe_correctness_failure,adjudication_note\nanswer-1,5,5,5,false,\n",
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(runDir, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestRun_EvalReportPrintsGatesAndAgreement(t *testing.T) {
 	runDir := t.TempDir()
 	var trials []evaluation.Trial

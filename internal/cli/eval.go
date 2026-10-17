@@ -151,18 +151,7 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	qualityPath := filepath.Join(*runDir, "quality.json")
-	// #nosec G304 -- path is within the operator-selected evaluation directory.
-	file, err := os.OpenFile(qualityPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		report(stderr, "spillway: eval-score: write quality summary: %v\n", err)
-		return 1
-	}
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	err = encoder.Encode(metrics)
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
+	err = writeQualitySummary(ctx, *runDir, qualityPath, metrics)
 	if err != nil {
 		report(stderr, "spillway: eval-score: write quality summary: %v\n", err)
 		return 1
@@ -173,6 +162,41 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	return 0
+}
+
+func writeQualitySummary(ctx context.Context, directory, path string, metrics []evaluation.QualityMetrics) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// #nosec G304 -- the temporary file is created inside the operator-selected evaluation directory.
+	file, err := os.CreateTemp(directory, ".quality-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	removeTemp := func(writeErr error) error {
+		if removeErr := os.Remove(tempPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(writeErr, fmt.Errorf("remove temporary quality summary: %w", removeErr))
+		}
+		return writeErr
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	writeErr := encoder.Encode(metrics)
+	if ctxErr := ctx.Err(); writeErr == nil && ctxErr != nil {
+		writeErr = ctxErr
+	}
+	writeErr = errors.Join(writeErr, file.Close())
+	if writeErr != nil {
+		return removeTemp(writeErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return removeTemp(err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return removeTemp(err)
+	}
+	return nil
 }
 
 func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {

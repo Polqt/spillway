@@ -18,6 +18,9 @@ type GateOptions struct {
 
 const maxBootstrapReplicates = 100_000
 
+// ErrReplicateLimit indicates that bootstrap work exceeded the supported maximum.
+var ErrReplicateLimit = errors.New("bootstrap replicate limit exceeded")
+
 // GateVerdict is the result of comparing a candidate to the baseline.
 type GateVerdict string
 
@@ -89,7 +92,7 @@ func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, 
 		return GateReport{}, errors.New("bootstrap replicates must be at least 100")
 	}
 	if options.Replicates > maxBootstrapReplicates {
-		return GateReport{}, fmt.Errorf("bootstrap replicates must not exceed %d", maxBootstrapReplicates)
+		return GateReport{}, fmt.Errorf("bootstrap replicates must not exceed %d: %w", maxBootstrapReplicates, ErrReplicateLimit)
 	}
 	clusters, arms, err := makeClusters(run.Trials, assignments, scoreSheets)
 	if err != nil {
@@ -113,9 +116,6 @@ func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, 
 	gates := gateNames()
 	result.Cost = summarizeCost(clusters, armNames, difficulties)
 	for _, difficulty := range difficulties {
-		if err := ctx.Err(); err != nil {
-			return GateReport{}, err
-		}
 		selected := selectClusters(clusters, difficulty)
 		for _, arm := range armNames {
 			if arm == options.Baseline {

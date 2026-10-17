@@ -56,7 +56,7 @@ func TestLoadScores_MultipleRatersAndLegacySheet(t *testing.T) {
 
 func TestBuildGateReportValidatesContextAndReplicateLimit(t *testing.T) {
 	t.Run("canceled context", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		_, err := evaluation.BuildGateReport(ctx, evaluation.Report{}, nil, nil, evaluation.GateOptions{Baseline: "baseline", Replicates: 100})
 		if !errors.Is(err, context.Canceled) {
@@ -65,11 +65,52 @@ func TestBuildGateReportValidatesContextAndReplicateLimit(t *testing.T) {
 	})
 
 	t.Run("replicate limit", func(t *testing.T) {
-		_, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{}, nil, nil, evaluation.GateOptions{Baseline: "baseline", Replicates: 100_001})
-		if err == nil || !strings.Contains(err.Error(), "must not exceed 100000") {
+		parent, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		ctx := &cancelAfterChecksContext{Context: parent, cancel: cancel, remaining: 1}
+		trials, assignments := pairedTrialData()
+		_, err := evaluation.BuildGateReport(ctx, evaluation.Report{Trials: trials}, assignments, nil, evaluation.GateOptions{Baseline: "baseline", Replicates: 100_001})
+		if !errors.Is(err, evaluation.ErrReplicateLimit) {
 			t.Fatalf("BuildGateReport error = %v, want replicate limit error", err)
 		}
 	})
+}
+
+func TestBuildGateReportStopsDuringBootstrap(t *testing.T) {
+	parent, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ctx := &cancelAfterChecksContext{Context: parent, cancel: cancel, remaining: 2}
+	trials, assignments := pairedTrialData()
+	_, err := evaluation.BuildGateReport(ctx, evaluation.Report{Trials: trials}, assignments, nil, evaluation.GateOptions{Baseline: "baseline", Replicates: 100})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BuildGateReport error = %v, want context canceled during bootstrap", err)
+	}
+}
+
+func pairedTrialData() ([]evaluation.Trial, []evaluation.Assignment) {
+	trials := []evaluation.Trial{
+		{AnswerID: "base", PromptID: "prompt", Difficulty: "simple", Arm: "baseline", LatencyMS: 10, CostUSD: .02, CostSource: "reported"},
+		{AnswerID: "candidate", PromptID: "prompt", Difficulty: "simple", Arm: "candidate", LatencyMS: 10, CostUSD: .01, CostSource: "reported"},
+	}
+	assignments := []evaluation.Assignment{
+		{AnswerID: "base", PromptID: "prompt", Arm: "baseline"},
+		{AnswerID: "candidate", PromptID: "prompt", Arm: "candidate"},
+	}
+	return trials, assignments
+}
+
+type cancelAfterChecksContext struct {
+	context.Context
+	cancel    context.CancelFunc
+	remaining int
+}
+
+func (c *cancelAfterChecksContext) Err() error {
+	if c.remaining == 0 {
+		c.cancel()
+	}
+	c.remaining--
+	return c.Context.Err()
 }
 
 func TestReport_IdenticalArmsGiveZeroIntervals(t *testing.T) {
@@ -85,7 +126,7 @@ func TestReport_IdenticalArmsGiveZeroIntervals(t *testing.T) {
 			scores = append(scores, evaluation.Score{AnswerID: answerID, RaterID: "r1", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
 		}
 	}
-	got, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 12, Replicates: 300})
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 12, Replicates: 300})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +185,7 @@ func TestReport_GateVerdictsOnConstructedData(t *testing.T) {
 			}
 		}
 	}
-	got, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 9, Replicates: 1000})
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 9, Replicates: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,11 +213,11 @@ func TestReport_GateVerdictsOnConstructedData(t *testing.T) {
 func TestReport_DeterministicForSeed(t *testing.T) {
 	trials, assignments, scores := reportFixture()
 	options := evaluation.GateOptions{Baseline: "current-auto", Seed: 77, Replicates: 250}
-	first, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, options)
+	first, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, options)
+	second, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +234,7 @@ func TestReport_ZeroBaselineCostIsInconclusive(t *testing.T) {
 		trials[i].CostUSD = 0
 		trials[i].CostSource = "free"
 	}
-	got, err := evaluation.BuildGateReport(context.Background(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 2, Replicates: 100})
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{Trials: trials}, assignments, [][]evaluation.Score{scores}, evaluation.GateOptions{Baseline: "current-auto", Seed: 2, Replicates: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +266,7 @@ func TestReport_ReproducesV05Stage2Intervals(t *testing.T) {
 	for _, trial := range report.Trials {
 		assignments = append(assignments, evaluation.Assignment{AnswerID: trial.AnswerID, PromptID: trial.PromptID, Arm: trial.Arm, Repeat: trial.Repeat})
 	}
-	got, err := evaluation.BuildGateReport(context.Background(), report, assignments, nil, evaluation.GateOptions{Baseline: "current-auto", Seed: 20261016, Replicates: 10000})
+	got, err := evaluation.BuildGateReport(t.Context(), report, assignments, nil, evaluation.GateOptions{Baseline: "current-auto", Seed: 20261016, Replicates: 10000})
 	if err != nil {
 		t.Fatal(err)
 	}
