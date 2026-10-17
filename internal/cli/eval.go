@@ -40,14 +40,21 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
+	if err := ctx.Err(); err != nil {
+		report(stderr, "spillway: eval: %v\n", err)
+		return 1
+	}
 	file, err := os.Open(*datasetPath)
 	if err != nil {
 		report(stderr, "spillway: eval: open prompt set: %v\n", err)
 		return 1
 	}
-	set, err := evaluation.LoadPromptSet(file)
+	set, err := evaluation.LoadPromptSet(contextReader{ctx: ctx, reader: file})
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
+	}
+	if ctxErr := ctx.Err(); err == nil && ctxErr != nil {
+		err = ctxErr
 	}
 	if err != nil {
 		report(stderr, "spillway: eval: %v\n", err)
@@ -60,7 +67,7 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 	}
 	var prices map[string]evaluation.Price
 	if *pricePath != "" {
-		prices, err = loadEvaluationPrices(*pricePath)
+		prices, err = loadEvaluationPrices(ctx, *pricePath)
 		if err != nil {
 			report(stderr, "spillway: eval: %v\n", err)
 			return 1
@@ -89,7 +96,7 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 	return 0
 }
 
-func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
+func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval-score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
@@ -101,13 +108,17 @@ func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var answers []evaluation.Answer
-	if err := readJSONLines(filepath.Join(*runDir, "answers.jsonl"), &answers); err != nil {
+	if err := readJSONLines(ctx, filepath.Join(*runDir, "answers.jsonl"), &answers); err != nil {
 		report(stderr, "spillway: eval-score: read blinded answers: %v\n", err)
 		return 1
 	}
 	var assignments []evaluation.Assignment
-	if err := readJSON(filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
+	if err := readJSON(ctx, filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
 		report(stderr, "spillway: eval-score: read assignment key: %v\n", err)
+		return 1
+	}
+	if err := ctx.Err(); err != nil {
+		report(stderr, "spillway: eval-score: %v\n", err)
 		return 1
 	}
 	scoreFile, err := os.Open(filepath.Join(*runDir, "scores.csv"))
@@ -115,11 +126,18 @@ func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
 		report(stderr, "spillway: eval-score: open score sheet: %v\n", err)
 		return 1
 	}
-	scores, err := evaluation.LoadScores(scoreFile)
+	scores, err := evaluation.LoadScores(contextReader{ctx: ctx, reader: scoreFile})
 	if closeErr := scoreFile.Close(); err == nil {
 		err = closeErr
 	}
+	if ctxErr := ctx.Err(); err == nil && ctxErr != nil {
+		err = ctxErr
+	}
 	if err != nil {
+		report(stderr, "spillway: eval-score: %v\n", err)
+		return 1
+	}
+	if err := ctx.Err(); err != nil {
 		report(stderr, "spillway: eval-score: %v\n", err)
 		return 1
 	}
@@ -128,16 +146,29 @@ func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
 		report(stderr, "spillway: eval-score: %v\n", err)
 		return 1
 	}
-	file, err := os.OpenFile(filepath.Join(*runDir, "quality.json"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err := ctx.Err(); err != nil {
+		report(stderr, "spillway: eval-score: %v\n", err)
+		return 1
+	}
+	qualityPath := filepath.Join(*runDir, "quality.json")
+	// #nosec G304 -- path is within the operator-selected evaluation directory.
+	file, err := os.OpenFile(qualityPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	opened := err == nil
 	if err == nil {
 		encoder := json.NewEncoder(file)
 		encoder.SetIndent("", "  ")
 		err = encoder.Encode(metrics)
+		if ctxErr := ctx.Err(); err == nil && ctxErr != nil {
+			err = ctxErr
+		}
 		if closeErr := file.Close(); err == nil {
 			err = closeErr
 		}
 	}
 	if err != nil {
+		if opened {
+			_ = os.Remove(qualityPath)
+		}
 		report(stderr, "spillway: eval-score: write quality summary: %v\n", err)
 		return 1
 	}
@@ -149,7 +180,7 @@ func evalScoreCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func evalReportCommand(args []string, stdout, stderr io.Writer) int {
+func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval-report", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
@@ -165,12 +196,12 @@ func evalReportCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	var run evaluation.Report
-	if err := readJSON(filepath.Join(*runDir, "metrics.json"), &run); err != nil {
+	if err := readJSON(ctx, filepath.Join(*runDir, "metrics.json"), &run); err != nil {
 		report(stderr, "spillway: eval-report: read metrics: %v\n", err)
 		return 1
 	}
 	var assignments []evaluation.Assignment
-	if err := readJSON(filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
+	if err := readJSON(ctx, filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
 		report(stderr, "spillway: eval-report: read assignment key: %v\n", err)
 		return 1
 	}
@@ -185,15 +216,22 @@ func evalReportCommand(args []string, stdout, stderr io.Writer) int {
 			report(stderr, "spillway: eval-report: score paths cannot be empty\n")
 			return 2
 		}
+		if err := ctx.Err(); err != nil {
+			report(stderr, "spillway: eval-report: %v\n", err)
+			return 1
+		}
 		// #nosec G304 -- path is an operator-selected local score sheet.
 		file, err := os.Open(path)
 		if err != nil {
 			report(stderr, "spillway: eval-report: open score sheet: %v\n", err)
 			return 1
 		}
-		scores, loadErr := evaluation.LoadScores(file)
+		scores, loadErr := evaluation.LoadScores(contextReader{ctx: ctx, reader: file})
 		if closeErr := file.Close(); loadErr == nil {
 			loadErr = closeErr
+		}
+		if ctxErr := ctx.Err(); loadErr == nil && ctxErr != nil {
+			loadErr = ctxErr
 		}
 		if loadErr != nil {
 			report(stderr, "spillway: eval-report: load score sheet: %v\n", loadErr)
@@ -266,27 +304,37 @@ func printGateReport(w io.Writer, result evaluation.GateReport) error {
 	return err
 }
 
-func readJSON(path string, value any) error {
-	// #nosec G304 -- path is within the operator-selected evaluation directory.
-	data, err := os.ReadFile(path)
-	if err != nil {
+func readJSON(ctx context.Context, path string, value any) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	return nil
-}
-
-func readJSONLines(path string, values *[]evaluation.Answer) error {
 	// #nosec G304 -- path is within the operator-selected evaluation directory.
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	scanner := bufio.NewScanner(file)
+	decoder := json.NewDecoder(contextReader{ctx: ctx, reader: file})
+	decoder.DisallowUnknownFields()
+	err = decoder.Decode(value)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+func readJSONLines(ctx context.Context, path string, values *[]evaluation.Answer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// #nosec G304 -- path is within the operator-selected evaluation directory.
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(contextReader{ctx: ctx, reader: file})
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	for scanner.Scan() {
 		var answer evaluation.Answer
@@ -298,7 +346,22 @@ func readJSONLines(path string, values *[]evaluation.Answer) error {
 	if err := scanner.Err(); err != nil {
 		return errors.Join(err, file.Close())
 	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, file.Close())
+	}
 	return file.Close()
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
 
 func parseArms(value string) ([]evaluation.Arm, error) {
@@ -319,16 +382,26 @@ func parseArms(value string) ([]evaluation.Arm, error) {
 	return arms, nil
 }
 
-func loadEvaluationPrices(path string) (map[string]evaluation.Price, error) {
+func loadEvaluationPrices(ctx context.Context, path string) (map[string]evaluation.Price, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// #nosec G304 -- path is the operator-selected local prices file.
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read prices: %w", err)
 	}
 	var prices map[string]evaluation.Price
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(contextReader{ctx: ctx, reader: file})
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&prices); err != nil {
+	err = decoder.Decode(&prices)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if ctxErr := ctx.Err(); err == nil && ctxErr != nil {
+		err = ctxErr
+	}
+	if err != nil {
 		return nil, fmt.Errorf("decode prices: %w", err)
 	}
 	if prices == nil {

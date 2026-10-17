@@ -55,9 +55,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "eval":
 		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
 	case "eval-score":
-		return evalScoreCommand(args[1:], stdout, stderr)
+		return evalScoreCommand(ctx, args[1:], stdout, stderr)
 	case "eval-report":
-		return evalReportCommand(args[1:], stdout, stderr)
+		return evalReportCommand(ctx, args[1:], stdout, stderr)
 	case "version", "-version", "--version":
 		_, err := fmt.Fprintln(stdout, versionLine())
 		if err != nil {

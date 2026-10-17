@@ -315,7 +315,10 @@ func generateLocalKey() (string, error) {
 	return "sk-spillway-" + base64.RawURLEncoding.EncodeToString(random[:]), nil
 }
 
-func writeInitConfig(path string, content []byte) error {
+func writeInitConfig(ctx context.Context, path string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// #nosec G304 -- the path is the user's explicit -config destination.
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -331,6 +334,10 @@ func writeInitConfig(path string, content []byte) error {
 		return io.ErrShortWrite
 	}
 	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		_ = os.Remove(path)
 		return err
 	}

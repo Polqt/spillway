@@ -101,6 +101,7 @@ func BuildGateReport(run Report, assignments []Assignment, scoreSheets [][]Score
 	}
 	sort.Strings(difficulties[1:])
 	result := GateReport{Baseline: options.Baseline, Seed: options.Seed, Replicates: options.Replicates, Agreement: agreement(scoreSheets)}
+	gates := gateNames()
 	result.Cost = summarizeCost(clusters, armNames, difficulties)
 	for _, difficulty := range difficulties {
 		selected := selectClusters(clusters, difficulty)
@@ -108,7 +109,7 @@ func BuildGateReport(run Report, assignments []Assignment, scoreSheets [][]Score
 			if arm == options.Baseline {
 				continue
 			}
-			for gateIndex, gate := range gateNames {
+			for gateIndex, gate := range gates {
 				result.Results = append(result.Results, calculateGate(selected, difficulty, options, arm, gate, gateIndex))
 			}
 		}
@@ -116,7 +117,9 @@ func BuildGateReport(run Report, assignments []Assignment, scoreSheets [][]Score
 	return result, nil
 }
 
-var gateNames = []string{"cost_savings", "latency_p95_regression", "quality_difference", "severe_failure_difference", "known_cost_coverage"}
+func gateNames() [5]string {
+	return [...]string{"cost_savings", "latency_p95_regression", "quality_difference", "severe_failure_difference", "known_cost_coverage"}
+}
 
 func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (map[string]*promptCluster, map[string]bool, error) {
 	clusters := make(map[string]*promptCluster)

@@ -309,3 +309,37 @@ func TestRun_InitMockQuickstartServes(t *testing.T) {
 	}
 	<-logs.done
 }
+
+func TestRun_InitCanceledContextDoesNotCreateConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(ctx, []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "context canceled") {
+		t.Fatalf("init = %d; stderr = %q; want cancellation error", code, stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config stat error = %v; want file not to exist", err)
+	}
+}
+
+func TestRun_InitCanceledBeforeWritingDoesNotCreateConfig(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	var stdout, stderr bytes.Buffer
+	lookupEnv := func(string) (string, bool) {
+		cancel()
+		return "sk-test-groq", true
+	}
+
+	code := cli.Run(ctx, []string{"init", "-yes", "-providers", "groq", "-attest-free-tier", "groq", "-config", path}, strings.NewReader(""), &stdout, &stderr, lookupEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "context canceled") {
+		t.Fatalf("init = %d; stderr = %q; want cancellation error", code, stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config exists after cancellation; stat error = %v", err)
+	}
+}
