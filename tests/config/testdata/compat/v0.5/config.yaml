@@ -1,0 +1,38 @@
+# Copy this file and set the referenced environment variables before use.
+# Remove providers you do not use; Ollama runs locally and needs no provider key.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - "${SPILLWAY_KEY}"
+
+logging:
+  level: info
+
+providers:
+  groq:
+    api_key: "${GROQ_API_KEY}"
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+  ollama:
+    base_url: "http://localhost:11434/v1"
+
+tiers:
+  free:
+    models: [ollama/llama3.2:3b]
+
+# Optional v0.5 difficulty routing. Uncomment and configure all three labels
+# to use deterministic rules. The classifier is disabled unless model is set.
+# router:
+#   mode: rules
+#   auto: [free]
+#   difficulty:
+#     simple: [free]
+#     moderate: [free]
+#     hard: [free]
+#   rules:
+#     - when: {tools_present: true}
+#       difficulty: moderate
+#   classifier:
+#     model: "ollama/llama3.2:3b"

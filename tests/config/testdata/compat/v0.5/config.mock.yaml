@@ -1,0 +1,42 @@
+# Mock-only config for local development. No real provider keys.
+# A local key is required even on loopback (ADR 0003).
+# The key below is a fake local key for curl and SDK testing on loopback only.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - name: demo
+      key: "sk-test-spillway-mock"
+    - name: dashboard
+      key: "sk-test-spillway-dashboard"
+      dashboard: true
+providers:
+  mock: {}
+
+tiers:
+  demo:
+    models: [mock/rate-limited, mock/unavailable, mock/echo]
+  dead:
+    models: [mock/rate-limited, mock/unavailable]
+
+models:
+  mock/echo:
+    capabilities: [tools, json_mode]
+
+router:
+  auto: [demo]
+
+store:
+  path: ./spillway-mock.db
+  retention: 90d
+
+pricing:
+  # Mock models remain free; this declaration demonstrates the pricing syntax.
+  mock/echo: { input_usd_per_mtok: 0.10, output_usd_per_mtok: 0.20 }
+
+budgets:
+  monthly_usd: 0.01
+
+cache:
+  exact: true
+  ttl: 1h
+  max_mb: 16

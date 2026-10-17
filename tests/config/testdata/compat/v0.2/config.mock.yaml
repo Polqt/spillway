@@ -1,0 +1,16 @@
+# Mock-only config for local development. No real provider keys.
+# A local key is required even on loopback (ADR 0003).
+# The key below is a fake local key for curl and SDK testing on loopback only.
+server:
+  listen: "127.0.0.1:8080"
+  api_keys:
+    - name: demo
+      key: "sk-test-spillway-mock"
+providers:
+  mock: {}
+
+tiers:
+  demo:
+    models: [mock/rate-limited, mock/unavailable, mock/echo]
+  dead:
+    models: [mock/rate-limited, mock/unavailable]

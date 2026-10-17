@@ -2,6 +2,7 @@
 # Remove providers you do not use; Ollama runs locally and needs no provider key.
 server:
   listen: "127.0.0.1:8080"
+  shutdown_timeout: 10s # Grace period before in-flight requests are cancelled (1s to 5m).
   api_keys:
     - "${SPILLWAY_KEY}"
 

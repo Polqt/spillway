@@ -25,7 +25,7 @@ func TestLoadPromptSet_RequiresVersionAndLabels(t *testing.T) {
 			name: "valid v1 set",
 			data: `{"version":1,"prompts":[{"id":"p1","category":"coding","difficulty":"moderate","prompt":"Write a greeting."}]}`,
 		},
-		{name: "unsupported version", data: `{"version":2,"prompts":[]}`, want: "version"},
+		{name: "unsupported version", data: `{"version":3,"prompts":[]}`, want: "version"},
 		{name: "missing category", data: `{"version":1,"prompts":[{"id":"p1","difficulty":"moderate","prompt":"hi"}]}`, want: "category"},
 		{name: "unknown difficulty", data: `{"version":1,"prompts":[{"id":"p1","category":"coding","difficulty":"easy","prompt":"hi"}]}`, want: "difficulty"},
 	}

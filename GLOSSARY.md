@@ -7,7 +7,7 @@ A self-hosted gateway that gives client apps one OpenAI-compatible endpoint and 
 ### Providers and models
 
 **Provider**:
-One configured upstream endpoint that serves models, such as Groq, Gemini or a local Ollama.
+One configured upstream service that serves models, such as Groq, Gemini or a local Ollama.
 _Avoid_: vendor, backend, upstream
 
 **Model reference**:
@@ -144,3 +144,25 @@ _Avoid_: admin key
 Provider-published model metadata printed by the explicit `spillway catalog` command as a suggestion for the user's config.
 It is advisory and never changes runtime routing or pricing by itself (ADR 0013).
 _Avoid_: discovered model config
+
+### v1.0 compatibility and release
+
+**Compatibility promise**:
+The guarantees Spillway makes to users about which configuration, CLI, API, header and store behaviors remain compatible across v1 minor releases (ADR 0015).
+_Avoid_: backward compatibility guarantee
+
+**Stable surface**:
+The user-facing fields, commands, API shapes, headers and store schema covered by the compatibility promise (ADR 0015).
+_Avoid_: public API (too narrow)
+
+**Release candidate**:
+A versioned pre-release build, tagged `vX.Y.Z-rc.N`, used to verify release artifacts on supported platforms before the final version (ADR 0016).
+_Avoid_: preview release
+
+**Provider preset**:
+A built-in provider definition that supplies its default endpoint, key requirements and suggested model for configuration and setup (v1.0 plan).
+_Avoid_: provider template
+
+**Known limitation**:
+A documented behavior or unsupported capability of the current release that users should account for, such as the absence of an embeddings endpoint or the lack of Windows/arm64 run testing.
+_Avoid_: bug (unless behavior is unintended)

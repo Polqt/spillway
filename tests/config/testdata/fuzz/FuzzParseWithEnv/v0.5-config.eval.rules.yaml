@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("# Evaluation-only deterministic rules config, paired with config.eval.yaml.\n# Keep the candidate set and all request-serving settings identical between arms.\nserver:\n  listen: \"127.0.0.1:8081\"\n  api_keys:\n    - name: evaluation\n      key: \"sk-test-spillway-evaluation\"\nproviders:\n  mock: {}\ntiers:\n  demo:\n    models: [mock/echo]\nrouter:\n  mode: rules\n  auto: [demo]\n  difficulty:\n    simple: [demo]\n    moderate: [demo]\n    hard: [demo]\n  rules:\n    - when: {estimated_input_tokens_gte: 1}\n      difficulty: hard\n")

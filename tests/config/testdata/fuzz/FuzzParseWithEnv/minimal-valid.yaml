@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("server:\n  api_keys: [sk-test-fuzz-local]\nproviders:\n  mock: {}\n")

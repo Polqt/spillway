@@ -392,8 +392,61 @@ type Logging struct {
 
 // Server configures the HTTP listener and its local keys.
 type Server struct {
-	Listen  string    `yaml:"listen"`
-	APIKeys LocalKeys `yaml:"api_keys"`
+	Listen          string        `yaml:"listen"`
+	APIKeys         LocalKeys     `yaml:"api_keys"`
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+}
+
+// UnmarshalYAML parses the server shutdown grace and applies its default.
+func (s *Server) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("server (line %d): must be a mapping", n.Line)
+	}
+	s.ShutdownTimeout = 10 * time.Second
+	seen := make(map[string]bool, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		field, value := n.Content[i], n.Content[i+1]
+		if seen[field.Value] {
+			return fmt.Errorf("server.%s (line %d): duplicate field", field.Value, field.Line)
+		}
+		seen[field.Value] = true
+		switch field.Value {
+		case "listen":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return fmt.Errorf("server.listen (line %d): must be a string", value.Line)
+			}
+			s.Listen = value.Value
+		case "api_keys":
+			if err := value.Decode(&s.APIKeys); err != nil {
+				return err
+			}
+		case "shutdown_timeout":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return fmt.Errorf("server.shutdown_timeout (line %d): must be a duration from 1s to 5m", value.Line)
+			}
+			timeout, err := time.ParseDuration(value.Value)
+			if err != nil || timeout < time.Second || timeout > 5*time.Minute {
+				return fmt.Errorf("server.shutdown_timeout (line %d): must be a duration from 1s to 5m", value.Line)
+			}
+			s.ShutdownTimeout = timeout
+		default:
+			return fmt.Errorf("server (line %d): unknown field %q", field.Line, field.Value)
+		}
+	}
+	return nil
+}
+
+// MarshalYAML writes shutdown_timeout as a readable duration.
+func (s Server) MarshalYAML() (any, error) {
+	listen := s.Listen
+	if listen == "" {
+		listen = defaultListen
+	}
+	timeout := s.ShutdownTimeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	return map[string]any{"listen": listen, "api_keys": s.APIKeys, "shutdown_timeout": timeout.String()}, nil
 }
 
 // Host returns the host part of the listen address, without brackets for

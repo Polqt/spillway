@@ -116,16 +116,8 @@ func addRef(refs map[string]providers.ModelRef, model string) {
 }
 
 func defaultURL(name string) string {
-	switch name {
-	case "openrouter":
-		return "https://openrouter.ai/api/v1"
-	case "groq":
-		return "https://api.groq.com/openai/v1"
-	case "ollama":
-		return "http://localhost:11434"
-	default:
-		return ""
-	}
+	preset, _ := providers.LookupPreset(name)
+	return preset.DefaultBaseURL
 }
 
 func fetch(parent context.Context, client *http.Client, provider config.Provider, base, path, method string, body []byte) ([]byte, error) {

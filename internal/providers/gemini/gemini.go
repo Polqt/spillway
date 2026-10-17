@@ -12,8 +12,6 @@ import (
 	"github.com/Polqt/spillway/internal/redact"
 )
 
-const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-
 // Options configures a Gemini provider.
 type Options struct {
 	APIKey  redact.Secret
@@ -29,7 +27,8 @@ type Client struct {
 // New validates options and builds a Gemini client.
 func New(o Options) (*Client, error) {
 	if o.BaseURL == "" {
-		o.BaseURL = defaultBaseURL
+		preset, _ := providers.LookupPreset("gemini")
+		o.BaseURL = preset.DefaultBaseURL
 	}
 	compat, err := openaicompat.New(openaicompat.Options{
 		Name: "gemini", BaseURL: o.BaseURL, APIKey: o.APIKey, Timeout: o.Timeout,

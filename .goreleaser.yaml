@@ -1,0 +1,68 @@
+version: 2
+
+builds:
+  - id: spillway
+    main: ./apps/spillway
+    binary: spillway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goarm64:
+      - v8.0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/Polqt/spillway/internal/cli.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - ids:
+      - spillway
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - examples/config.mock.yaml
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  prerelease: auto
+  header: |
+    Built with Go {{ .Env.GO_VERSION }}.
+
+dockers_v2:
+  - id: spillway
+    dockerfile: apps/spillway/Dockerfile
+    images:
+      - ghcr.io/polqt/spillway
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    disable: "{{ .IsSnapshot }}"
+
+docker_digest:
+  name_template: digests.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

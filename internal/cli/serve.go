@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Polqt/spillway/apps/spillway/web"
@@ -28,16 +29,14 @@ import (
 	"github.com/Polqt/spillway/internal/store"
 )
 
-// shutdownGrace is how long in-flight requests get to finish after the
-// context is cancelled, before they are cancelled too.
-const shutdownGrace = 10 * time.Second
+const shutdownWait = 5 * time.Second
 
 // serve runs the API until ctx is cancelled. It refuses to listen when the
 // config is invalid, including when it has no local key (ADR 0003).
 func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	configPath := fs.String("config", "config.yaml", "path to the config file")
+	configPath := fs.String("config", defaultConfigPath, "path to the config file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -48,11 +47,16 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 
 	cfg, err := config.LoadWithEnv(*configPath, lookupEnv)
 	if err != nil {
-		report(stderr, "spillway: %v\n", err)
+		reportConfigLoadError(stderr, *configPath, err)
 		return 1
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
-	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, nil), scrubber))
+	var logLevel slog.Level
+	if err := logLevel.UnmarshalText([]byte(cfg.Logging.Level)); err != nil {
+		report(stderr, "spillway: invalid logging level: %v\n", err)
+		return 1
+	}
+	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}), scrubber))
 	var usageStore *store.Store
 	if cfg.Store != nil {
 		usageStore, err = store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
@@ -90,7 +94,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		report(stderr, "spillway: listen on %s: %v\n", cfg.Server.Listen, err)
 		return 1
 	}
-	if err := serveUntilDone(ctx, ln, handler, logger); err != nil {
+	if err := serveUntilDone(ctx, ln, handler, logger, cfg.Server.ShutdownTimeout); err != nil {
 		report(stderr, "spillway: %v\n", err)
 		return 1
 	}
@@ -110,6 +114,10 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 			ps = append(ps, p)
 		case "gemini":
 			baseURL := cfg.Providers[name].BaseURL
+			if baseURL == "" {
+				preset, _ := providers.LookupPreset(name)
+				baseURL = preset.DefaultBaseURL
+			}
 			p, err := gemini.New(gemini.Options{
 				APIKey: cfg.Providers[name].APIKey, BaseURL: baseURL, Timeout: cfg.Providers[name].Timeout,
 			})
@@ -120,13 +128,10 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		case "groq", "openrouter", "ollama":
 			baseURL := cfg.Providers[name].BaseURL
 			if baseURL == "" {
-				switch name {
-				case "groq":
-					baseURL = "https://api.groq.com/openai/v1"
-				case "openrouter":
-					baseURL = "https://openrouter.ai/api/v1"
-				case "ollama":
-					baseURL = "http://localhost:11434/v1"
+				preset, _ := providers.LookupPreset(name)
+				baseURL = preset.DefaultBaseURL
+				if name == "ollama" {
+					baseURL += "/v1"
 				}
 			} else if name == "ollama" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
 				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
@@ -188,7 +193,8 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 	if cfg.Router.Classifier != nil {
 		baseURL := cfg.Providers["ollama"].BaseURL
 		if baseURL == "" {
-			baseURL = "http://localhost:11434"
+			preset, _ := providers.LookupPreset("ollama")
+			baseURL = preset.DefaultBaseURL
 		}
 		model, err := providers.ParseModelRef(cfg.Router.Classifier.Model)
 		if err != nil {
@@ -265,11 +271,13 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 
 // serveUntilDone serves on ln until ctx is cancelled, then shuts down
 // gracefully and finally cancels requests still running.
-func serveUntilDone(ctx context.Context, ln net.Listener, h http.Handler, logger *slog.Logger) error {
+func serveUntilDone(ctx context.Context, ln net.Listener, h http.Handler, logger *slog.Logger, grace time.Duration) error {
 	base, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRequests()
+	requests := newRequestTracker()
 	srv := api.NewServer(h, logger)
 	srv.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Handler = requests.middleware(h)
 
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
@@ -282,15 +290,96 @@ func serveUntilDone(ctx context.Context, ln net.Listener, h http.Handler, logger
 	}
 
 	logger.InfoContext(ctx, "shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 	defer cancel()
 	shutdownErr := srv.Shutdown(shutdownCtx)
+	cancelled := requests.active()
+	if cancelled == 0 {
+		var serveErr error
+		if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+			serveErr = fmt.Errorf("serve: %w", err)
+		}
+		if shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
+			return errors.Join(serveErr, fmt.Errorf("shutdown: %w", shutdownErr))
+		}
+		return serveErr
+	}
 	cancelRequests()
 	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve: %w", err)
 	}
-	if shutdownErr != nil {
-		return fmt.Errorf("shutdown: %w", shutdownErr)
+	waitCtx, cancelWait := context.WithTimeout(context.WithoutCancel(ctx), shutdownWait)
+	defer cancelWait()
+	unit := "requests"
+	if cancelled == 1 {
+		unit = "request"
 	}
-	return nil
+	waitErr := fmt.Errorf("shutdown timed out; cancelled %d in-flight %s", cancelled, unit)
+	if !requests.wait(waitCtx) {
+		waitErr = fmt.Errorf("shutdown timed out; cancelled %d in-flight %s, %d handler(s) still running", cancelled, unit, requests.active())
+	}
+	if shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		return errors.Join(fmt.Errorf("shutdown: %w", shutdownErr), waitErr)
+	}
+	return waitErr
+}
+
+type requestTracker struct {
+	mu          sync.Mutex
+	activeCount int
+	idle        chan struct{}
+	wg          sync.WaitGroup
+}
+
+func newRequestTracker() *requestTracker {
+	idle := make(chan struct{})
+	close(idle)
+	return &requestTracker{idle: idle}
+}
+
+func (r *requestTracker) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.start()
+		defer r.finish()
+		next.ServeHTTP(w, req)
+	})
+}
+
+func (r *requestTracker) start() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.activeCount == 0 {
+		r.idle = make(chan struct{})
+	}
+	r.activeCount++
+	r.wg.Add(1)
+}
+
+func (r *requestTracker) finish() {
+	r.wg.Done()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.activeCount--
+	if r.activeCount == 0 {
+		close(r.idle)
+	}
+}
+
+func (r *requestTracker) active() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activeCount
+}
+
+func (r *requestTracker) wait(ctx context.Context) bool {
+	r.mu.Lock()
+	idle := r.idle
+	r.mu.Unlock()
+	select {
+	case <-idle:
+		r.wg.Wait()
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

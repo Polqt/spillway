@@ -11,7 +11,7 @@ import (
 func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	configPath := fs.String("config", "config.yaml", "path to the config file")
+	configPath := fs.String("config", defaultConfigPath, "path to the config file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -21,7 +21,7 @@ func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (stri
 	}
 	cfg, err := config.LoadWithEnv(*configPath, lookupEnv)
 	if err != nil {
-		report(stderr, "spillway: %v\n", err)
+		reportConfigLoadError(stderr, *configPath, err)
 		return 1
 	}
 	if err := cfg.WriteRedacted(stdout); err != nil {

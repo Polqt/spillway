@@ -9,3 +9,8 @@
 # Output of a bare `go build` from the repo root; use make build.
 /spillway
 /spillway.exe
+/*.db
+/*.db-shm
+/*.db-wal
+/dist/
+/tools/dist/

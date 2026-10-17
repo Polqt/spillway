@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("# Evaluation-only server config. It uses the offline fake provider and keeps\n# evaluation metadata out of a usage database by omitting store:.\nserver:\n  listen: \"127.0.0.1:8080\"\n  api_keys:\n    - name: evaluation\n      key: \"sk-test-spillway-evaluation\"\nproviders:\n  mock: {}\ntiers:\n  demo:\n    models: [mock/echo]\nrouter:\n  auto: [demo]\n")

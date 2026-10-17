@@ -18,7 +18,7 @@ func TestRun_Version(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
 
-	code := cli.Run(t.Context(), []string{"version"}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"version"}, nil, &stdout, &stderr, noEnv)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
@@ -31,6 +31,49 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
+func TestRun_VersionAliases(t *testing.T) {
+	t.Parallel()
+	var expected string
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-version"}} {
+		var stdout, stderr bytes.Buffer
+		code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv)
+		if code != 0 {
+			t.Errorf("args %q: exit code = %d, want 0; stderr: %q", args, code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("args %q: stderr = %q, want empty", args, stderr.String())
+		}
+		if expected == "" {
+			expected = stdout.String()
+		} else if stdout.String() != expected {
+			t.Errorf("args %q: stdout = %q, want %q", args, stdout.String(), expected)
+		}
+	}
+}
+
+func TestRun_HelpAliases(t *testing.T) {
+	t.Parallel()
+	var expected string
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		var stdout, stderr bytes.Buffer
+		code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv)
+		if code != 0 {
+			t.Errorf("args %q: exit code = %d, want 0; stderr: %q", args, code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("args %q: stderr = %q, want empty", args, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "usage: spillway <command>") {
+			t.Errorf("args %q: stdout = %q, want usage", args, stdout.String())
+		}
+		if expected == "" {
+			expected = stdout.String()
+		} else if stdout.String() != expected {
+			t.Errorf("args %q: stdout = %q, want %q", args, stdout.String(), expected)
+		}
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
@@ -39,7 +82,7 @@ func TestRun_VersionWriteFails(t *testing.T) {
 	t.Parallel()
 	var stderr bytes.Buffer
 
-	code := cli.Run(t.Context(), []string{"version"}, failingWriter{}, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"version"}, nil, failingWriter{}, &stderr, noEnv)
 
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
@@ -63,7 +106,7 @@ func TestRun_UsageError(t *testing.T) {
 			t.Parallel()
 			var stdout, stderr bytes.Buffer
 
-			code := cli.Run(t.Context(), tt.args, &stdout, &stderr, noEnv)
+			code := cli.Run(t.Context(), tt.args, nil, &stdout, &stderr, noEnv)
 
 			if code != 2 {
 				t.Errorf("exit code = %d, want 2", code)
@@ -80,19 +123,22 @@ func TestRun_UsageError(t *testing.T) {
 
 func TestRun_CheckValidRedactsSecrets(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  api_keys: [\"${LOCAL_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
+	path := writeConfig(t, "server:\n  shutdown_timeout: 15s\n  api_keys: [\"${LOCAL_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
 	lookup := func(name string) (string, bool) {
 		values := map[string]string{"LOCAL_KEY": "sk-test-local-check", "GROQ_API_KEY": "sk-test-groq-check"}
 		value, ok := values[name]
 		return value, ok
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, lookup)
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, lookup)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "[REDACTED]") || !strings.Contains(stdout.String(), "key-1") {
 		t.Errorf("stdout = %q, want redacted keys and key name", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "shutdown_timeout: 15s") {
+		t.Errorf("check output = %q, want shutdown timeout", stdout.String())
 	}
 	if stderr.String() != "config OK\n" {
 		t.Errorf("stderr = %q, want config OK", stderr.String())
@@ -113,7 +159,7 @@ func TestRun_CheckPrintsTierAndFreeTierWithoutKeys(t *testing.T) {
 		return value, ok
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, lookup)
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, lookup)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
 	}
@@ -134,7 +180,7 @@ func TestRun_CheckPrintsStoreConfig(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "usage.db")
 	path := writeConfig(t, "server:\n  api_keys: [sk-test-check-store]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 30d\n")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr: %q", code, stderr.String())
 	}
@@ -148,7 +194,7 @@ func TestRun_CheckPrintsStoreConfig(t *testing.T) {
 func TestRun_CheckPrintsDashboardKeyFlagWithoutKey(t *testing.T) {
 	path := writeConfig(t, "server:\n  api_keys: [{name: admin, key: sk-test-check-dashboard, dashboard: true}]\nproviders:\n  mock: {}\n")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("check exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -164,7 +210,7 @@ func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
 	t.Parallel()
 	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  mock: {}\n")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config", path}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -179,7 +225,7 @@ func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
 func TestRun_CheckMissingFlagValue(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"check", "-config"}, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"check", "-config"}, nil, &stdout, &stderr, noEnv)
 	if code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
@@ -201,7 +247,7 @@ func TestRun_CatalogUsesConfiguredProviderAndSkipsMock(t *testing.T) {
 		return "", false
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"catalog", "-config", path}, &stdout, &stderr, lookup)
+	code := cli.Run(t.Context(), []string{"catalog", "-config", path}, nil, &stdout, &stderr, lookup)
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}

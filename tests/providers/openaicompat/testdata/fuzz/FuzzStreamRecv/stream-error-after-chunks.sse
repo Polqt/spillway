@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\ndata: {\"id\":\"chunk-2\",\"choices\":[{\"delta\":{\"content\":\"two\"}}]}\n\ndata: {\"error\":{\"message\":\"upstream unavailable sk-test-groq-fixture\",\"code\":\"503\"}}\n\n")

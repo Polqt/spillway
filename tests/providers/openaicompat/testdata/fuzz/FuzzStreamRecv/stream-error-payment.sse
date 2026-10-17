@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"error\":{\"message\":\"payment required\",\"code\":402}}\n\n")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"id\":\"chatcmpl-ollama-fixture\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"llama3.2:3b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl-ollama-fixture\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"llama3.2:3b\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6}}\n\ndata: [DONE]\n")

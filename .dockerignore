@@ -1,0 +1,9 @@
+.git
+.scratch
+bin
+dist
+coverage.out
+coverage.html
+*.db
+*.db-shm
+*.db-wal

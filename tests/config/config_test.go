@@ -83,6 +83,47 @@ func TestParse_StoreConfig(t *testing.T) {
 	}
 }
 
+func TestParse_ShutdownTimeoutBounds(t *testing.T) {
+	t.Parallel()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	cfg, err := config.Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("Parse default: %v", err)
+	}
+	if cfg.Server.ShutdownTimeout != 10*time.Second {
+		t.Errorf("ShutdownTimeout = %s, want 10s", cfg.Server.ShutdownTimeout)
+	}
+	for _, value := range []string{"1s", "5m"} {
+		t.Run("accept "+value, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := config.Parse([]byte(strings.Replace(base, "server:\n", "server:\n  shutdown_timeout: "+value+"\n", 1)))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			want, _ := time.ParseDuration(value)
+			if parsed.Server.ShutdownTimeout != want {
+				t.Errorf("ShutdownTimeout = %s, want %s", parsed.Server.ShutdownTimeout, want)
+			}
+		})
+	}
+	for _, value := range []string{"0s", "-1s", "5m1s", "nope"} {
+		t.Run("reject "+value, func(t *testing.T) {
+			t.Parallel()
+			input := strings.Replace(base, "server:\n", "server:\n  shutdown_timeout: "+value+"\n", 1)
+			if _, err := config.Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), "server.shutdown_timeout") {
+				t.Errorf("Parse error = %v, want server.shutdown_timeout validation", err)
+			}
+		})
+	}
+	var output strings.Builder
+	if err := cfg.WriteRedacted(&output); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	if !strings.Contains(output.String(), "shutdown_timeout: 10s") {
+		t.Errorf("redacted config = %q, want shutdown timeout", output.String())
+	}
+}
+
 func TestParse_ExactCacheConfig(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Parse([]byte(`server:
@@ -936,6 +977,60 @@ func TestParse_UnsetEnvironmentNamesPathAndVariable(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want %q", err, want)
 		}
+	}
+}
+
+func TestParseWithEnv_ReportsEveryMissingVariable(t *testing.T) {
+	t.Parallel()
+	input := []byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nlogging:\n  level: \"${SET_VALUE}\"\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n  gemini:\n    api_key: \"${GEMINI_API_KEY}\"\n")
+	values := map[string]string{"SET_VALUE": "sk-test-set-secret"}
+	_, err := config.ParseWithEnv(input, func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	})
+	if err == nil {
+		t.Fatal("ParseWithEnv succeeded, want missing environment variable errors")
+	}
+	for _, want := range []string{
+		"server.api_keys[0] (line 2)", "SPILLWAY_KEY",
+		"providers.groq.api_key (line 7)", "GROQ_API_KEY",
+		"providers.gemini.api_key (line 9)", "GEMINI_API_KEY",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want %q", err, want)
+		}
+	}
+	for _, secret := range values {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error = %q, must not contain environment values", err)
+		}
+	}
+}
+
+func TestParse_HistoricalExampleConfigsStillLoad(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("testdata", "compat")
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".yaml" {
+			return nil
+		}
+		data, err := os.ReadFile(path) // #nosec G304,G122 -- fixtures are repository-owned testdata.
+		if err != nil {
+			return err
+		}
+		_, err = config.ParseWithEnv(data, func(name string) (string, bool) {
+			return "sk-test-" + strings.ToLower(name), true
+		})
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

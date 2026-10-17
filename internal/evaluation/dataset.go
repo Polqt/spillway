@@ -31,7 +31,7 @@ type Prompt struct {
 	Settings   map[string]json.RawMessage `json:"settings,omitempty"`
 }
 
-// LoadPromptSet reads and validates one version 1 prompt set.
+// LoadPromptSet reads and validates a supported versioned prompt set.
 func LoadPromptSet(r io.Reader) (PromptSet, error) {
 	data, err := io.ReadAll(io.LimitReader(r, maxDatasetBytes+1))
 	if err != nil {
@@ -49,8 +49,8 @@ func LoadPromptSet(r io.Reader) (PromptSet, error) {
 	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return PromptSet{}, errors.New("prompt set must contain one JSON value")
 	}
-	if set.Version != 1 {
-		return PromptSet{}, fmt.Errorf("prompt set version %d is unsupported; want 1", set.Version)
+	if set.Version != 1 && set.Version != 2 {
+		return PromptSet{}, fmt.Errorf("prompt set version %d is unsupported; want 1 or 2", set.Version)
 	}
 	if len(set.Prompts) == 0 || len(set.Prompts) > maxPrompts {
 		return PromptSet{}, fmt.Errorf("prompt set prompts must contain 1 to %d entries", maxPrompts)
@@ -75,6 +75,9 @@ func LoadPromptSet(r io.Reader) (PromptSet, error) {
 		}
 		if err := validateSettings(prompt.ID, prompt.Settings); err != nil {
 			return PromptSet{}, err
+		}
+		if set.Version == 2 && len(prompt.Settings["max_tokens"]) == 0 {
+			return PromptSet{}, fmt.Errorf("prompt %q in version 2 requires max_tokens", prompt.ID)
 		}
 	}
 	return set, nil

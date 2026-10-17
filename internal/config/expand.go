@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/redact"
 	"go.yaml.in/yaml/v3"
 )
@@ -16,27 +17,29 @@ var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var providerKeyReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error {
+	var expansionErrors []error
+	expand := func(value *yaml.Node, path string) {
+		if err := expandScalar(value, path, lookupEnv); err != nil {
+			expansionErrors = append(expansionErrors, err)
+		}
+	}
 	server := mappingValue(root, "server")
 	if server != nil {
-		if value := mappingValue(server, "listen"); value != nil {
-			if err := expandScalar(value, "server.listen", lookupEnv); err != nil {
-				return err
+		for _, field := range []string{"listen", "shutdown_timeout"} {
+			if value := mappingValue(server, field); value != nil {
+				expand(value, "server."+field)
 			}
 		}
 		if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
 			for i, entry := range keys.Content {
 				path := fmt.Sprintf("server.api_keys[%d]", i)
 				if entry.Kind == yaml.ScalarNode {
-					if err := expandScalar(entry, path, lookupEnv); err != nil {
-						return err
-					}
+					expand(entry, path)
 					continue
 				}
-				for field, fieldPath := range map[string]string{"name": path + ".name", "key": path + ".key"} {
-					if value := mappingValue(entry, field); value != nil {
-						if err := expandScalar(value, fieldPath, lookupEnv); err != nil {
-							return err
-						}
+				for _, field := range []struct{ name, path string }{{"name", path + ".name"}, {"key", path + ".key"}} {
+					if value := mappingValue(entry, field.name); value != nil {
+						expand(value, field.path)
 					}
 				}
 			}
@@ -44,9 +47,7 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 	}
 	if logging := mappingValue(root, "logging"); logging != nil {
 		if value := mappingValue(logging, "level"); value != nil {
-			if err := expandScalar(value, "logging.level", lookupEnv); err != nil {
-				return err
-			}
+			expand(value, "logging.level")
 		}
 	}
 	if providers := mappingValue(root, "providers"); providers != nil {
@@ -55,9 +56,7 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 			provider := providers.Content[i+1]
 			for _, field := range []string{"api_key", "base_url", "timeout"} {
 				if value := mappingValue(provider, field); value != nil {
-					if err := expandScalar(value, "providers."+name+"."+field, lookupEnv); err != nil {
-						return err
-					}
+					expand(value, "providers."+name+"."+field)
 				}
 			}
 		}
@@ -65,13 +64,11 @@ func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error 
 	if store := mappingValue(root, "store"); store != nil {
 		for _, field := range []string{"path", "retention"} {
 			if value := mappingValue(store, field); value != nil {
-				if err := expandScalar(value, "store."+field, lookupEnv); err != nil {
-					return err
-				}
+				expand(value, "store."+field)
 			}
 		}
 	}
-	return nil
+	return errors.Join(expansionErrors...)
 }
 
 func expandScalar(n *yaml.Node, path string, lookupEnv func(string) (string, bool)) error {
@@ -85,6 +82,7 @@ func expandScalar(n *yaml.Node, path string, lookupEnv func(string) (string, boo
 
 func expandValue(value, path string, line int, lookupEnv func(string) (string, bool)) (string, error) {
 	var out strings.Builder
+	var missing []error
 	for i := 0; i < len(value); {
 		if strings.HasPrefix(value[i:], "$${") {
 			out.WriteString("${")
@@ -106,12 +104,14 @@ func expandValue(value, path string, line int, lookupEnv func(string) (string, b
 		}
 		replacement, ok := lookupEnv(name)
 		if !ok || replacement == "" {
-			return "", fmt.Errorf("%s (line %d): environment variable %s is not set", path, line, name)
+			missing = append(missing, fmt.Errorf("%s (line %d): environment variable %s is not set", path, line, name))
+			i += end + 3
+			continue
 		}
 		out.WriteString(replacement)
 		i += end + 3
 	}
-	return out.String(), nil
+	return out.String(), errors.Join(missing...)
 }
 
 func rejectUnknownFields(root *yaml.Node) error {
@@ -127,7 +127,7 @@ func rejectUnknownFields(root *yaml.Node) error {
 			return fmt.Errorf("server (line %d): must be a mapping", server.Line)
 		}
 		if server.Kind == yaml.MappingNode {
-			if err := rejectFields(server, "server", "listen", "api_keys"); err != nil {
+			if err := rejectFields(server, "server", "listen", "api_keys", "shutdown_timeout"); err != nil {
 				return err
 			}
 			if keys := mappingValue(server, "api_keys"); keys != nil && keys.Kind == yaml.SequenceNode {
@@ -152,19 +152,21 @@ func rejectUnknownFields(root *yaml.Node) error {
 			}
 		}
 	}
-	providers := mappingValue(root, "providers")
-	if providers != nil {
-		if providers.Kind != yaml.MappingNode && providers.Tag != "!!null" {
-			return fmt.Errorf("providers (line %d): must be a mapping", providers.Line)
+	providerConfig := mappingValue(root, "providers")
+	if providerConfig != nil {
+		if providerConfig.Kind != yaml.MappingNode && providerConfig.Tag != "!!null" {
+			return fmt.Errorf("providers (line %d): must be a mapping", providerConfig.Line)
 		}
-		if providers.Kind == yaml.MappingNode {
-			for i := 0; i+1 < len(providers.Content); i += 2 {
-				key, value := providers.Content[i], providers.Content[i+1]
+		if providerConfig.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(providerConfig.Content); i += 2 {
+				key, value := providerConfig.Content[i], providerConfig.Content[i+1]
 				if key.Value == "spillway" || key.Value == "auto" {
 					return fmt.Errorf("providers.%s is reserved (line %d)", key.Value, key.Line)
 				}
-				if !slices.Contains(knownProviders, key.Value) {
-					return fmt.Errorf("providers: unknown provider; supported: %s", strings.Join(knownProviders, ", "))
+				preset, known := providers.LookupPreset(key.Value)
+				if !known {
+					names := knownProviders()
+					return fmt.Errorf("providers: unknown provider; supported: %s", strings.Join(names, ", "))
 				}
 				if value.Kind != yaml.MappingNode {
 					return fmt.Errorf("providers.%s (line %d): must be a mapping", key.Value, value.Line)
@@ -175,12 +177,12 @@ func rejectUnknownFields(root *yaml.Node) error {
 				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && freeTier.Tag != "!!bool" {
 					return fmt.Errorf("providers.%s.free_tier (line %d): must be true or false", key.Value, freeTier.Line)
 				}
-				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && key.Value != "groq" && key.Value != "gemini" {
+				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && !preset.FreeTierAttestable {
 					return fmt.Errorf("providers.%s.free_tier is only supported for groq and gemini; OpenRouter is checked per model and local providers are always free", key.Value)
 				}
 				apiKey := mappingValue(value, "api_key")
-				if key.Value != "mock" && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
-					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s_API_KEY}\"", key.Value, apiKey.Line, strings.ToUpper(key.Value))
+				if preset.AcceptsKey && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
+					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s}\"", key.Value, apiKey.Line, preset.KeyEnv)
 				}
 			}
 		}

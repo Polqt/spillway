@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"error\":{\"message\":\"OpenRouter quota exhausted\",\"code\":429}}\n\n")

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("data: {\"error\":{\"message\":\"provider rejected stream\",\"code\":\"rate_limit_exceeded\"}}\n\n")
