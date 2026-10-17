@@ -4,7 +4,7 @@
 .env
 .env.*
 *.local.yaml
-/.scratch/v0.1-proxy/
+/.scratch/
 
 # Output of a bare `go build` from the repo root; use make build.
 /spillway
