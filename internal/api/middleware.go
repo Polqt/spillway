@@ -207,7 +207,8 @@ func accessLog(logger *slog.Logger, recorder interface {
 			if usage.ErrorKind == "" && sw.status >= http.StatusBadRequest {
 				usage.ErrorKind = "request_error"
 			}
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+			// Allow the serialized SQLite writer to drain a burst after the client request completes.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
 			if err := recorder.Record(ctx, usage); err != nil {
 				logger.ErrorContext(ctx, "record usage failed", "error_kind", "store_write_failed", "error", err)
 			}

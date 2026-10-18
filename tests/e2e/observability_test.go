@@ -123,6 +123,9 @@ func TestObservability_CachedPaidAnswerSurvivesBudgetAndMixedConcurrencyRecordsE
 			t.Error(err)
 		}
 	}
+	if failures := usageStore.RecordFailures(); failures != 0 {
+		t.Fatalf("usage record failures = %d, want zero", failures)
+	}
 
 	requests, _, err := usageStore.Recent(t.Context(), store.RecentQuery{Limit: 100})
 	if err != nil {
