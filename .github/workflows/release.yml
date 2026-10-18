@@ -12,10 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   GO_VERSION: '1.27.2'
@@ -24,6 +21,12 @@ jobs:
   release:
     name: Build and publish release
     runs-on: ubuntu-latest
+    # Release publication and provenance signing require write access only in this job.
+    permissions:
+      contents: write # Create the GitHub release and upload assets.
+      packages: write # Publish the versioned container image to GHCR.
+      id-token: write # Request the OIDC token used by provenance signing.
+      attestations: write # Store build provenance attestations.
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
