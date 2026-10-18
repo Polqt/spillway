@@ -74,6 +74,148 @@ func TestRun_HelpAliases(t *testing.T) {
 	}
 }
 
+func TestRun_CommandHelp(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"serve", "--help"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
+	}
+	for _, want := range []string{"usage: spillway serve", "-config", "OpenAI-compatible API", "Examples:"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("help = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRun_UnknownCommandSuggestsValidCommand(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"ser"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), `unknown command "ser" for "spillway"`) || !strings.Contains(stderr.String(), "Did you mean this?") || !strings.Contains(stderr.String(), "serve") {
+		t.Errorf("stderr = %q, want a command suggestion", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRun_GeneratesBashCompletion(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"completion", "bash"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "__start_spillway") {
+		t.Errorf("completion output does not contain bash completion function: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRun_ParseErrorUsesUsageExitCode(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"serve", "-config"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "flag needs an argument") {
+		t.Errorf("stderr = %q, want parse diagnostic", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRun_DoubleDashKeepsFollowingFlagLikeArgumentPositional(t *testing.T) {
+	t.Parallel()
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-double-dash]\nproviders:\n  mock: {}\n")
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"check", "--", "-config=" + path}, nil, &stdout, &stderr, noEnv)
+
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unexpected argument") {
+		t.Errorf("stderr = %q, want unexpected-argument diagnostic", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRun_RedirectedHelpHasNoANSI(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"--help"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "\x1b[") {
+		t.Errorf("redirected help contains ANSI escapes: %q", stdout.String())
+	}
+}
+
+func TestRun_RedirectedStatusHasNoANSI(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-redirected-status]\nproviders:\n  mock: {}\n")
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "config OK") {
+		t.Errorf("stderr = %q, want status output", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "\x1b[") {
+		t.Errorf("redirected status contains ANSI escapes: %q", stderr.String())
+	}
+}
+
+func TestRun_HelpRespectsNoColor(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	t.Setenv("NO_COLOR", "1")
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"--help"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	for _, colorCode := range []string{"\x1b[30m", "\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[35m", "\x1b[36m", "\x1b[37m", "\x1b[38;"} {
+		if strings.Contains(stdout.String(), colorCode) {
+			t.Errorf("help contains color escape %q: %q", colorCode, stdout.String())
+		}
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }

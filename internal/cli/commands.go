@@ -1,0 +1,170 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"charm.land/lipgloss/v2"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+)
+
+type commandError struct {
+	code int
+}
+
+func (e commandError) Error() string { return "command failed" }
+
+func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), exitCode *int) *cobra.Command {
+	root := &cobra.Command{
+		Use:   "spillway",
+		Short: "A local OpenAI-compatible LLM gateway",
+		Long: strings.TrimSpace(`Spillway routes OpenAI-compatible requests across the providers you configure.
+
+Quick start:
+  spillway init
+  spillway check -config config.yaml
+  spillway serve -config config.yaml`),
+		Example: `  spillway init
+  spillway check -config config.yaml
+  spillway serve -config config.yaml`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.SetIn(stdin)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetUsageTemplate(`{{if .HasParent}}usage: {{.CommandPath}} [flags]{{else}}usage: spillway <command>{{end}}
+{{if .Short}}
+{{.Short}}{{end}}
+{{if .Long}}
+{{.Long}}{{end}}
+{{if .HasAvailableSubCommands}}
+commands:
+{{range .Commands}}{{if (and (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}{{end}}{{if .HasExample}}
+Examples:
+{{.Example}}{{end}}{{if .HasAvailableLocalFlags}}
+flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
+`)
+	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		out := cmd.OutOrStdout()
+		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Spillway")
+		if _, err := lipgloss.Fprint(out, title+"\n\n"+cmd.UsageString()); err != nil {
+			report(cmd.ErrOrStderr(), "spillway: write help: %v\n", err)
+			*exitCode = 1
+		}
+	})
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
+	showVersion := false
+	root.Flags().BoolVar(&showVersion, "version", false, "print version information")
+	root.RunE = func(cmd *cobra.Command, _ []string) error {
+		if showVersion {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), versionLine()); err != nil {
+				report(cmd.ErrOrStderr(), "spillway: write version: %v\n", err)
+				*exitCode = 1
+			}
+			return nil
+		}
+		_, _ = fmt.Fprint(cmd.ErrOrStderr(), cmd.UsageString())
+		return commandError{code: 2}
+	}
+
+	addLegacyCommand(root, exitCode, "serve", "serve the OpenAI-compatible API", `  spillway serve -config config.yaml`, func(cmd *cobra.Command, args []string) int {
+		return serve(ctx, legacyArgs(cmd, originalArgs), stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file")
+	})
+	addLegacyCommand(root, exitCode, "check", "validate config and print it with secrets redacted", `  spillway check -config config.yaml`, func(cmd *cobra.Command, args []string) int {
+		return check(legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file")
+	})
+	addLegacyCommand(root, exitCode, "catalog", "suggest model declarations and pricing from configured providers", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
+		return catalogCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file")
+	})
+	addLegacyCommand(root, exitCode, "init", "create a zero-spend config and local key", `  spillway init
+  spillway init -providers groq,gemini -yes`, func(cmd *cobra.Command, args []string) int {
+		return initCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path for the new config file")
+		flags.String("providers", "", "comma-separated providers to configure")
+		flags.String("attest-free-tier", "", "comma-separated providers attested as zero-spend")
+		flags.Bool("store", false, "enable the local usage store and dashboard key")
+		flags.Bool("yes", false, "accept defaults and run without prompts")
+	})
+	addLegacyCommand(root, exitCode, "eval", "run a paired routing evaluation (experimental)", `  spillway eval -dataset prompts.json -arms current=auto -out results`, func(cmd *cobra.Command, args []string) int {
+		return evalCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("dataset", "", "versioned prompt set JSON path")
+		flags.String("endpoint", "http://127.0.0.1:8080", "Spillway OpenAI-compatible base URL")
+		flags.String("api-key-env", "", "environment variable holding the local API key")
+		flags.String("arms", "", "comma-separated name=model[@endpoint] arms, for example current=auto")
+		flags.Int("repeats", 1, "repetitions per prompt and arm (1-100)")
+		flags.Int64("seed", 0, "randomization seed; zero chooses a random seed")
+		flags.Duration("timeout", 2*time.Hour, "whole-run deadline")
+		flags.String("prices", "", "optional JSON map of model references to declared prices")
+		flags.String("out", "", "directory for evaluation artifacts")
+	})
+	addLegacyCommand(root, exitCode, "eval-score", "summarize a completed blinded evaluation score sheet (experimental)", `  spillway eval-score -run results`, func(cmd *cobra.Command, args []string) int {
+		return evalScoreCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("run", "", "evaluation artifact directory")
+	})
+	addLegacyCommand(root, exitCode, "eval-report", "compare run artifacts and rater sheets against ADR 0014 gates (experimental)", `  spillway eval-report -run results -baseline current`, func(cmd *cobra.Command, args []string) int {
+		return evalReportCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("run", "", "evaluation artifact directory")
+		flags.String("scores", "", "comma-separated completed rater CSV sheets")
+		flags.String("baseline", "", "baseline arm name")
+		flags.Int64("seed", 1, "paired bootstrap random seed")
+		flags.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
+	})
+	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version", func(cmd *cobra.Command, _ []string) int {
+		if _, err := fmt.Fprintln(stdout, versionLine()); err != nil {
+			report(stderr, "spillway: write version: %v\n", err)
+			return 1
+		}
+		return 0
+	}, nil)
+
+	return root
+}
+
+func addLegacyCommand(root *cobra.Command, exitCode *int, name, short, example string, run func(*cobra.Command, []string) int, addFlags func(*pflag.FlagSet)) {
+	command := &cobra.Command{
+		Use:     name,
+		Short:   short,
+		Example: example,
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			*exitCode = normalizeExitCode(run(cmd, args))
+			return nil
+		},
+	}
+	if addFlags != nil {
+		addFlags(command.Flags())
+	}
+	root.AddCommand(command)
+}
+
+func normalizeExitCode(code int) int {
+	if code < 0 || code > 2 {
+		return 1
+	}
+	return code
+}
+
+func legacyArgs(cmd *cobra.Command, originalArgs []string) []string {
+	parsedCommand, args, err := cmd.Root().Find(originalArgs)
+	if err == nil && parsedCommand == cmd {
+		return args
+	}
+	return cmd.Flags().Args()
+}

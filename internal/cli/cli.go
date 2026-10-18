@@ -4,71 +4,74 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // version is set at build time with
 // -ldflags "-X github.com/Polqt/spillway/internal/cli.version=...".
 var version = "dev"
 
-const usage = `usage: spillway <command>
-
-commands:
-  serve     serve the OpenAI-compatible API (flags: -config path, default config.yaml)
-  check     validate config and print it with secrets redacted (flags: -config path)
-  catalog   suggest model declarations and pricing from configured providers (flags: -config path)
-  init      create a zero-spend config and local key (flags: -config, -providers, -attest-free-tier, -store, -yes)
-  eval      run a paired routing evaluation (experimental)
-  eval-score summarize a completed blinded evaluation score sheet (experimental)
-  eval-report compare run artifacts and rater sheets against ADR 0014 gates (experimental)
-  version   print the version and exit
-`
+const usage = "usage: spillway <command>\nRun 'spillway --help' for usage.\n"
 
 // Run executes one CLI invocation and returns the process exit code:
 // 0 on success, 1 on failure, 2 on a usage error.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
-	if len(args) == 0 {
-		report(stderr, "%s", usage)
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	if len(args) > 0 && args[0] == "-version" {
+		args = append([]string{"version"}, args[1:]...)
+	}
+
+	exitCode := 0
+	root := newRootCommand(ctx, args, stdin, stdout, stderr, lookupEnv, &exitCode)
+	root.SetArgs(normalizeLegacyFlags(root, args))
+	if err := root.ExecuteContext(ctx); err != nil {
+		var coded commandError
+		if errors.As(err, &coded) {
+			return coded.code
+		}
+		report(stderr, "spillway: %v\n", err)
+		_, _ = fmt.Fprint(stderr, root.UsageString())
 		return 2
 	}
-	switch args[0] {
-	case "help", "-h", "--help":
-		_, err := fmt.Fprint(stdout, usage)
-		if err != nil {
-			report(stderr, "spillway: write help: %v\n", err)
-			return 1
-		}
-		return 0
-	case "serve":
-		return serve(ctx, args[1:], stderr, lookupEnv)
-	case "check":
-		return check(args[1:], stdout, stderr, lookupEnv)
-	case "catalog":
-		return catalogCommand(ctx, args[1:], stdout, stderr, lookupEnv)
-	case "init":
-		return initCommand(ctx, args[1:], stdin, stdout, stderr, lookupEnv)
-	case "eval":
-		return evalCommand(ctx, args[1:], stdout, stderr, lookupEnv)
-	case "eval-score":
-		return evalScoreCommand(ctx, args[1:], stdout, stderr)
-	case "eval-report":
-		return evalReportCommand(ctx, args[1:], stdout, stderr)
-	case "version", "-version", "--version":
-		_, err := fmt.Fprintln(stdout, versionLine())
-		if err != nil {
-			report(stderr, "spillway: write version: %v\n", err)
-			return 1
-		}
-		return 0
-	default:
-		report(stderr, "spillway: unknown command %q\n\n%s", args[0], usage)
-		return 2
+	return exitCode
+}
+
+func normalizeLegacyFlags(root *cobra.Command, args []string) []string {
+	command, _, err := root.Find(args)
+	if err != nil || command == root {
+		return args
 	}
+	normalized := slices.Clone(args)
+	for i, arg := range normalized {
+		if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+			continue
+		}
+		name := strings.TrimPrefix(arg, "-")
+		if equal := strings.IndexByte(name, '='); equal >= 0 {
+			name = name[:equal]
+		}
+		if command.Flags().Lookup(name) != nil {
+			normalized[i] = "-" + arg
+		}
+	}
+	return normalized
 }
 
 func versionLine() string {

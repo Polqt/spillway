@@ -2,9 +2,9 @@ package cli
 
 import (
 	"flag"
-	"fmt"
 	"io"
 
+	"charm.land/lipgloss/v2"
 	"github.com/Polqt/spillway/internal/config"
 )
 
@@ -28,7 +28,8 @@ func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (stri
 		report(stderr, "spillway: write redacted config: %v\n", err)
 		return 1
 	}
-	if _, err := fmt.Fprintln(stderr, "config OK"); err != nil {
+	status := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("config OK")
+	if _, err := lipgloss.Fprintln(stderr, status); err != nil {
 		return 1
 	}
 	return 0
