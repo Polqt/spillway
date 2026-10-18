@@ -64,9 +64,10 @@ jobs:
           version="${RELEASE_TAG#v}"
           version_output="$("$binary" version)"
           printf '%s\n' "$version_output"
-          read -r app_version actual_version actual_commit built build_time go_version platform <<< "$version_output"
+          read -r app_version actual_version commit_label actual_commit built build_time go_version platform <<< "$version_output"
           test "$app_version" = spillway
           test "$actual_version" = "$version"
+          test "$commit_label" = commit
           test "$actual_commit" = "$expected_commit"
           test "$built" = built
           [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
