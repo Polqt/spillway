@@ -51,6 +51,9 @@ dockers_v2:
       - ghcr.io/polqt/spillway
     tags:
       - "{{ .Version }}"
+    extra_files:
+      - examples/config.docker.yaml
+      - apps/spillway/volume/.keep
     platforms:
       - linux/amd64
       - linux/arm64
