@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/huh/v2"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 )
@@ -35,20 +36,35 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if stdin == nil {
 		stdin = strings.NewReader("")
 	}
-	input := bufio.NewReader(stdin)
 	inputCloser, _ := stdin.(io.Closer)
 	provided := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 
-	selected, err := chooseProviders(ctx, *providerFlag, provided["providers"], *yes, input, inputCloser, stdout)
+	var selected []string
+	var err error
+	if provided["providers"] || *yes {
+		selected, err = chooseProviders(ctx, *providerFlag, provided["providers"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
+	} else {
+		selected, err = chooseProvidersInteractive(ctx, stdin, inputCloser, stdout)
+	}
 	if err != nil {
 		return initChoiceError(stderr, err)
 	}
-	attested, err := chooseAttestations(ctx, selected, *attestFlag, provided["attest-free-tier"], *yes, input, inputCloser, stdout)
+	var attested map[string]bool
+	if provided["attest-free-tier"] || *yes {
+		attested, err = chooseAttestations(ctx, selected, *attestFlag, provided["attest-free-tier"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
+	} else {
+		attested, err = chooseAttestationsInteractive(ctx, selected, stdin, inputCloser, stdout)
+	}
 	if err != nil {
 		return initChoiceError(stderr, err)
 	}
-	storeEnabled, err := chooseStore(ctx, *storeFlag, provided["store"], *yes, input, inputCloser, stdout)
+	var storeEnabled bool
+	if provided["store"] || *yes {
+		storeEnabled, err = chooseStore(ctx, *storeFlag, provided["store"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
+	} else {
+		storeEnabled, err = chooseStoreInteractive(ctx, stdin, inputCloser, stdout)
+	}
 	if err != nil {
 		return initChoiceError(stderr, err)
 	}
@@ -84,6 +100,118 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 1
 	}
 	return 0
+}
+
+func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
+	selected := []string{"mock"}
+	options := make([]huh.Option[string], 0, len(providers.Presets()))
+	for _, preset := range providers.Presets() {
+		options = append(options, huh.NewOption(preset.Name, preset.Name))
+	}
+	field := huh.NewMultiSelect[string]().
+		Title("Choose providers").
+		Description("Select the providers Spillway may use.").
+		Options(options...).
+		Value(&selected).
+		Validate(func(values []string) error {
+			if len(values) == 0 {
+				return initUsageError{message: "select at least one provider"}
+			}
+			return nil
+		})
+	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+		return nil, err
+	}
+	return parseProviderList(strings.Join(selected, ","))
+}
+
+func chooseAttestationsInteractive(ctx context.Context, selected []string, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (map[string]bool, error) {
+	attested := make(map[string]bool)
+	fields := make([]huh.Field, 0, len(selected))
+	accepted := make(map[string]*bool, len(selected))
+	for _, name := range selected {
+		preset, _ := providers.LookupPreset(name)
+		if !preset.FreeTierAttestable {
+			continue
+		}
+		value := new(bool)
+		accepted[name] = value
+		fields = append(fields, huh.NewConfirm().
+			Title("Attest that "+name+" has no paid plan?").
+			Description("Only attest if this provider account or project has no paid plan.").
+			Affirmative("Yes").Negative("No").Value(value))
+	}
+	if len(fields) == 0 {
+		return attested, nil
+	}
+	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(fields...))); err != nil {
+		return nil, err
+	}
+	for name, value := range accepted {
+		if *value {
+			attested[name] = true
+		}
+	}
+	return attested, nil
+}
+
+func chooseStoreInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (bool, error) {
+	enabled := false
+	field := huh.NewConfirm().
+		Title("Enable local usage history and dashboard access?").
+		Description("Usage metadata stays in the local SQLite database.").
+		Affirmative("Yes").Negative("No").Value(&enabled)
+	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+type singleByteReader struct {
+	reader io.Reader
+	sawEOF bool
+}
+
+func (r *singleByteReader) Read(buffer []byte) (int, error) {
+	// Huh creates a scanner per field, so prevent one field from consuming later answers.
+	if len(buffer) > 1 {
+		buffer = buffer[:1]
+	}
+	n, err := r.reader.Read(buffer)
+	if errors.Is(err, io.EOF) {
+		r.sawEOF = true
+	}
+	return n, err
+}
+
+func runInitForm(ctx context.Context, closeInput io.Closer, stdin io.Reader, stdout io.Writer, form *huh.Form) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	input := &singleByteReader{reader: stdin}
+	form.WithAccessible(true).WithInput(input).WithOutput(stdout)
+	done := make(chan struct{})
+	if closeInput != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = closeInput.Close()
+			case <-done:
+			}
+		}()
+	}
+	err := form.RunWithContext(ctx)
+	close(done)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if input.sawEOF {
+		return errors.New("unexpected end of input")
+	}
+	if err != nil {
+		return fmt.Errorf("run interactive setup: %w", err)
+	}
+	return nil
 }
 
 func initChoiceError(stderr io.Writer, err error) int {

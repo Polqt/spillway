@@ -82,7 +82,7 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("mock\nn\nn\n"), &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("0\nn\n"), &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("init exit = %d; stderr: %s", code, stderr.String())
 	}
@@ -98,6 +98,47 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	}
 	if normalized := strings.Replace(string(got), string(key), "GENERATED_KEY", 1); normalized != strings.Replace(want, "key: GENERATED_KEY", `key: "GENERATED_KEY"`, 1) {
 		t.Errorf("config =\n%s\nwant =\n%s", normalized, want)
+	}
+}
+
+func TestRun_InitInteractiveHuhChoicesPreserveSemanticsAndHideSecrets(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	const secret = "sk-test-" + "gemini-secret"
+	lookup := func(name string) (string, bool) {
+		return secret, name == "GEMINI_API_KEY"
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("1\n0\ny\ny\n"), &stdout, &stderr, lookup)
+	if code != 0 {
+		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
+	}
+	data, err := readInitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "gemini:") || !strings.Contains(content, "free_tier: true") || !strings.Contains(content, "store:") || !strings.Contains(content, "${GEMINI_API_KEY}") {
+		t.Errorf("generated config = %q; want selected provider, attestation, usage storage and env reference", content)
+	}
+	if strings.Contains(content+stdout.String()+stderr.String(), secret) {
+		t.Errorf("provider secret was disclosed by init")
+	}
+	if _, err := config.ParseWithEnv(data, lookup); err != nil {
+		t.Fatalf("generated config does not validate: %v", err)
+	}
+}
+
+func TestRun_InitInteractiveEOFDoesNotCreateConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "unexpected end of input") {
+		t.Fatalf("init = %d; stderr %q; want an input error", code, stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config stat error = %v; want no config file", err)
 	}
 }
 
