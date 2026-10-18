@@ -36,12 +36,14 @@ jobs:
           mkdir -p "$work/download" "$work/extracted" "$work/runtime"
           cd "$work/download"
 
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir .
-          test "$(awk 'NF { count++ } END { print count + 0 }' checksums.txt)" -eq 6
-          shasum -a 256 -c checksums.txt
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*darwin_*.tar.gz' --pattern checksums.txt --dir .
+          awk 'NF == 2 && $2 ~ /_darwin_(amd64|arm64)\.tar\.gz$/ { print; count++ } END { if (count != 2) exit 1 }' \
+            checksums.txt > darwin-checksums.txt
+          shasum -a 256 -c darwin-checksums.txt
           while read -r _ archive; do
             gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
-          done < checksums.txt
+          done < darwin-checksums.txt
 
           tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
           tag_type="$(printf '%s' "$tag_ref" | jq -r '.object.type')"
