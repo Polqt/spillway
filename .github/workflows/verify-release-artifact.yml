@@ -1,0 +1,106 @@
+name: Verify release artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v1.0.0 release-candidate tag to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  verify-macos-artifact:
+    if: startsWith(inputs.tag, 'v1.0.0-rc.')
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate the requested release-candidate tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v1\.0\.0-rc\.[0-9]+$ ]]
+          test "$GITHUB_REF" = refs/heads/main
+
+      - name: Download, verify and run the published macOS artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/spillway-release-artifact"
+          mkdir -p "$work/download" "$work/extracted" "$work/runtime"
+          cd "$work/download"
+
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir .
+          test "$(awk 'NF { count++ } END { print count + 0 }' checksums.txt)" -eq 6
+          shasum -a 256 -c checksums.txt
+          while read -r _ archive; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          done < checksums.txt
+
+          tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          tag_type="$(printf '%s' "$tag_ref" | jq -r '.object.type')"
+          tag_object="$(printf '%s' "$tag_ref" | jq -r '.object.sha')"
+          if [ "$tag_type" = tag ]; then
+            release_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object.sha')"
+          else
+            release_commit="$tag_object"
+          fi
+          expected_commit="${release_commit:0:7}"
+
+          case "$(uname -m)" in
+            arm64) goarch=arm64 ;;
+            x86_64) goarch=amd64 ;;
+            *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          archive="spillway_${RELEASE_TAG#v}_darwin_${goarch}.tar.gz"
+          tar -xzf "$archive" -C "$work/extracted" spillway
+          binary="$work/extracted/spillway"
+          version="${RELEASE_TAG#v}"
+          version_output="$("$binary" version)"
+          printf '%s\n' "$version_output"
+          read -r app_version actual_version actual_commit built build_time go_version platform <<< "$version_output"
+          test "$app_version" = spillway
+          test "$actual_version" = "$version"
+          test "$actual_commit" = "$expected_commit"
+          test "$built" = built
+          [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+          [[ "$go_version" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$platform" = "darwin/$goarch"
+
+          config="$work/runtime/config.yaml"
+          (cd "$work/runtime" && "$binary" init -yes -providers mock -store -config "$config")
+          "$binary" check -config "$config"
+          local_key="$(sed -nE 's/^      key: "(sk-spillway-[A-Za-z0-9_-]+)"$/\1/p' "$config" | head -n 1)"
+          test -n "$local_key"
+
+          (cd "$work/runtime" && "$binary" serve -config "$config") > "$work/runtime/serve.log" 2>&1 &
+          server_pid=$!
+          stop_server() {
+            kill -INT "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap stop_server EXIT
+
+          for attempt in $(seq 1 30); do
+            if grep -q 'msg=listening' "$work/runtime/serve.log"; then break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then cat "$work/runtime/serve.log"; exit 1; fi
+            sleep 1
+          done
+          addr="$(sed -nE 's/.*msg=listening addr=([^ ]+).*/\1/p' "$work/runtime/serve.log" | tail -n 1)"
+          test -n "$addr"
+          curl --fail --silent --show-error "http://$addr/healthz"
+          response="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $local_key" \
+            --header 'Content-Type: application/json' \
+            --data '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}' \
+            "http://$addr/v1/chat/completions")"
+          printf '%s' "$response" | jq -e '.choices[0].message.content == "You said: Hello from Spillway"' >/dev/null
+          kill -INT "$server_pid"
+          wait "$server_pid"
+          trap - EXIT
