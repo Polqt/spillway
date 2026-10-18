@@ -28,23 +28,41 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v1\.0\.0-rc\.[0-9]+$ ]]
           test "$GITHUB_REF" = refs/heads/main
 
-      - name: Download, verify and run the published macOS artifact
+      - name: Prepare artifact workspace
         shell: bash
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/spillway-release-artifact"
           mkdir -p "$work/download" "$work/extracted" "$work/runtime"
-          cd "$work/download"
+          echo "WORK=$work" >> "$GITHUB_ENV"
 
+      - name: Download the macOS release archives
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK/download"
+          echo 'Downloading Darwin release archives'
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern '*darwin_*.tar.gz' --pattern checksums.txt --dir .
+
+      - name: Verify macOS archive checksums
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK/download"
           awk 'NF == 2 && $2 ~ /_darwin_(amd64|arm64)\.tar\.gz$/ { print; count++ } END { if (count != 2) exit 1 }' \
             checksums.txt > darwin-checksums.txt
           shasum -a 256 -c darwin-checksums.txt
-          while read -r _ archive; do
-            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
-          done < darwin-checksums.txt
+          echo 'Both Darwin archive checksums verified'
 
+      - name: Verify native archive provenance
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK/download"
           tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
           tag_type="$(printf '%s' "$tag_ref" | jq -r '.object.type')"
           tag_object="$(printf '%s' "$tag_ref" | jq -r '.object.sha')"
@@ -54,15 +72,28 @@ jobs:
             release_commit="$tag_object"
           fi
           expected_commit="${release_commit:0:7}"
+          echo "EXPECTED_COMMIT=$expected_commit" >> "$GITHUB_ENV"
 
           case "$(uname -m)" in
             arm64) goarch=arm64 ;;
             x86_64) goarch=amd64 ;;
             *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
           esac
+          echo "GOARCH=$goarch" >> "$GITHUB_ENV"
           archive="spillway_${RELEASE_TAG#v}_darwin_${goarch}.tar.gz"
-          tar -xzf "$archive" -C "$work/extracted" spillway
-          binary="$work/extracted/spillway"
+          echo "Verifying provenance for native archive $archive"
+          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          echo 'Native archive provenance verified'
+
+      - name: Run the downloaded macOS artifact
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK/download"
+          archive="spillway_${RELEASE_TAG#v}_darwin_${GOARCH}.tar.gz"
+          tar -xzf "$archive" -C "$WORK/extracted" spillway
+          binary="$WORK/extracted/spillway"
           version="${RELEASE_TAG#v}"
           version_output="$("$binary" version)"
           printf '%s\n' "$version_output"
@@ -70,19 +101,19 @@ jobs:
           test "$app_version" = spillway
           test "$actual_version" = "$version"
           test "$commit_label" = commit
-          test "$actual_commit" = "$expected_commit"
+          test "$actual_commit" = "$EXPECTED_COMMIT"
           test "$built" = built
           [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
           [[ "$go_version" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$platform" = "darwin/$goarch"
+          test "$platform" = "darwin/$GOARCH"
 
-          config="$work/runtime/config.yaml"
-          (cd "$work/runtime" && "$binary" init -yes -providers mock -store -config "$config")
+          config="$WORK/runtime/config.yaml"
+          (cd "$WORK/runtime" && "$binary" init -yes -providers mock -store -config "$config")
           "$binary" check -config "$config"
           local_key="$(sed -nE 's/^      key: "(sk-spillway-[A-Za-z0-9_-]+)"$/\1/p' "$config" | head -n 1)"
           test -n "$local_key"
 
-          (cd "$work/runtime" && "$binary" serve -config "$config") > "$work/runtime/serve.log" 2>&1 &
+          (cd "$WORK/runtime" && "$binary" serve -config "$config") > "$WORK/runtime/serve.log" 2>&1 &
           server_pid=$!
           stop_server() {
             kill -INT "$server_pid" 2>/dev/null || true
@@ -91,11 +122,11 @@ jobs:
           trap stop_server EXIT
 
           for attempt in $(seq 1 30); do
-            if grep -q 'msg=listening' "$work/runtime/serve.log"; then break; fi
-            if ! kill -0 "$server_pid" 2>/dev/null; then cat "$work/runtime/serve.log"; exit 1; fi
+            if grep -q 'msg=listening' "$WORK/runtime/serve.log"; then break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then cat "$WORK/runtime/serve.log"; exit 1; fi
             sleep 1
           done
-          addr="$(sed -nE 's/.*msg=listening addr=([^ ]+).*/\1/p' "$work/runtime/serve.log" | tail -n 1)"
+          addr="$(sed -nE 's/.*msg=listening addr=([^ ]+).*/\1/p' "$WORK/runtime/serve.log" | tail -n 1)"
           test -n "$addr"
           curl --fail --silent --show-error "http://$addr/healthz"
           response="$(curl --fail --silent --show-error \
