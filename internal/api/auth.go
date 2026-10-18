@@ -57,7 +57,7 @@ func (a *authenticator) match(token string) (string, bool, bool) {
 // records the client app for the access log. The static shell carries no data.
 func (a *authenticator) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/dashboard" || r.URL.Path == "/dashboard.css" || r.URL.Path == "/dashboard.js" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/dashboard" || r.URL.Path == "/dashboard.css" || r.URL.Path == "/dashboard.js" || strings.HasPrefix(r.URL.Path, "/assets/") {
 			next.ServeHTTP(w, r)
 			return
 		}

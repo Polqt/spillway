@@ -14,3 +14,7 @@
 /*.db-wal
 /dist/
 /tools/dist/
+/apps/spillway/web/dist/
+/apps/spillway/web/node_modules/
+/apps/spillway/web/test-results/
+/apps/spillway/web/playwright-report/

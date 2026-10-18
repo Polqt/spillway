@@ -112,9 +112,11 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.HandleFunc("GET /healthz", healthz)
 	if o.Dashboard != nil {
 		mux.Handle("GET /dashboard", o.Dashboard)
+		mux.Handle("GET /assets/", o.Dashboard)
 		mux.Handle("GET /dashboard.css", o.Dashboard)
 		mux.Handle("GET /dashboard.js", o.Dashboard)
 		mux.Handle("/dashboard", methodNotAllowed("GET, HEAD"))
+		mux.Handle("/assets/", methodNotAllowed("GET, HEAD"))
 		mux.Handle("/dashboard.css", methodNotAllowed("GET, HEAD"))
 		mux.Handle("/dashboard.js", methodNotAllowed("GET, HEAD"))
 	}

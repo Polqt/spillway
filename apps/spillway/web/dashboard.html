@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
-  <title>Spillway dashboard</title>
+  <title>Spillway dashboard onboarding</title>
   <link rel="stylesheet" href="/dashboard.css" />
   <script src="/dashboard.js" defer="defer"></script>
 </head>
@@ -17,6 +17,10 @@
     <section class="intro">
       <div><p class="eyebrow">OBSERVABILITY</p><h1>Your gateway, at a glance.</h1><p class="intro-copy">Usage, routing decisions, and provider cooldowns from this Spillway instance.</p></div>
       <time id="updated-at" class="updated-at">Waiting for a dashboard key</time>
+    </section>
+
+    <section class="access-panel" aria-labelledby="getting-started-title">
+      <div><h2 id="getting-started-title">Get started locally</h2><p>Use a local key marked <code>dashboard: true</code> to connect. Spillway keeps this key in this tab's session storage, sends it only to this server, and lets you forget it at any time.</p><p>Dashboard access and local requests work without <code>store:</code>. Add <code>store:</code> only if you want usage and routing history to persist on this machine; without it, history panels stay empty.</p><p>Next: connect with your dashboard key, then use your app key in an OpenAI-compatible client at <code>127.0.0.1:8080/v1</code>.</p></div>
     </section>
 
     <section id="access-panel" class="access-panel" aria-labelledby="access-title">

@@ -27,6 +27,17 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Install pinned dashboard dependencies
+        run: corepack pnpm --dir apps/spillway/web install --frozen-lockfile
+      - name: Install Playwright browser dependencies on Linux
+        if: runner.os == 'Linux'
+        run: corepack pnpm --dir apps/spillway/web exec playwright install --with-deps chromium
       - name: Run checks with race detector required
         run: make check RACE=-race
 
@@ -57,6 +68,17 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27.2'
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Install pinned dashboard dependencies
+        run: corepack pnpm --dir apps/spillway/web install --frozen-lockfile
+      - name: Install Playwright browser dependencies on Linux
+        if: runner.os == 'Linux'
+        run: corepack pnpm --dir apps/spillway/web exec playwright install --with-deps chromium
       - name: Validate release configuration
         run: make release-check
       - name: Verify reproducible snapshot binaries
