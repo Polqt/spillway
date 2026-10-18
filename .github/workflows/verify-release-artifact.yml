@@ -95,6 +95,7 @@ jobs:
           tar -xzf "$archive" -C "$WORK/extracted" spillway
           binary="$WORK/extracted/spillway"
           version="${RELEASE_TAG#v}"
+          echo 'Checking downloaded binary version and build metadata'
           version_output="$("$binary" version)"
           printf '%s\n' "$version_output"
           read -r app_version actual_version commit_label actual_commit built build_time go_version platform <<< "$version_output"
@@ -108,12 +109,14 @@ jobs:
           test "$platform" = "darwin/$GOARCH"
 
           config="$WORK/runtime/config.yaml"
+          echo 'Creating and validating mock configuration'
           (cd "$WORK/runtime" && "$binary" init -yes -providers mock -store -config "$config")
           "$binary" check -config "$config"
           local_key="$(sed -nE 's/^      key: "(sk-spillway-[A-Za-z0-9_-]+)"$/\1/p' "$config" | head -n 1)"
           test -n "$local_key"
 
-          (cd "$WORK/runtime" && "$binary" serve -config "$config") > "$WORK/runtime/serve.log" 2>&1 &
+          echo 'Starting downloaded macOS server'
+          (cd "$WORK/runtime" && exec "$binary" serve -config "$config") > "$WORK/runtime/serve.log" 2>&1 &
           server_pid=$!
           stop_server() {
             kill -INT "$server_pid" 2>/dev/null || true
@@ -128,13 +131,16 @@ jobs:
           done
           addr="$(sed -nE 's/.*msg=listening addr=([^ ]+).*/\1/p' "$WORK/runtime/serve.log" | tail -n 1)"
           test -n "$addr"
+          echo "Checking health endpoint at $addr"
           curl --fail --silent --show-error "http://$addr/healthz"
+          echo 'Checking authenticated mock chat'
           response="$(curl --fail --silent --show-error \
             --header "Authorization: Bearer $local_key" \
             --header 'Content-Type: application/json' \
             --data '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}' \
             "http://$addr/v1/chat/completions")"
           printf '%s' "$response" | jq -e '.choices[0].message.content == "You said: Hello from Spillway"' >/dev/null
+          echo 'Stopping downloaded macOS server'
           kill -INT "$server_pid"
           wait "$server_pid"
           trap - EXIT
