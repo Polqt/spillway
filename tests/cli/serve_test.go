@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -96,7 +97,7 @@ func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 
 func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
+	for i, tt := range []struct {
 		level         string
 		wantListening bool
 	}{
@@ -107,15 +108,7 @@ func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
 	} {
 		t.Run(tt.level, func(t *testing.T) {
 			t.Parallel()
-			var listenConfig net.ListenConfig
-			probe, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			addr := probe.Addr().String()
-			if err := probe.Close(); err != nil {
-				t.Fatal(err)
-			}
+			addr := testListenAddress(t, 20000+i*1000)
 
 			path := writeConfig(t, "server:\n  listen: \""+addr+"\"\n  api_keys: ["+e2eKey+"]\nlogging:\n  level: "+tt.level+"\nproviders:\n  mock: {}\n")
 			ctx, cancel := context.WithCancel(t.Context())
@@ -151,6 +144,27 @@ func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testListenAddress(t *testing.T, startPort int) string {
+	t.Helper()
+	// Avoid ephemeral ports because unrelated outbound connections can claim a
+	// just-released ephemeral port before serve binds it. Each parallel subtest
+	// gets a separate range so it cannot select a peer's released port.
+	var listenConfig net.ListenConfig
+	for port := startPort; port < startPort+1000; port++ {
+		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+		probe, err := listenConfig.Listen(t.Context(), "tcp", addr)
+		if err != nil {
+			continue
+		}
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return addr
+	}
+	t.Fatalf("no available loopback port in test range %d-%d", startPort, startPort+999)
+	return ""
 }
 
 func waitForListener(t *testing.T, addr string, exit <-chan int, logs *logLines) {
