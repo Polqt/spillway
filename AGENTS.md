@@ -123,6 +123,13 @@ Record hard-to-reverse decisions as ADRs in `docs/adr/`.
 - Write the pull request description for reviewers with the context, key changes, verification commands and results, and any material risks or rollout notes.
 - Link the issue or plan when available, and do not claim checks that were not run.
 - After verification and review, push the feature branch and open the pull request against its intended target branch.
+- After the pull request is merged, delete the remote feature branch and its local branch.
+
+## Release documentation
+
+- When publishing a new version tag, update `README.md` and `docs/install.md` to use the newest published tag in archive, `go install`, and Docker examples.
+- Keep the README's download link pointed at the current published release page, and do not describe an unpublished stable version as available.
+- Do not add a verification-status table to `README.md`; keep changing audit and test evidence in release notes or the local ticket instead.
 
 ## Issue tracker and domain docs
 

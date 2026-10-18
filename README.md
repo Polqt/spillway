@@ -6,18 +6,18 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 ## Install
 
-Download a release archive for Linux, macOS or Windows from [GitHub Releases](https://github.com/Polqt/spillway/releases), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
+The current published release is `v1.0.0-rc.2`, a release candidate for evaluation; stable `v1.0.0` is not published. Download the archive for Linux, macOS or Windows from the [v1.0.0-rc.2 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0-rc.2), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
-Install a tagged Go release with:
+Install the current release candidate with Go:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+go install github.com/Polqt/spillway/apps/spillway@v1.0.0-rc.2
 ```
 
-Or pull the pinned Docker image:
+Or pull the current release candidate Docker image:
 
 ```sh
-docker pull ghcr.io/polqt/spillway:1.0.0
+docker pull ghcr.io/polqt/spillway:1.0.0-rc.2
 ```
 
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
@@ -67,15 +67,6 @@ spillway serve
 ```
 
 For local inference, use Ollama instead: install Ollama, pull a model such as `llama3.2:3b`, then run `spillway init -yes -providers ollama`. See the [Ollama guide](docs/providers/ollama.md), especially its Docker limitation.
-
-## Verification status
-
-| Status | Evidence | Scope |
-|---|---|---|
-| Tested offline in CI | `make check`; mock binary quickstart; provider adapter fixture tests; configuration examples are parsed by an end-to-end test. | Local behavior and recorded fixtures only; no live provider is contacted. |
-| Tested manually | 2026-10-16, Docker mock smoke recorded in ticket 13. | Local Docker image, loopback port publishing, read-only root filesystem, container UID and graceful stop. This is not a release-artifact test. |
-| Unverified | Live provider smoke, downloaded release archives and attestations, and the release-candidate Docker image. | Check ticket 20 and the release notes for results before relying on these claims. |
-| Unverified | Windows/arm64 execution. | The binary target is built, but this platform has not been run-tested. |
 
 ## Operations and limitations
 

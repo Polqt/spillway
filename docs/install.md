@@ -17,7 +17,7 @@ macOS does not include `sha256sum` by default. Use `shasum -a 256 <archive>` and
 On Windows PowerShell, compare the archive's hash with its line in `checksums.txt`:
 
 ```powershell
-Get-FileHash .\spillway_1.0.0_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\spillway_1.0.0-rc.2_windows_amd64.zip -Algorithm SHA256
 ```
 
 The hash must match exactly. A checksum detects a damaged or substituted download only when `checksums.txt` itself came from a trusted release page.
@@ -37,14 +37,14 @@ Extract the archive, place `spillway` on your `PATH`, and run `spillway version`
 With Go 1.26 or later:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+go install github.com/Polqt/spillway/apps/spillway@v1.0.0-rc.2
 ```
 
 `go install` fetches source through the Go module proxy rather than verifying a GitHub release archive. Check the version with `spillway version`.
 
 ## Install with Docker
 
-Use a versioned image from `ghcr.io/polqt/spillway`; there is no `latest` tag. See [Docker](docker.md) for loopback-only publishing, persistent data and container restrictions.
+The current published image is `ghcr.io/polqt/spillway:1.0.0-rc.2`; use a versioned image tag. See [Docker](docker.md) for loopback-only publishing, persistent data and container restrictions.
 
 ## First run
 
