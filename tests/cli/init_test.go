@@ -67,6 +67,11 @@ func TestRun_InitEveryProviderCombinationValidates(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("init exit = %d; stderr: %s", code, stderr.String())
 			}
+			for _, nextStep := range []string{"spillway check -config " + path, "spillway serve -config " + path, "http://127.0.0.1:8080/v1", "http://127.0.0.1:8080/dashboard"} {
+				if !strings.Contains(stdout.String(), nextStep) {
+					t.Errorf("init output = %q, want next step %q", stdout.String(), nextStep)
+				}
+			}
 			data, err := readInitFile(path)
 			if err != nil {
 				t.Fatal(err)

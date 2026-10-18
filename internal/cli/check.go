@@ -19,9 +19,15 @@ func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (stri
 		report(stderr, "spillway: check: unexpected argument %q\n\n%s", fs.Arg(0), usage)
 		return 2
 	}
+	explicitConfig := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			explicitConfig = true
+		}
+	})
 	cfg, err := config.LoadWithEnv(*configPath, lookupEnv)
 	if err != nil {
-		reportConfigLoadError(stderr, *configPath, err)
+		reportConfigLoadError(stderr, *configPath, explicitConfig, err)
 		return 1
 	}
 	if err := cfg.WriteRedacted(stdout); err != nil {

@@ -44,10 +44,16 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		report(stderr, "spillway: serve: unexpected argument %q\n\n%s", fs.Arg(0), usage)
 		return 2
 	}
+	explicitConfig := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			explicitConfig = true
+		}
+	})
 
 	cfg, err := config.LoadWithEnv(*configPath, lookupEnv)
 	if err != nil {
-		reportConfigLoadError(stderr, *configPath, err)
+		reportConfigLoadError(stderr, *configPath, explicitConfig, err)
 		return 1
 	}
 	scrubber := redact.NewScrubber(cfg.Secrets()...)
@@ -91,9 +97,11 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Server.Listen)
 	if err != nil {
-		report(stderr, "spillway: listen on %s: %v\n", cfg.Server.Listen, err)
+		report(stderr, "spillway: listen on %s: %v\nChoose an available address in server.listen, then rerun `spillway serve`.\n", cfg.Server.Listen, err)
 		return 1
 	}
+	baseURL := "http:" + "/" + "/" + ln.Addr().String()
+	logger.InfoContext(ctx, "next steps", "api", baseURL+"/v1", "models", baseURL+"/v1/models", "dashboard", baseURL+"/dashboard")
 	if err := serveUntilDone(ctx, ln, handler, logger, cfg.Server.ShutdownTimeout); err != nil {
 		report(stderr, "spillway: %v\n", err)
 		return 1

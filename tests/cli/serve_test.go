@@ -41,6 +41,55 @@ func TestRun_MissingDefaultConfigSuggestsInit(t *testing.T) {
 	}
 }
 
+func TestRun_ConfigRecoveryGuidance(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "default path", args: []string{"check"}, want: "spillway init"},
+		{name: "explicit path", args: []string{"check", "-config", "config.yaml"}, want: "-config path is correct"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			if code := cli.Run(t.Context(), tt.args, nil, &stdout, &stderr, noEnv); code != 1 {
+				t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Errorf("stderr = %q, want recovery guidance %q", stderr.String(), tt.want)
+			}
+		})
+	}
+	const localSecret = "sk-test-" + "local-secret"
+	const providerSecret = "sk-test-" + "provider-secret"
+	path := writeConfig(t, "server:\n  api_keys: [\"${LOCAL_KEY}\"]\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
+	var stdout, stderr strings.Builder
+	lookupEnv := func(name string) (string, bool) {
+		if name == "LOCAL_KEY" {
+			return localSecret, true
+		}
+		if name == "GROQ_API_KEY" {
+			return providerSecret, false
+		}
+		return "", false
+	}
+	if code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, lookupEnv); code != 1 {
+		t.Fatalf("missing environment variable exit = %d; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Set the named environment variable") || strings.Contains(stderr.String(), localSecret) || strings.Contains(stderr.String(), providerSecret) {
+		t.Errorf("missing environment guidance = %q", stderr.String())
+	}
+	var invalidOut, invalidErr strings.Builder
+	invalidPath := writeConfig(t, "unknown: value\n")
+	if code := cli.Run(t.Context(), []string{"check", "-config", invalidPath}, nil, &invalidOut, &invalidErr, noEnv); code != 1 {
+		t.Fatalf("invalid config exit = %d; stderr = %q", code, invalidErr.String())
+	}
+	if !strings.Contains(invalidErr.String(), "Check the config syntax and values") {
+		t.Errorf("invalid config guidance = %q", invalidErr.String())
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -89,6 +138,9 @@ func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "level=WARN") || !strings.Contains(stderr.String(), "reachable from the network") {
 		t.Errorf("stderr = %q, want a WARN that the API is reachable from the network", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Choose an available address in server.listen") {
+		t.Errorf("stderr = %q, want listen recovery guidance", stderr.String())
 	}
 	if strings.Contains(stderr.String(), e2eKey) {
 		t.Errorf("stderr contains the local key: %q", stderr.String())
@@ -932,6 +984,9 @@ func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
 		base = "http://" + addr
 	case code := <-exit:
 		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	if !strings.Contains(logs.String(), "msg=\"next steps\"") || !strings.Contains(logs.String(), "dashboard=http://") || !strings.Contains(logs.String(), "/v1/models") {
+		t.Errorf("startup guidance = %q, want API and dashboard next steps", logs.String())
 	}
 
 	modelsReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/models", nil)

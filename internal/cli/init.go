@@ -95,7 +95,8 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			}
 		}
 	}
-	if _, err := fmt.Fprintf(stdout, "Created %s. The generated local key is stored in that file; keep it private.\nRun `spillway serve -config %s` to start Spillway.\n", *configPath, *configPath); err != nil {
+	baseURL := "http:" + "/" + "/" + "127.0.0.1:8080"
+	if _, err := fmt.Fprintf(stdout, "Created %s. The generated local key is stored in that file; keep it private.\nRun `spillway check -config %s` to validate it, then `spillway serve -config %s` to start Spillway.\nThe API is available at %s/v1 and the dashboard at %s/dashboard.\n", *configPath, *configPath, *configPath, baseURL, baseURL); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
