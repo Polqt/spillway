@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing v1.0.0 release-candidate tag to verify
+        description: Existing v1.0.0 stable or release-candidate tag to verify
         required: true
         type: string
 
@@ -14,18 +14,18 @@ permissions:
 
 jobs:
   verify-macos-artifact:
-    if: startsWith(inputs.tag, 'v1.0.0-rc.')
+    if: inputs.tag == 'v1.0.0' || startsWith(inputs.tag, 'v1.0.0-rc.')
     runs-on: macos-latest
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - name: Validate the requested release-candidate tag
+      - name: Validate the requested release tag
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v1\.0\.0-rc\.[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v1\.0\.0(-rc\.[0-9]+)?$ ]]
           test "$GITHUB_REF" = refs/heads/main
 
       - name: Prepare artifact workspace
@@ -36,29 +36,42 @@ jobs:
           mkdir -p "$work/download" "$work/extracted" "$work/runtime"
           echo "WORK=$work" >> "$GITHUB_ENV"
 
-      - name: Download the macOS release archives
+      - name: Download all six release archives
         timeout-minutes: 4
         shell: bash
         run: |
           set -euo pipefail
           cd "$WORK/download"
-          echo 'Downloading Darwin release archives'
+          echo 'Downloading all six release archives'
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern '*darwin_*.tar.gz' --pattern checksums.txt --dir .
+            --pattern 'spillway_*.tar.gz' --pattern 'spillway_*.zip' \
+            --pattern checksums.txt --dir .
 
-      - name: Verify macOS archive checksums
+      - name: Verify all six archive checksums
         timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
           cd "$WORK/download"
-          awk 'NF == 2 && $2 ~ /_darwin_(amd64|arm64)\.tar\.gz$/ { print; count++ } END { if (count != 2) exit 1 }' \
-            checksums.txt > darwin-checksums.txt
-          shasum -a 256 -c darwin-checksums.txt
-          echo 'Both Darwin archive checksums verified'
+          awk 'NF == 2 && ($2 ~ /^spillway_.*_(darwin|linux)_(amd64|arm64)\.tar\.gz$/ || $2 ~ /^spillway_.*_windows_(amd64|arm64)\.zip$/) { print; count++ } END { if (count != 6) exit 1 }' \
+            checksums.txt > release-archive-checksums.txt
+          shasum -a 256 -c release-archive-checksums.txt
+          echo 'All six archive checksums verified'
 
-      - name: Verify native archive provenance
-        timeout-minutes: 5
+      - name: Verify provenance for all six archives
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK/download"
+          while read -r _ archive; do
+            echo "Verifying provenance for $archive"
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
+          done < release-archive-checksums.txt
+          echo 'All six archive attestations verified'
+
+      - name: Resolve release metadata for native smoke test
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
@@ -80,10 +93,6 @@ jobs:
             *) echo "Unsupported macOS runner architecture: $(uname -m)" >&2; exit 1 ;;
           esac
           echo "GOARCH=$goarch" >> "$GITHUB_ENV"
-          archive="spillway_${RELEASE_TAG#v}_darwin_${goarch}.tar.gz"
-          echo "Verifying provenance for native archive $archive"
-          gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY"
-          echo 'Native archive provenance verified'
 
       - name: Run the downloaded macOS artifact
         timeout-minutes: 5

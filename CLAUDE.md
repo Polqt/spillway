@@ -23,6 +23,11 @@ Project agents live in `.claude/agents/`; the slash skills are global.
 Run `verifier`, `/code-review` and `security-auditor` in subagents so they review with fresh eyes, not the context that wrote the code.
 Fix every Critical or High security finding and every review finding that breaks a hard rule or the OpenAI contract, then re-run `verifier`.
 
+## Release documentation
+
+When publishing a release tag, update the current-version install instructions in `README.md` and `docs/install.md` to that published tag.
+Remove outdated release-candidate status wording after the stable tag is published.
+
 A hook in `.claude/settings.json` runs `gofmt -w` on every edited `.go` file and reports syntax errors back.
 
 ## Agent skills
