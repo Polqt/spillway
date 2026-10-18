@@ -175,6 +175,61 @@
     }
   }
 
+  function renderProviderStatus(providers) {
+    const list = document.querySelector("#provider-status");
+    list.replaceChildren();
+    if (!providers.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No providers are configured yet.";
+      list.append(empty);
+      return;
+    }
+    for (const provider of providers) {
+      const item = document.createElement("article");
+      item.className = "provider-status-card";
+      const heading = document.createElement("div");
+      heading.className = "provider-status-heading";
+      const name = document.createElement("strong");
+      name.textContent = provider.name;
+      const configured = document.createElement("span");
+      configured.className = "estimate-tag";
+      configured.textContent = "Configured";
+      heading.append(name, configured);
+      const credential = document.createElement("p");
+      credential.textContent = provider.credential_required
+        ? provider.credential_present ? "Credential configured" : "Credential missing"
+        : "No credential required";
+      item.append(heading, credential);
+      const providerSignals = Array.isArray(provider.signals) ? provider.signals : [];
+      if (providerSignals.length) {
+        const signals = document.createElement("ul");
+        signals.className = "provider-signals";
+        for (const signal of providerSignals) {
+          const row = document.createElement("li");
+          const model = document.createElement("strong");
+          model.textContent = signal.model;
+          const detail = document.createElement("span");
+          const failures = Number(signal.upstream_failures || 0);
+          const failureText = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
+          const reasonText = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
+          const breakerText = signal.breaker_state === "open" ? "; circuit open" : "";
+          const untilText = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+          detail.textContent = `${failureText}${reasonText}${breakerText}${untilText}`;
+          row.append(model, detail);
+          signals.append(row);
+        }
+        item.append(signals);
+      } else {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No active cooldown or failure signal observed.";
+        item.append(empty);
+      }
+      list.append(item);
+    }
+  }
+
   async function refresh(currentSession) {
     const controller = new AbortController();
     refreshController = controller;
@@ -184,12 +239,14 @@
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     try {
       const signal = controller.signal;
-      const [budget, today, quotas] = await Promise.all([
+      const [budget, today, quotas, providerStatus] = await Promise.all([
         request("/api/budget", signal),
         request(`/api/usage?${dateRange(todayStart, now)}&group=day`, signal),
-        request("/api/quotas", signal)
+        request("/api/quotas", signal),
+        request("/api/providers", signal)
       ]);
       if (currentSession !== session) return;
+      renderProviderStatus(providerStatus.providers || []);
       if (today === null) {
         setBudget("today", budget.daily, 0);
         setBudget("month", budget.monthly, 0);

@@ -25,6 +25,13 @@ type LocalKey struct {
 	Dashboard bool          // Grants access to read-only dashboard APIs.
 }
 
+// DashboardProvider describes safe provider configuration metadata for the dashboard.
+type DashboardProvider struct {
+	Name               string
+	CredentialRequired bool
+	CredentialPresent  bool
+}
+
 // providerSet is the part of providers.Set the API uses.
 type providerSet interface {
 	Lookup(name string) (providers.Provider, bool)
@@ -70,11 +77,12 @@ type Options struct {
 	UsageRecorder interface {
 		Record(context.Context, store.Request) error
 	}
-	DashboardStore dashboardStore // Reads usage history for dashboard endpoints.
-	Dashboard      http.Handler   // Serves the static dashboard shell and assets.
-	CostEstimator  attemptPricer
-	BudgetGate     *budget.Gate
-	ExactCache     *cache.Cache
+	DashboardStore     dashboardStore      // Reads usage history for dashboard endpoints.
+	Dashboard          http.Handler        // Serves the static dashboard shell and assets.
+	DashboardProviders []DashboardProvider // Safe provider configuration metadata for the dashboard.
+	CostEstimator      attemptPricer
+	BudgetGate         *budget.Gate
+	ExactCache         *cache.Cache
 	// Now supplies the clock used to format cooldown retry times.
 	Now               func() time.Time
 	BodyReadTimeout   time.Duration
@@ -124,10 +132,12 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.HandleFunc("GET /api/decisions", func(w http.ResponseWriter, r *http.Request) { serveDecisions(w, r, o) })
 	mux.HandleFunc("GET /api/budget", func(w http.ResponseWriter, r *http.Request) { serveBudget(w, r, o) })
 	mux.HandleFunc("GET /api/quotas", func(w http.ResponseWriter, r *http.Request) { serveQuotas(w, r, o) })
+	mux.HandleFunc("GET /api/providers", func(w http.ResponseWriter, r *http.Request) { serveProviderStatus(w, r, o) })
 	mux.Handle("/api/usage", methodNotAllowed("GET"))
 	mux.Handle("/api/decisions", methodNotAllowed("GET"))
 	mux.Handle("/api/budget", methodNotAllowed("GET"))
 	mux.Handle("/api/quotas", methodNotAllowed("GET"))
+	mux.Handle("/api/providers", methodNotAllowed("GET"))
 	planner := o.Router
 	if planner == nil {
 		var err error

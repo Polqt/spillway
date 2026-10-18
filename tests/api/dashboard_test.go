@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,8 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+	tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
 	handler, err := api.NewHandler(api.Options{
 		Providers: set,
 		LocalKeys: []api.LocalKey{
@@ -62,6 +66,11 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 		},
 		AllowedHosts: api.LoopbackHosts("127.0.0.1"), Logger: slog.New(slog.DiscardHandler),
 		UsageRecorder: db, DashboardStore: db, Dashboard: web.Handler(), Tracker: tracker, BudgetGate: gate, Now: func() time.Time { return now },
+		DashboardProviders: []api.DashboardProvider{
+			{Name: "mock"},
+			{Name: "groq", CredentialRequired: true, CredentialPresent: true},
+			{Name: "ollama"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,17 +87,21 @@ func TestDashboardPage_HostCheckedButUnauthenticated(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, test := range []struct {
-		name string
-		path string
-		host string
-		want int
-	}{
-		{name: "shell", path: "/dashboard", host: "127.0.0.1", want: http.StatusOK},
-		{name: "stylesheet", path: "/dashboard.css", host: "127.0.0.1", want: http.StatusOK},
-		{name: "script", path: "/dashboard.js", host: "127.0.0.1", want: http.StatusOK},
-		{name: "foreign host", path: "/dashboard", host: "attacker.example", want: http.StatusForbidden},
-	} {
+	shell := dashboardRequest(t, handler, "/dashboard", "", "127.0.0.1")
+	assets := regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`).FindAllStringSubmatch(shell.Body.String(), -1)
+	paths := []string{"/dashboard"}
+	for _, asset := range assets {
+		if !slices.Contains(paths, asset[1]) {
+			paths = append(paths, asset[1])
+		}
+	}
+	for _, path := range paths {
+		test := struct {
+			name string
+			path string
+			host string
+			want int
+		}{name: path, path: path, host: "127.0.0.1", want: http.StatusOK}
 		t.Run(test.name, func(t *testing.T) {
 			response := dashboardRequest(t, handler, test.path, "", test.host)
 			if response.Code != test.want {
@@ -102,6 +115,10 @@ func TestDashboardPage_HostCheckedButUnauthenticated(t *testing.T) {
 				}
 			}
 		})
+	}
+	foreign := dashboardRequest(t, handler, "/dashboard", "", "attacker.example")
+	if foreign.Code != http.StatusForbidden {
+		t.Errorf("foreign Host status = %d, want 403", foreign.Code)
 	}
 }
 
@@ -134,23 +151,73 @@ func TestDashboardAPI_AuthenticationAndHostCheck(t *testing.T) {
 		{name: "foreign host precedes auth", host: "attacker.example", want: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := dashboardRequest(t, handler, "/api/quotas", test.key, test.host)
-			if response.Code != test.want {
-				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body)
-			}
-			if response.Header().Get("Cache-Control") != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
-			}
-			if strings.Contains(response.Body.String(), dashboardKey) || strings.Contains(response.Body.String(), chatOnlyKey) {
-				t.Errorf("response contains a configured key: %s", response.Body)
-			}
-			if test.want != http.StatusOK && !strings.Contains(response.Body.String(), `"error"`) {
-				t.Errorf("error response is not OpenAI-shaped: %s", response.Body)
-			}
-			if test.key == chatOnlyKey && !strings.Contains(response.Body.String(), `"code":"permission_denied"`) {
-				t.Errorf("chat-only key error code = %s, want permission_denied", response.Body)
+			for _, path := range []string{"/api/quotas", "/api/providers"} {
+				response := dashboardRequest(t, handler, path, test.key, test.host)
+				if response.Code != test.want {
+					t.Fatalf("GET %s status = %d, want %d: %s", path, response.Code, test.want, response.Body)
+				}
+				if response.Header().Get("Cache-Control") != "no-store" {
+					t.Errorf("GET %s Cache-Control = %q, want no-store", path, response.Header().Get("Cache-Control"))
+				}
+				if strings.Contains(response.Body.String(), dashboardKey) || strings.Contains(response.Body.String(), chatOnlyKey) {
+					t.Errorf("GET %s response contains a configured key: %s", path, response.Body)
+				}
+				if test.want != http.StatusOK && !strings.Contains(response.Body.String(), `"error"`) {
+					t.Errorf("GET %s error response is not OpenAI-shaped: %s", path, response.Body)
+				}
+				if test.key == chatOnlyKey && !strings.Contains(response.Body.String(), `"code":"permission_denied"`) {
+					t.Errorf("GET %s chat-only key error code = %s, want permission_denied", path, response.Body)
+				}
 			}
 		})
+	}
+}
+
+func TestDashboardAPI_ProviderStatusIsSafeAndBounded(t *testing.T) {
+	handler, _, _ := dashboardEnv(t)
+	response := dashboardRequest(t, handler, "/api/providers", dashboardKey, "127.0.0.1")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
+	var result struct {
+		Providers []struct {
+			Name               string `json:"name"`
+			Configured         bool   `json:"configured"`
+			CredentialRequired bool   `json:"credential_required"`
+			CredentialPresent  bool   `json:"credential_present"`
+			Signals            []struct {
+				Model            string `json:"model"`
+				Reason           string `json:"reason"`
+				UpstreamFailures int    `json:"upstream_failures"`
+			} `json:"signals"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Providers) != 3 {
+		t.Fatalf("providers = %+v, want only the three configured providers", result.Providers)
+	}
+	if result.Providers[0].Name != "groq" || !result.Providers[0].CredentialRequired || !result.Providers[0].CredentialPresent {
+		t.Errorf("credential provider status = %+v, want configured groq with credential present", result.Providers[0])
+	}
+	if result.Providers[1].Name != "mock" || !result.Providers[1].Configured || result.Providers[1].CredentialRequired || result.Providers[1].CredentialPresent || len(result.Providers[1].Signals) != 1 {
+		t.Fatalf("provider status = %+v, want configured mock with one observed cooldown", result.Providers[1])
+	}
+	provider := result.Providers[1]
+	if provider.Signals[0].Model != "echo" || provider.Signals[0].Reason != "rate limited" || provider.Signals[0].UpstreamFailures != 1 {
+		t.Errorf("observed signal = %+v, want the fixed rate limit reason for echo", provider.Signals[0])
+	}
+	if result.Providers[2].Name != "ollama" || result.Providers[2].CredentialRequired || result.Providers[2].CredentialPresent {
+		t.Errorf("credential-free provider status = %+v, want configured ollama without credential requirement", result.Providers[2])
+	}
+	for _, forbidden := range []string{dashboardKey, chatOnlyKey, "GEMINI_API_KEY", "https://", "Authorization"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Errorf("provider status contains forbidden value %q: %s", forbidden, response.Body)
+		}
 	}
 }
 

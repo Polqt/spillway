@@ -273,11 +273,14 @@ func TestTracker_SnapshotPreservesCandidateBreakerWithProviderCooldown(t *testin
 	for range 3 {
 		tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
 	}
+	for range 10 {
+		tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+	}
 	tracker.Observe(sibling, providers.ErrUnauthorized, providers.RateLimit{})
 	for _, candidate := range tracker.Snapshot() {
 		if candidate.Model == ref.Model {
-			if candidate.Breaker != quota.BreakerOpen || candidate.Reason != "unauthorized" {
-				t.Fatalf("candidate snapshot = %+v, want open breaker and provider cooldown reason", candidate)
+			if candidate.Breaker != quota.BreakerOpen || candidate.Reason != "unauthorized" || candidate.UpstreamFailures != 7 {
+				t.Fatalf("candidate snapshot = %+v, want open breaker, provider cooldown reason and capped failure count", candidate)
 			}
 			return
 		}

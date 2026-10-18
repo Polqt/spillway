@@ -2,8 +2,7 @@ version: 2
 
 before:
   hooks:
-    - corepack pnpm --dir apps/spillway/web install --frozen-lockfile
-    - corepack pnpm --dir apps/spillway/web run build
+    - make web-build
 
 builds:
   - id: spillway

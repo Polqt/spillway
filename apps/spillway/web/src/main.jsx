@@ -10,6 +10,7 @@ function Dashboard() {
   const [connected, setConnected] = useState(false);
   const [historyAvailable, setHistoryAvailable] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
+  const [providerStatus, setProviderStatus] = useState([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(null);
@@ -37,6 +38,7 @@ function Dashboard() {
       credentials: "omit",
       signal,
     });
+    const body = await response.json().catch(() => ({}));
     if (response.status === 401) {
       const error = new Error("That key was not accepted. Check it and try again.");
       error.status = response.status;
@@ -47,9 +49,9 @@ function Dashboard() {
       error.status = response.status;
       throw error;
     }
-    if (response.status === 503) return null;
-    if (!response.ok) throw new Error(`Dashboard request failed (${response.status}).`);
-    return response.json();
+    if (path.startsWith("/api/usage?") && response.status === 503 && body.error?.code === "store_disabled") return null;
+    if (!response.ok) throw new Error(body.error?.message || `Dashboard request failed (${response.status}).`);
+    return body;
   }
 
   async function connect(candidate) {
@@ -63,7 +65,10 @@ function Dashboard() {
     setMessage("");
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const budget = await request("/api/budget", token, controller.signal);
+      const [budget, providerResponse] = await Promise.all([
+        request("/api/budget", token, controller.signal),
+        request("/api/providers", token, controller.signal),
+      ]);
       const now = new Date();
       const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -88,6 +93,7 @@ function Dashboard() {
       }
       setHistoryAvailable(history !== null);
       setDashboardData(historyData);
+      setProviderStatus(providerResponse?.providers || []);
       setKey(token);
       setConnected(true);
     } catch (error) {
@@ -102,6 +108,7 @@ function Dashboard() {
         setConnected(false);
         setDashboardData(null);
         setHistoryAvailable(null);
+        setProviderStatus([]);
       }
       setMessage(error.name === "AbortError" ? "The dashboard request timed out. Check that Spillway is running and try again." : error.message);
     } finally {
@@ -120,6 +127,7 @@ function Dashboard() {
     setBusy(false);
     setHistoryAvailable(null);
     setDashboardData(null);
+    setProviderStatus([]);
     setMessage("");
     try {
       sessionStorage.removeItem(dashboardKeyName);
@@ -198,6 +206,7 @@ function Dashboard() {
                 <p class="helper">History contains request metadata such as model, route, token counts and estimated cost.</p>
               </article>
             </section>
+            <ProviderStatus providers={providerStatus} />
             {dashboardData && <History data={dashboardData} />}
             {message && <p class="notice" role="status">{message}</p>}
             <div class="actions"><button class="secondary" type="button" onClick={forget}>Forget dashboard key</button></div>
@@ -207,6 +216,33 @@ function Dashboard() {
 
       <footer class="footer"><span>Spillway runs on your machine.</span><span>Private by default · No telemetry</span></footer>
     </div>
+  );
+}
+
+function ProviderStatus({ providers }) {
+  return (
+    <section class="provider-status" aria-labelledby="provider-status-heading">
+      <div class="history-title"><div><p class="step-label">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
+      <p class="helper">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+      {providers.length ? (
+        <div class="provider-status-grid">{providers.map((provider) => (
+          <article class="card provider-status-card" key={provider.name}>
+            <div class="provider-status-heading"><strong>{provider.name}</strong><span class="estimate-label">Configured</span></div>
+            <p>{provider.credential_required ? provider.credential_present ? "Credential configured" : "Credential missing" : "No credential required"}</p>
+            {Array.isArray(provider.signals) && provider.signals.length ? (
+              <ul class="provider-signals">{provider.signals.map((signal) => {
+                const failures = Number(signal.upstream_failures || 0);
+                const count = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
+                const reason = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
+                const breaker = signal.breaker_state === "open" ? "; circuit open" : "";
+                const until = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+                return <li key={signal.model}><strong>{signal.model}</strong><span>{count}{reason}{breaker}{until}</span></li>;
+              })}</ul>
+            ) : <p class="empty">No active cooldown or failure signal observed.</p>}
+          </article>
+        ))}</div>
+      ) : <p class="empty">No providers are configured yet.</p>}
+    </section>
   );
 }
 

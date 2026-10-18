@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Polqt/spillway/internal/budget"
+	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/store"
 )
 
@@ -127,6 +130,51 @@ func serveQuotas(w http.ResponseWriter, _ *http.Request, o Options) {
 	writeJSON(w, http.StatusOK, struct {
 		Candidates any `json:"candidates"`
 	}{candidates})
+}
+
+func serveProviderStatus(w http.ResponseWriter, _ *http.Request, o Options) {
+	type signal struct {
+		Model            string             `json:"model"`
+		Reason           string             `json:"reason"`
+		CooldownUntil    *time.Time         `json:"cooldown_until,omitempty"`
+		BreakerState     quota.BreakerState `json:"breaker_state,omitempty"`
+		UpstreamFailures int                `json:"upstream_failures,omitempty"`
+	}
+	type providerStatus struct {
+		Name               string   `json:"name"`
+		Configured         bool     `json:"configured"`
+		CredentialRequired bool     `json:"credential_required"`
+		CredentialPresent  bool     `json:"credential_present"`
+		Signals            []signal `json:"signals"`
+	}
+	statuses := make([]providerStatus, 0, len(o.DashboardProviders))
+	index := make(map[string]int, len(o.DashboardProviders))
+	for _, configured := range o.DashboardProviders {
+		index[configured.Name] = len(statuses)
+		statuses = append(statuses, providerStatus{
+			Name: configured.Name, Configured: true,
+			CredentialRequired: configured.CredentialRequired,
+			CredentialPresent:  configured.CredentialPresent,
+			Signals:            []signal{},
+		})
+	}
+	if o.Tracker != nil {
+		for _, candidate := range o.Tracker.Snapshot() {
+			providerIndex, exists := index[candidate.Provider]
+			if !exists || candidate.CooldownUntil == nil && candidate.Breaker != quota.BreakerOpen && candidate.UpstreamFailures == 0 {
+				continue
+			}
+			statuses[providerIndex].Signals = append(statuses[providerIndex].Signals, signal{
+				Model: candidate.Model, Reason: candidate.Reason,
+				CooldownUntil: candidate.CooldownUntil, BreakerState: candidate.Breaker,
+				UpstreamFailures: candidate.UpstreamFailures,
+			})
+		}
+	}
+	slices.SortFunc(statuses, func(a, b providerStatus) int { return strings.Compare(a.Name, b.Name) })
+	writeJSON(w, http.StatusOK, struct {
+		Providers []providerStatus `json:"providers"`
+	}{statuses})
 }
 
 func parseTimeParam(r *http.Request, name string, fallback time.Time) (time.Time, error) {

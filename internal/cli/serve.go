@@ -271,6 +271,12 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		ExactCache:     exactCache,
 		Now:            now,
 	}
+	for name, provider := range cfg.Providers {
+		preset, _ := providers.LookupPreset(name)
+		options.DashboardProviders = append(options.DashboardProviders, api.DashboardProvider{
+			Name: name, CredentialRequired: preset.RequiresKey, CredentialPresent: !provider.APIKey.IsZero(),
+		})
+	}
 	if tracker != nil {
 		options.Tracker = tracker
 	}

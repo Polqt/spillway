@@ -51,11 +51,12 @@ const (
 
 // CandidateSnapshot describes the cooldown and circuit state of one candidate.
 type CandidateSnapshot struct {
-	Provider      string       `json:"provider"`                 // Candidate provider name.
-	Model         string       `json:"model"`                    // Candidate model name.
-	CooldownUntil *time.Time   `json:"cooldown_until,omitempty"` // Resume time when cooling down.
-	Reason        string       `json:"reason,omitempty"`         // Fixed cooldown reason.
-	Breaker       BreakerState `json:"breaker_state"`            // Current circuit breaker state.
+	Provider         string       `json:"provider"`                    // Candidate provider name.
+	Model            string       `json:"model"`                       // Candidate model name.
+	CooldownUntil    *time.Time   `json:"cooldown_until,omitempty"`    // Resume time when cooling down.
+	Reason           string       `json:"reason,omitempty"`            // Fixed cooldown reason.
+	Breaker          BreakerState `json:"breaker_state"`               // Current circuit breaker state.
+	UpstreamFailures int          `json:"upstream_failures,omitempty"` // Circuit-counted upstream failures, capped at seven.
 }
 
 // Tracker tracks cooldowns for the configured model references only.
@@ -131,7 +132,10 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 		if !until.IsZero() {
 			cooldownUntil = &until
 		}
-		result = append(result, CandidateSnapshot{Provider: ref.Provider, Model: ref.Model, CooldownUntil: cooldownUntil, Reason: reason, Breaker: breaker})
+		result = append(result, CandidateSnapshot{
+			Provider: ref.Provider, Model: ref.Model, CooldownUntil: cooldownUntil,
+			Reason: reason, Breaker: breaker, UpstreamFailures: state.upstreamFailures,
+		})
 	}
 	slices.SortFunc(result, func(a, b CandidateSnapshot) int {
 		if a.Provider != b.Provider {

@@ -5,6 +5,7 @@
 GO      ?= go
 TOOL    := $(GO) tool -modfile tools/go.mod
 RELEASE_TOOL := $(GO) tool -modfile tools/release/go.mod
+PNPM = corepack pnpm@$(shell node -p "require('./apps/spillway/web/package.json').packageManager.split('@')[1].split('+')[0]")
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
 VERSION ?= dev
@@ -12,15 +13,20 @@ LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
-.PHONY: web-build web-test build test fuzz lint check run mock vuln cover release-check snapshot
+.PHONY: web-deps web-playwright-deps web-build web-test build test fuzz lint check run mock vuln cover release-check snapshot
 
-web-build:
-	corepack pnpm --dir apps/spillway/web install --frozen-lockfile
-	corepack pnpm --dir apps/spillway/web run build
+web-deps:
+	$(PNPM) --dir apps/spillway/web install --frozen-lockfile
+
+web-playwright-deps:
+	$(PNPM) --dir apps/spillway/web exec playwright install $(PLAYWRIGHT_INSTALL_ARGS) chromium
+
+web-build: web-deps
+	$(PNPM) --dir apps/spillway/web run build
 
 web-test: web-build
-	corepack pnpm --dir apps/spillway/web exec playwright install chromium
-	corepack pnpm --dir apps/spillway/web run test:e2e
+	$(PNPM) --dir apps/spillway/web exec playwright install chromium
+	$(PNPM) --dir apps/spillway/web run test:e2e
 
 build: web-build
 build: export CGO_ENABLED=0

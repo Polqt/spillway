@@ -7,6 +7,7 @@ const fallbackJS = await readFile(new URL("../dashboard_fallback.js", import.met
 
 test("dashboard key connects, explains optional history and can be forgotten", async ({ page }) => {
   const calls = [];
+  await page.setViewportSize({ width: 320, height: 900 });
   await page.route("**/api/**", async (route) => {
     calls.push(route.request());
     expect(route.request().headers().authorization).toBe("Bearer sk-test-dashboard");
@@ -19,11 +20,11 @@ test("dashboard key connects, explains optional history and can be forgotten", a
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [] }] }),
+        body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [{ model: "mock-model-with-a-long-unbroken-name-for-mobile-layouts", reason: "rate_limit", breaker_state: "open", upstream_failures: 7, cooldown_until: "2026-10-18T10:01:00Z" }] }] }),
       });
       return;
     }
-    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "Usage storage is not configured." } }) });
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "store_disabled", message: "Usage storage is not configured." } }) });
   });
 
   await page.clock.install({ time: new Date("2026-10-18T10:00:00Z") });
@@ -46,6 +47,11 @@ test("dashboard key connects, explains optional history and can be forgotten", a
   await expect(page.getByRole("heading", { name: "Provider status" })).toBeVisible();
   await expect(page.locator(".provider-status")).toContainText("mock");
   await expect(page.locator(".provider-status")).toContainText("No credential required");
+  await expect(page.locator(".provider-status")).toContainText("At least 7 upstream failures observed.");
+  await expect(page.locator(".provider-status")).toContainText("Observed rate_limit; circuit open");
+  await expect(page.locator(".provider-status")).toContainText("mock-model-with-a-long-unbroken-name-for-mobile-layouts");
+  const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
+  expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
   expect(calls).toHaveLength(3);
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/providers");
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/usage");
@@ -77,16 +83,23 @@ test("Go install fallback connects and stays usable without usage storage", asyn
   await page.route("**/dashboard.js", (route) => route.fulfill({ contentType: "text/javascript", body: fallbackJS }));
   await page.route("**/api/budget", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
   await page.route("**/api/quotas", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ candidates: [] }) }));
-  await page.route("**/api/providers", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [] }) }));
+  await page.route("**/api/providers", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [{ model: "mock-model-with-a-long-unbroken-name-for-mobile-layouts", reason: "rate_limit", breaker_state: "open", upstream_failures: 7, cooldown_until: "2026-10-18T10:01:00Z" }] }] }),
+  }));
   await page.route("**/api/usage**", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "store_disabled", message: "Usage storage is not configured." } }) }));
 
   await page.setViewportSize({ width: 320, height: 900 });
   await page.goto("/dashboard");
-  await page.getByLabel("Dashboard key").fill("sk-test-dashboard");
+  await page.getByRole("textbox", { name: "Dashboard key" }).fill("sk-test-dashboard");
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.locator("#dashboard-content")).toBeVisible();
   await expect(page.locator("#connection-label")).toHaveText("Connected");
   await expect(page.locator("#updated-at")).toHaveText("Connected · usage history is not stored");
+  await expect(page.locator("#provider-status")).toContainText("At least 7 upstream failures observed.");
+  await expect(page.locator("#provider-status")).toContainText("Observed rate_limit; circuit open");
+  await expect(page.locator("#provider-status")).toContainText("mock-model-with-a-long-unbroken-name-for-mobile-layouts");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBe("sk-test-dashboard");
@@ -113,6 +126,20 @@ test("invalid dashboard access gives the config hint without retaining the key",
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBeNull();
 });
 
+test("provider status API failures remain visible instead of looking like an empty configuration", async ({ page }) => {
+  await page.route("**/api/budget", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
+  await page.route("**/api/providers", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "provider_status_unavailable", message: "Provider status is temporarily unavailable." } }),
+  }));
+  await page.goto("/dashboard");
+  await page.getByRole("textbox", { name: "Dashboard key" }).fill("sk-test-dashboard");
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Provider status is temporarily unavailable.");
+  await expect(page.getByRole("heading", { name: "Your dashboard is ready." })).toHaveCount(0);
+});
+
 test("stored history remains available and renders untrusted model names as text", async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -125,6 +152,8 @@ test("stored history remains available and renders untrusted model names as text
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ key: "mock/echo", requests: 1, cost_micro_usd: 2500 }] }) });
     } else if (url.pathname === "/api/decisions") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ at: "2026-10-18T10:00:00Z", model: "<img src=x onerror=alert(1)>", provider: "mock", status: 200, route: "auto; candidate 1/1" }] }) });
+    } else if (url.pathname === "/api/providers") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [] }] }) });
     } else {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ candidates: [] }) });
     }

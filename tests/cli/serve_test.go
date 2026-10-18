@@ -679,7 +679,10 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [{name: admin, key: sk-test-no-store, dashboard: true}]\nproviders:\n  mock: {}\n"), 0o600); err != nil {
+	const providerSecret = "sk-test-provider-secret"
+	const providerURL = "https://private-provider-url.invalid/v1"
+	config := "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [{name: admin, key: sk-test-no-store, dashboard: true}]\nproviders:\n  gemini:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n    base_url: \"${CUSTOM_PROVIDER_URL}\"\n  groq:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n  mock: {}\n  ollama: {}\n  openrouter:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -689,7 +692,16 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	exit := make(chan int, 1)
 	go func() {
 		var stdout strings.Builder
-		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, nil, &stdout, pw, noEnv)
+		exit <- cli.Run(ctx, []string{"serve", "-config", configPath}, nil, &stdout, pw, func(name string) (string, bool) {
+			switch name {
+			case "CUSTOM_PROVIDER_SECRET":
+				return providerSecret, true
+			case "CUSTOM_PROVIDER_URL":
+				return providerURL, true
+			default:
+				return "", false
+			}
+		})
 		_ = pw.Close()
 	}()
 	var base string
@@ -715,6 +727,47 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusOK || string(body) != "{\"candidates\":[]}\n" {
 		t.Fatalf("GET /api/quotas = %d %s, want empty candidates", response.StatusCode, body)
+	}
+	statusRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/api/providers?limit=100000", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusRequest.Header.Set("Authorization", "Bearer sk-test-no-store")
+	statusResponse, err := http.DefaultClient.Do(statusRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusBody, err := io.ReadAll(statusResponse.Body)
+	_ = statusResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statusResponse.StatusCode != http.StatusOK || statusResponse.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET /api/providers = %d (Cache-Control %q): %s", statusResponse.StatusCode, statusResponse.Header.Get("Cache-Control"), statusBody)
+	}
+	var status struct {
+		Providers []struct {
+			Name               string `json:"name"`
+			CredentialRequired bool   `json:"credential_required"`
+			CredentialPresent  bool   `json:"credential_present"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(statusBody, &status); err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Providers) != 5 {
+		t.Fatalf("provider statuses = %d, want the five configured built-in providers", len(status.Providers))
+	}
+	for _, provider := range status.Providers {
+		wantCredential := provider.Name == "gemini" || provider.Name == "groq" || provider.Name == "openrouter"
+		if provider.CredentialRequired != wantCredential || provider.CredentialPresent != wantCredential {
+			t.Errorf("%s credential status = required:%t present:%t, want %t", provider.Name, provider.CredentialRequired, provider.CredentialPresent, wantCredential)
+		}
+	}
+	for _, forbidden := range []string{providerSecret, "CUSTOM_PROVIDER_SECRET", "CUSTOM_PROVIDER_URL", providerURL, "Authorization"} {
+		if strings.Contains(string(statusBody), forbidden) {
+			t.Errorf("provider status exposed %q: %s", forbidden, statusBody)
+		}
 	}
 	cancel()
 	if code := <-exit; code != 0 {

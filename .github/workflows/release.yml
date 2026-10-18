@@ -60,9 +60,9 @@ jobs:
       - name: Enable pinned pnpm
         run: corepack enable
       - name: Install pinned dashboard dependencies
-        run: corepack pnpm --dir apps/spillway/web install --frozen-lockfile
+        run: make web-deps
       - name: Install Playwright browser dependencies on Linux
-        run: corepack pnpm --dir apps/spillway/web exec playwright install --with-deps chromium
+        run: make web-playwright-deps PLAYWRIGHT_INSTALL_ARGS=--with-deps
 
       - name: Run checks
         run: make check

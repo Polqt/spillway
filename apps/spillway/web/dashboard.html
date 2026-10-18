@@ -34,6 +34,12 @@
     </section>
 
     <div id="dashboard-content" hidden="hidden">
+      <section class="section-block" aria-labelledby="provider-status-heading">
+        <div class="section-title"><div><p class="eyebrow">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
+        <p class="provider-status-note">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+        <div id="provider-status" class="provider-status-grid"><p class="empty">Loading configured providers…</p></div>
+      </section>
+
       <section class="budget-grid" aria-label="Estimated spend">
         <article class="budget-card budget-today">
           <div class="card-heading"><div><p class="eyebrow">TODAY <span class="utc-note">UTC</span></p><h2>Estimated spend</h2></div><span class="card-icon" aria-hidden="true">↗</span></div>
