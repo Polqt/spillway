@@ -281,6 +281,9 @@ func TestHealthz_OK(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 		t.Errorf("Content-Type = %q", ct)
 	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 }
 
 // Security property: /healthz is exempt from auth only, not from the Host check.

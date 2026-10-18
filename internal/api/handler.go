@@ -158,6 +158,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	h = accessLog(o.Logger, o.UsageRecorder, h)
 	h = recoverPanics(o.Logger, h)
 	h = noStoreAPI(h)
+	h = securityHeaders(h)
 	return h, nil
 }
 

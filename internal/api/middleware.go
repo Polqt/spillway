@@ -128,6 +128,13 @@ func (rec *requestRecord) setStream() {
 
 type recordKey struct{}
 
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // recordFrom returns the request's record. Handlers outside accessLog get a
 // throwaway record, so callers never check for nil.
 func recordFrom(ctx context.Context) *requestRecord {
