@@ -90,14 +90,15 @@ function Dashboard() {
       const history = await request(`/api/usage?group=day${range(todayStart)}`, token, controller.signal);
       let historyData = null;
       if (history !== null) {
-        const [month, providers, models, decisions, quotas] = await Promise.all([
+        const [month, providers, models, decisions, quotas, evaluations] = await Promise.all([
           request(`/api/usage?group=day${range(monthStart)}`, token, controller.signal),
           request(`/api/usage?group=provider${range(monthStart)}`, token, controller.signal),
           request(`/api/usage?group=model${range(monthStart)}`, token, controller.signal),
           request("/api/decisions?limit=20", token, controller.signal),
           request("/api/quotas", token, controller.signal),
+          request("/api/evaluations?limit=20", token, controller.signal),
         ]);
-        historyData = { budget, todaySpend: sumCosts(history.data), monthSpend: sumCosts(month.data), providers: providers.data || [], models: models.data || [], decisions: decisions.data || [], candidates: quotas.candidates || [] };
+        historyData = { budget, todaySpend: sumCosts(history.data), monthSpend: sumCosts(month.data), providers: providers.data || [], models: models.data || [], decisions: decisions.data || [], candidates: quotas.candidates || [], evaluations: evaluations.data || [] };
       }
       if (sequence !== requestSequence.current) return;
       try {
@@ -453,6 +454,18 @@ function History({ data }) {
             </li>
           ))}</ul>
         ) : <p class="empty">No active cooldowns.</p>}
+      </section>
+      <section class="card history-panel" aria-labelledby="evaluations-heading">
+        <h3 id="evaluations-heading">Evaluation summaries</h3>
+        {data.evaluations.length ? (
+          <ul class="decision-list">{data.evaluations.map((run) => (
+            <li key={run.run_id}>
+              <div><strong>{run.run_id}</strong><span>{run.summary?.prompt_count ?? 0} prompts · corpus {String(run.corpus_sha256 || "").slice(0, 12)}</span></div>
+              <time dateTime={run.created_at}>{run.created_at ? new Date(run.created_at).toLocaleString() : ""}</time>
+              {run.summary?.results?.length > 0 && <p>{run.summary.results.filter((gate) => gate.difficulty === "all" && gate.category === "all").map((gate) => `${gate.arm} ${gate.gate}: ${gate.verdict}`).join(" · ")}</p>}
+            </li>
+          ))}</ul>
+        ) : <p class="empty">No aggregate evaluation reports have been saved.</p>}
       </section>
       <p class="helper">Spend is estimated from provider usage or configured prices. Actual billing may differ.</p>
     </section>

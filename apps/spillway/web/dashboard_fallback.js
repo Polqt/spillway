@@ -158,6 +158,40 @@
     }
   }
 
+  function renderEvaluationRuns(rows) {
+    const list = document.querySelector("#evaluation-runs");
+    list.replaceChildren();
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No aggregate evaluation reports have been saved.";
+      list.append(empty);
+      return;
+    }
+    for (const run of rows) {
+      const item = document.createElement("article");
+      item.className = "decision";
+      const title = document.createElement("div");
+      title.className = "decision-model";
+      title.textContent = run.run_id;
+      const detail = document.createElement("div");
+      detail.className = "decision-detail";
+      detail.textContent = `${run.summary?.prompt_count || 0} prompts · corpus ${(run.corpus_sha256 || "").slice(0, 12)}`;
+      item.append(title, detail);
+      for (const gate of (run.summary?.results || []).filter((result) => result.difficulty === "all" && result.category === "all")) {
+        const result = document.createElement("div");
+        result.className = "decision-detail";
+        result.textContent = `${gate.arm} · ${gate.gate}: ${gate.verdict}`;
+        item.append(result);
+      }
+      const created = document.createElement("time");
+      created.dateTime = run.created_at || "";
+      created.textContent = run.created_at ? new Date(run.created_at).toLocaleString() : "";
+      item.append(created);
+      list.append(item);
+    }
+  }
+
   function explainRoute(route, cache, status) {
     if (cache === "hit") return "Spillway served the saved exact-cache response.";
     if (!route) return "No route reason was recorded.";
@@ -451,17 +485,19 @@
         renderTotals("#provider-totals", []);
         renderTotals("#model-totals", []);
         renderDecisions([]);
+        renderEvaluationRuns([]);
         renderCooldowns(quotas.candidates || []);
         setText("#updated-at", "Connected · usage history is not stored");
         message.textContent = "Onboarding and local requests work without store:. Add store: only if you want usage and routing history to persist.";
         setConnection(true);
         return;
       }
-      const [month, providers, models, decisions] = await Promise.all([
+      const [month, providers, models, decisions, evaluations] = await Promise.all([
         request(`/api/usage?${dateRange(monthStart, now)}&group=day`, signal),
         request(`/api/usage?${dateRange(monthStart, now)}&group=provider`, signal),
         request(`/api/usage?${dateRange(monthStart, now)}&group=model`, signal),
-        request("/api/decisions?limit=20", signal)
+        request("/api/decisions?limit=20", signal),
+        request("/api/evaluations?limit=20", signal)
       ]);
       if (currentSession !== session) return;
       const todaySpend = (today.data || []).reduce((sum, row) => sum + Number(row.cost_micro_usd || 0), 0);
@@ -471,6 +507,7 @@
       renderTotals("#provider-totals", providers.data || []);
       renderTotals("#model-totals", models.data || []);
       renderDecisions(decisions.data || []);
+      renderEvaluationRuns(evaluations.data || []);
       renderCooldowns(quotas.candidates || []);
       const quality = budget.includes_estimated_costs ? " · includes estimated usage" : "";
       const unknown = budget.includes_unknown_costs ? " · some costs unknown" : "";

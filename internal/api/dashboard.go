@@ -95,6 +95,30 @@ func serveDecisions(w http.ResponseWriter, r *http.Request, o Options) {
 	}{requests, next})
 }
 
+func serveEvaluations(w http.ResponseWriter, r *http.Request, o Options) {
+	if o.DashboardStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "Usage storage is not configured.", typeAPI, "store_disabled")
+		return
+	}
+	limit := 20
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 20 {
+			writeError(w, http.StatusBadRequest, "limit must be from 1 to 20.", typeInvalidRequest, "invalid_query")
+			return
+		}
+		limit = parsed
+	}
+	runs, err := o.DashboardStore.EvaluationRuns(r.Context(), limit)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Data []store.EvaluationRun `json:"data"`
+	}{runs})
+}
+
 func serveBudget(w http.ResponseWriter, r *http.Request, o Options) {
 	status := budget.Status{}
 	if o.BudgetGate != nil {
