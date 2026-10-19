@@ -221,7 +221,7 @@ function Dashboard() {
   return (
     <div class="shell">
       <header class="topbar">
-        <a class="brand" href="/dashboard" aria-label="Spillway dashboard home">
+        <a class="brand" href="/dashboard">
           <span class="brand-mark" aria-hidden="true">S</span>
           <span>Spillway</span>
           <span class="brand-label">LOCAL GATEWAY</span>

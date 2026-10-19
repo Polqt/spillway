@@ -10,6 +10,7 @@
   --muted: #58675e;
   --line: #d8e1da;
   --green: #176b49;
+  --button-text: #fff;
   --green-soft: #e3f4eb;
   --red: #a63f39;
   --shadow: 0 14px 38px rgb(25 47 34 / 6%);
@@ -24,6 +25,7 @@
     --muted: #b0beb5;
     --line: #39483f;
     --green: #80d5a8;
+    --button-text: #111815;
     --green-soft: #203b2e;
     --red: #ff9690;
     --shadow: 0 14px 38px rgb(0 0 0 / 20%);
@@ -34,7 +36,7 @@
 body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); font-size: 16px; line-height: 1.55; }
 a { color: inherit; }
 button, input, select, textarea { font: inherit; }
-button { min-height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: var(--green); color: #fff; font-weight: 700; cursor: pointer; }
+button { min-height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: var(--green); color: var(--button-text); font-weight: 700; cursor: pointer; }
 button:disabled { cursor: wait; opacity: .7; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid #bf711e; outline-offset: 3px; }
 code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }

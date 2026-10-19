@@ -49,3 +49,16 @@ The current stable image is `ghcr.io/polqt/spillway:1.0.0`; use a versioned imag
 ## First run
 
 Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. See the [README quickstart](../README.md#five-minute-offline-quickstart).
+
+For the interactive path, run `spillway init`, review the provider and optional store choices, then follow the suggested `check` and `serve` commands.
+The wizard creates a dashboard key when you enable the store.
+To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
+Keep `config.yaml` private, then open `http://127.0.0.1:8080/dashboard` after the server starts and enter that key.
+Spillway does not print it.
+Dashboard use does not require a browser extension or a separate Node installation.
+
+The dashboard works without `store:`.
+Provider status and the request playground remain available, while usage and routing history require the optional local store.
+Prompts are sent to the configured provider only after you submit a playground request.
+Real providers may charge for requests; Spillway does not send telemetry.
+See [operations](operations.md) and [configuration](configuration.md) for data retention, budgets and provider setup.

@@ -43,6 +43,19 @@ curl.exe http://127.0.0.1:8080/v1/chat/completions `
 
 Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. The response contains `Hello from Spillway`.
 
+### Set up the dashboard
+
+The `-store` option creates a separate dashboard key and enables local usage history.
+Start Spillway, then open `http://127.0.0.1:8080/dashboard` and enter that dashboard key from your private `config.yaml`.
+The CLI does not print keys.
+The dashboard sends the key only to this local Spillway instance; choose **Forget dashboard key** to clear it from the browser tab.
+To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
+
+Usage history is optional.
+Without `-store`, the dashboard still shows configured provider status and includes a request playground, but it does not retain request history.
+Playground prompts are sent to the selected configured provider when you submit them, and paid providers may charge for requests.
+Spillway does not send telemetry.
+
 To use an OpenAI SDK, set its base URL to `http://127.0.0.1:8080/v1` and its API key to the same local app key. See [configuration](docs/configuration.md) and [provider guides](docs/providers/) for setup details.
 
 ## Use a real provider
@@ -67,6 +80,10 @@ spillway serve
 ```
 
 For local inference, use Ollama instead: install Ollama, pull a model such as `llama3.2:3b`, then run `spillway init -yes -providers ollama`. See the [Ollama guide](docs/providers/ollama.md), especially its Docker limitation.
+
+For a guided first run, run `spillway` without arguments to discover commands, then use `spillway init`, `spillway check` and `spillway serve`.
+The interactive setup writes local key values only to the private config file and refers to provider keys by environment variable.
+See [configuration](docs/configuration.md) before enabling paid models, budgets or persistent history.
 
 ## Operations and limitations
 
