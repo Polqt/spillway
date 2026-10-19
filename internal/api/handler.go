@@ -11,6 +11,7 @@ import (
 
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/cache"
+	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
@@ -77,9 +78,10 @@ type Options struct {
 	UsageRecorder interface {
 		Record(context.Context, store.Request) error
 	}
-	DashboardStore     dashboardStore      // Reads usage history for dashboard endpoints.
-	Dashboard          http.Handler        // Serves the static dashboard shell and assets.
-	DashboardProviders []DashboardProvider // Safe provider configuration metadata for the dashboard.
+	DashboardStore     dashboardStore          // Reads usage history for dashboard endpoints.
+	Dashboard          http.Handler            // Serves the static dashboard shell and assets.
+	DashboardProviders []DashboardProvider     // Safe provider configuration metadata for the dashboard.
+	DashboardPricing   map[string]config.Price // Declared prices available to the request playground.
 	CostEstimator      attemptPricer
 	BudgetGate         *budget.Gate
 	ExactCache         *cache.Cache
@@ -133,11 +135,13 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.HandleFunc("GET /api/budget", func(w http.ResponseWriter, r *http.Request) { serveBudget(w, r, o) })
 	mux.HandleFunc("GET /api/quotas", func(w http.ResponseWriter, r *http.Request) { serveQuotas(w, r, o) })
 	mux.HandleFunc("GET /api/providers", func(w http.ResponseWriter, r *http.Request) { serveProviderStatus(w, r, o) })
+	mux.HandleFunc("GET /api/pricing", func(w http.ResponseWriter, _ *http.Request) { servePricing(w, o) })
 	mux.Handle("/api/usage", methodNotAllowed("GET"))
 	mux.Handle("/api/decisions", methodNotAllowed("GET"))
 	mux.Handle("/api/budget", methodNotAllowed("GET"))
 	mux.Handle("/api/quotas", methodNotAllowed("GET"))
 	mux.Handle("/api/providers", methodNotAllowed("GET"))
+	mux.Handle("/api/pricing", methodNotAllowed("GET"))
 	planner := o.Router
 	if planner == nil {
 		var err error

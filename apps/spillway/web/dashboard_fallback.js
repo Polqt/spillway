@@ -7,11 +7,24 @@
   const content = document.querySelector("#dashboard-content");
   const message = document.querySelector("#access-message");
   const disconnect = document.querySelector("#disconnect");
+  const playgroundForm = document.querySelector("#playground-form");
+  const playgroundModel = document.querySelector("#playground-model");
+  const playgroundPrompt = document.querySelector("#playground-prompt");
+  const playgroundStream = document.querySelector("#playground-stream");
+  const playgroundMaxTokens = document.querySelector("#playground-max-tokens");
+  const playgroundEstimate = document.querySelector("#playground-estimate");
+  const playgroundResponse = document.querySelector("#playground-response");
+  const playgroundRoute = document.querySelector("#playground-route");
+  const playgroundMessage = document.querySelector("#playground-message");
+  const playgroundSubmit = document.querySelector("#playground-submit");
+  const playgroundCancel = document.querySelector("#playground-cancel");
   const keyName = "spillway-dashboard-key";
   let key = "";
   let refreshTimer = 0;
   let refreshController = null;
   let session = 0;
+  let playgroundPrices = {};
+  let playgroundController = null;
 
   function setText(selector, value) {
     const element = document.querySelector(selector);
@@ -145,6 +158,39 @@
     }
   }
 
+  function explainRoute(route, cache, status) {
+    if (cache === "hit") return "Spillway served the saved exact-cache response.";
+    if (!route) return "No route reason was recorded.";
+    const parts = route.split(";").map((part) => part.trim());
+    const candidate = parts.find((part) => /^candidate \d+\/\d+$/.test(part));
+    const candidateMatch = candidate && candidate.match(/^candidate (\d+)\/(\d+)$/);
+    const validPart = (part) => /^(direct|auto|rules|classifier|classifier fallback|default|rule \d+|difficulty [a-z]+|tier [a-z0-9-]+|fallback [a-z0-9-]+|needs (tools|vision|json_mode|structured_outputs)(, (tools|vision|json_mode|structured_outputs))*|candidate \d+\/\d+|exhausted \(\d+ eligible\)|no capable model)$/.test(part);
+    if (parts.some((part) => !validPart(part))) return "No plain-language explanation is available; the route reason above is shown verbatim.";
+    const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
+    const selection = candidateMatch
+      ? Number(candidateMatch[1]) > 1
+        ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
+        : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+      : "";
+    if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
+    if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
+    if (parts.includes("no capable model")) return "Spillway could not resolve a usable model for this request.";
+    const fallbackTier = parts.find((part) => part.startsWith("fallback "))?.slice(9);
+    const difficulty = parts.find((part) => part.startsWith("difficulty "))?.slice(11) || "configured";
+    if (parts[0] === "rules") {
+      const lead = parts.includes("classifier fallback")
+        ? "The local classifier could not choose a route, so deterministic routing used "
+        : parts.includes("default")
+          ? "No routing rule matched, so Spillway used the default "
+          : "A routing rule selected the ";
+      return `${lead}${difficulty} difficulty${tier ? ` in the ${tier} tier` : ""}${fallbackTier ? `, then spilled over to the ${fallbackTier} fallback tier` : ""}.${selection ? ` ${selection}` : ""}`;
+    }
+    if (parts[0] === "classifier") return `${parts.includes("classifier fallback") ? "Classifier fallback" : "The local classifier"} selected the ${difficulty} difficulty${tier ? ` in the ${tier} tier` : ""}${fallbackTier ? `, then spilled over to the ${fallbackTier} fallback tier` : ""}.${selection ? ` ${selection}` : ""}`;
+    if (parts[0].startsWith("tier ")) return `Spillway used the requested ${parts[0].slice(5)} tier.${selection ? ` ${selection}` : ""}`;
+    if (parts[0] === "auto") return `Spillway selected a candidate from the configured auto route${tier ? ` in the ${tier} tier` : ""}.${selection ? ` ${selection}` : ""}`;
+    return "Spillway used the configured route shown above.";
+  }
+
   function renderCooldowns(candidates) {
     const active = candidates.filter((candidate) => candidate.cooldown_until && new Date(candidate.cooldown_until).getTime() > Date.now());
     const list = document.querySelector("#cooldowns");
@@ -230,6 +276,154 @@
     }
   }
 
+  function renderPlaygroundModels(models) {
+    const selected = playgroundModel.value;
+    playgroundModel.replaceChildren();
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.id;
+      playgroundModel.append(option);
+    }
+    if (models.some((model) => model.id === selected)) playgroundModel.value = selected;
+    updatePlaygroundEstimate();
+  }
+
+  function renderPlaygroundRoute(metadata) {
+    playgroundRoute.replaceChildren();
+    playgroundRoute.hidden = !metadata;
+    if (!metadata) return;
+    const heading = document.createElement("h3");
+    heading.textContent = "Routing explanation";
+    playgroundRoute.append(heading);
+    const fields = [
+      ["Provider and model", [metadata.provider, metadata.model].filter(Boolean).join("/") || "Not reported"],
+      ["Route reason", metadata.route || "Not reported"],
+      ["Cache", metadata.cache || "Not reported"],
+      ["HTTP status", String(metadata.status)],
+    ];
+    for (const [label, value] of fields) {
+      const row = document.createElement("p");
+      const name = document.createElement("strong");
+      name.textContent = label;
+      const detail = document.createElement("span");
+      detail.textContent = value;
+      row.append(name, detail);
+      playgroundRoute.append(row);
+    }
+    const summary = document.createElement("p");
+    const summaryLabel = document.createElement("strong");
+    summaryLabel.textContent = "What happened";
+    const summaryText = document.createElement("span");
+    summaryText.textContent = explainRoute(metadata.route, metadata.cache, metadata.status);
+    summary.append(summaryLabel, summaryText);
+    playgroundRoute.insertBefore(summary, playgroundRoute.children[3]);
+  }
+
+  function updatePlaygroundEstimate() {
+    const price = playgroundPrices[playgroundModel.value];
+    if (!price) {
+      playgroundEstimate.hidden = true;
+      playgroundEstimate.textContent = "";
+      return;
+    }
+    const promptTokens = Math.ceil(Array.from(playgroundPrompt.value).length / 4);
+    const outputTokens = Math.max(1, Number(playgroundMaxTokens.value) || 1);
+    const usd = (promptTokens * price.input_micro_usd_per_million + outputTokens * price.output_micro_usd_per_million) / 1000000000000;
+    playgroundEstimate.textContent = `Estimated cost: about $${usd.toFixed(6)}. Based on a rough prompt token estimate and the selected output limit; actual cost may differ.`;
+    playgroundEstimate.hidden = false;
+  }
+
+  async function consumePlaygroundStream(response, append) {
+    if (!response.body) throw new Error("The response stream is unavailable.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let complete = false;
+    let receivedDone = false;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        let boundary;
+        while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
+          const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+          if (!data) continue;
+          if (data === "[DONE]") {
+            receivedDone = true;
+            continue;
+          }
+          const event = JSON.parse(data);
+          if (event.error) throw new Error(event.error.message || "The provider returned a stream error.");
+          const text = event.choices?.[0]?.delta?.content;
+          if (typeof text === "string") append(text);
+        }
+        if (done) {
+          complete = true;
+          break;
+        }
+      }
+      if (!receivedDone) throw new Error("The response stream ended before completion.");
+    } finally {
+      if (!complete) await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+
+  async function submitPlayground(event) {
+    event.preventDefault();
+    if (!playgroundModel.value || !playgroundPrompt.value.trim() || playgroundController) return;
+    const controller = new AbortController();
+    playgroundController = controller;
+    playgroundResponse.textContent = "";
+    renderPlaygroundRoute(null);
+    playgroundMessage.textContent = "Sending request…";
+    playgroundMessage.setAttribute("role", "status");
+    playgroundCancel.hidden = false;
+    playgroundSubmit.disabled = true;
+    try {
+      const response = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        cache: "no-store",
+        credentials: "omit",
+        signal: controller.signal,
+        body: JSON.stringify({ model: playgroundModel.value, messages: [{ role: "user", content: playgroundPrompt.value }], stream: playgroundStream.checked, max_tokens: Number(playgroundMaxTokens.value) }),
+      });
+      renderPlaygroundRoute({
+        provider: response.headers.get("x-spillway-provider"),
+        model: response.headers.get("x-spillway-model"),
+        route: response.headers.get("x-spillway-route"),
+        cache: response.headers.get("x-spillway-cache"),
+        status: response.status,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error?.message || `Request failed (${response.status}).`);
+      }
+      if (playgroundStream.checked) {
+        await consumePlaygroundStream(response, (text) => { playgroundResponse.textContent += text; });
+      } else {
+        const body = await response.json();
+        playgroundResponse.textContent = body.choices?.[0]?.message?.content ?? "";
+      }
+      playgroundMessage.textContent = "Request complete.";
+    } catch (error) {
+      if (error.name === "AbortError") {
+        playgroundMessage.textContent = "Request cancelled.";
+      } else {
+        playgroundMessage.textContent = error.message || "The request failed.";
+        playgroundMessage.setAttribute("role", "alert");
+      }
+    } finally {
+      if (playgroundController === controller) playgroundController = null;
+      playgroundCancel.hidden = true;
+      playgroundSubmit.disabled = false;
+    }
+  }
+
   async function refresh(currentSession) {
     const controller = new AbortController();
     refreshController = controller;
@@ -239,14 +433,18 @@
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     try {
       const signal = controller.signal;
-      const [budget, today, quotas, providerStatus] = await Promise.all([
+      const [budget, today, quotas, providerStatus, modelResponse, pricing] = await Promise.all([
         request("/api/budget", signal),
         request(`/api/usage?${dateRange(todayStart, now)}&group=day`, signal),
         request("/api/quotas", signal),
-        request("/api/providers", signal)
+        request("/api/providers", signal),
+        request("/v1/models", signal),
+        request("/api/pricing", signal)
       ]);
       if (currentSession !== session) return;
       renderProviderStatus(providerStatus.providers || []);
+      playgroundPrices = pricing.prices || {};
+      renderPlaygroundModels(modelResponse.data || []);
       if (today === null) {
         setBudget("today", budget.daily, 0);
         setBudget("month", budget.monthly, 0);
@@ -289,7 +487,9 @@
     session++;
     clearInterval(refreshTimer);
     if (refreshController) refreshController.abort();
+    if (playgroundController) playgroundController.abort();
     refreshController = null;
+    renderPlaygroundRoute(null);
     key = "";
     try { sessionStorage.removeItem(keyName); } catch (_error) { /* Storage may be disabled. */ }
     content.hidden = true;
@@ -352,6 +552,12 @@
     forgetKey();
     setText("#updated-at", "Waiting for a dashboard key");
   });
+
+  playgroundForm.addEventListener("submit", submitPlayground);
+  playgroundCancel.addEventListener("click", () => playgroundController?.abort());
+  playgroundModel.addEventListener("change", updatePlaygroundEstimate);
+  playgroundPrompt.addEventListener("input", updatePlaygroundEstimate);
+  playgroundMaxTokens.addEventListener("input", updatePlaygroundEstimate);
 
   try {
     const savedKey = sessionStorage.getItem(keyName);

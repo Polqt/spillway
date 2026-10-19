@@ -11,10 +11,22 @@ function Dashboard() {
   const [historyAvailable, setHistoryAvailable] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   const [providerStatus, setProviderStatus] = useState([]);
+  const [models, setModels] = useState([]);
+  const [prices, setPrices] = useState({});
+  const [selectedModel, setSelectedModel] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [maxTokens, setMaxTokens] = useState(512);
+  const [streaming, setStreaming] = useState(true);
+  const [responseText, setResponseText] = useState("");
+  const [playgroundRoute, setPlaygroundRoute] = useState(null);
+  const [playgroundMessage, setPlaygroundMessage] = useState("");
+  const [playgroundError, setPlaygroundError] = useState(false);
+  const [playgroundBusy, setPlaygroundBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(null);
   const requestSequence = useRef(0);
+  const playgroundRequest = useRef(null);
 
   useEffect(() => {
     try {
@@ -65,9 +77,11 @@ function Dashboard() {
     setMessage("");
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const [budget, providerResponse] = await Promise.all([
+      const [budget, providerResponse, modelResponse, pricingResponse] = await Promise.all([
         request("/api/budget", token, controller.signal),
         request("/api/providers", token, controller.signal),
+        request("/v1/models", token, controller.signal),
+        request("/api/pricing", token, controller.signal),
       ]);
       const now = new Date();
       const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -94,6 +108,10 @@ function Dashboard() {
       setHistoryAvailable(history !== null);
       setDashboardData(historyData);
       setProviderStatus(providerResponse?.providers || []);
+      const availableModels = modelResponse?.data || [];
+      setModels(availableModels);
+      setPrices(pricingResponse?.prices || {});
+      setSelectedModel((current) => availableModels.some((model) => model.id === current) ? current : availableModels[0]?.id || "");
       setKey(token);
       setConnected(true);
     } catch (error) {
@@ -121,6 +139,9 @@ function Dashboard() {
   function forget() {
     requestSequence.current++;
     if (activeRequest.current) activeRequest.current.abort();
+    if (playgroundRequest.current) playgroundRequest.current.abort();
+    playgroundRequest.current = null;
+    setPlaygroundBusy(false);
     activeRequest.current = null;
     setKey("");
     setConnected(false);
@@ -128,12 +149,73 @@ function Dashboard() {
     setHistoryAvailable(null);
     setDashboardData(null);
     setProviderStatus([]);
+    setModels([]);
+    setPrices({});
+    setPrompt("");
+    setResponseText("");
+    setPlaygroundRoute(null);
+    setPlaygroundMessage("");
+    setPlaygroundError(false);
     setMessage("");
     try {
       sessionStorage.removeItem(dashboardKeyName);
     } catch {
       // The in-memory key is still cleared when storage is unavailable.
     }
+  }
+
+  async function submitPlayground(event) {
+    event.preventDefault();
+    if (!key || !selectedModel || !prompt.trim() || playgroundBusy) return;
+    const controller = new AbortController();
+    playgroundRequest.current = controller;
+    setPlaygroundBusy(true);
+    setResponseText("");
+    setPlaygroundRoute(null);
+    setPlaygroundMessage("Sending request…");
+    setPlaygroundError(false);
+    try {
+      const response = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        cache: "no-store",
+        credentials: "omit",
+        signal: controller.signal,
+        body: JSON.stringify({ model: selectedModel, messages: [{ role: "user", content: prompt }], stream: streaming, max_tokens: Number(maxTokens) }),
+      });
+      setPlaygroundRoute({
+        provider: response.headers.get("x-spillway-provider"),
+        model: response.headers.get("x-spillway-model"),
+        route: response.headers.get("x-spillway-route"),
+        cache: response.headers.get("x-spillway-cache"),
+        status: response.status,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error?.message || `Request failed (${response.status}).`);
+      }
+      if (streaming) {
+        await readCompletionStream(response, (text) => setResponseText((current) => current + text));
+      } else {
+        const body = await response.json();
+        setResponseText(body.choices?.[0]?.message?.content ?? "");
+      }
+      setPlaygroundMessage("Request complete.");
+    } catch (error) {
+      if (error.name === "AbortError") {
+        setPlaygroundMessage("Request cancelled.");
+      } else {
+        setPlaygroundMessage(error.message || "The request failed.");
+        setPlaygroundError(true);
+      }
+    } finally {
+      if (playgroundRequest.current === controller) playgroundRequest.current = null;
+      setPlaygroundBusy(false);
+    }
+  }
+
+  function cancelPlayground() {
+    playgroundRequest.current?.abort();
   }
 
   return (
@@ -207,6 +289,14 @@ function Dashboard() {
               </article>
             </section>
             <ProviderStatus providers={providerStatus} />
+            <RequestPlayground
+              models={models} prices={prices} model={selectedModel} setModel={setSelectedModel}
+              prompt={prompt} setPrompt={setPrompt} maxTokens={maxTokens} setMaxTokens={setMaxTokens}
+              streaming={streaming} setStreaming={setStreaming} response={responseText}
+              route={playgroundRoute}
+              message={playgroundMessage} busy={playgroundBusy} onSubmit={submitPlayground} onCancel={cancelPlayground}
+              error={playgroundError}
+            />
             {dashboardData && <History data={dashboardData} />}
             {message && <p class="notice" role="status">{message}</p>}
             <div class="actions"><button class="secondary" type="button" onClick={forget}>Forget dashboard key</button></div>
@@ -216,6 +306,85 @@ function Dashboard() {
 
       <footer class="footer"><span>Spillway runs on your machine.</span><span>Private by default · No telemetry</span></footer>
     </div>
+  );
+}
+
+async function readCompletionStream(response, append) {
+  if (!response.body) throw new Error("The response stream is unavailable.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let complete = false;
+  let receivedDone = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      let boundary;
+      while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
+        const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+        if (!data) continue;
+        if (data === "[DONE]") {
+          receivedDone = true;
+          continue;
+        }
+        const event = JSON.parse(data);
+        if (event.error) throw new Error(event.error.message || "The provider returned a stream error.");
+        const content = event.choices?.[0]?.delta?.content;
+        if (typeof content === "string") append(content);
+      }
+      if (done) {
+        complete = true;
+        break;
+      }
+    }
+    if (!receivedDone) throw new Error("The response stream ended before completion.");
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt, maxTokens, setMaxTokens, streaming, setStreaming, response, route, message, busy, onSubmit, onCancel, error }) {
+  const price = prices[model];
+  const estimatedTokens = Math.ceil(Array.from(prompt).length / 4);
+  const estimateUSD = price ? (estimatedTokens * price.input_micro_usd_per_million + Number(maxTokens) * price.output_micro_usd_per_million) / 1_000_000_000_000 : null;
+  return (
+    <section class="request-playground" aria-labelledby="playground-heading">
+      <div class="history-title"><div><p class="step-label">EXPLICIT PROVIDER REQUEST</p><h2 id="playground-heading">Request playground</h2></div></div>
+      <p class="helper">Your prompt will be sent to the configured provider for the selected model. Provider charges may apply.</p>
+      <form class="playground-form" onSubmit={onSubmit}>
+        <label for="playground-model">Model</label>
+        <select id="playground-model" value={model} onChange={(event) => setModel(event.currentTarget.value)} required disabled={busy || models.length === 0}>
+          {models.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
+        </select>
+        <label for="playground-prompt">Prompt</label>
+        <textarea id="playground-prompt" value={prompt} onInput={(event) => setPrompt(event.currentTarget.value)} rows="5" required disabled={busy} />
+        <div class="playground-options">
+          <label class="stream-option"><input type="checkbox" checked={streaming} onChange={(event) => setStreaming(event.currentTarget.checked)} disabled={busy} /> Stream response</label>
+          <label for="playground-max-tokens">Max response tokens</label>
+          <input id="playground-max-tokens" type="number" min="1" max="32768" value={maxTokens} onInput={(event) => setMaxTokens(event.currentTarget.value)} disabled={busy} />
+        </div>
+        {estimateUSD !== null && <p class="estimate-note" aria-live="polite">Estimated cost: about ${estimateUSD.toFixed(6)}. Based on a rough prompt token estimate and the selected output limit; actual cost may differ.</p>}
+        <div class="playground-actions">
+          <button type="submit" disabled={busy || !models.length || !prompt.trim()}>{busy ? "Requesting…" : "Send request"}</button>
+          {busy && <button class="secondary" type="button" onClick={onCancel}>Cancel request</button>}
+        </div>
+      </form>
+      {!models.length && <p class="empty">No configured models are available.</p>}
+      {message && <p class="playground-message" role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>{message}</p>}
+      {route && <div class="playground-route" aria-label="Routing explanation">
+        <h3>Routing explanation</h3>
+        <p><strong>Provider and model</strong><span>{[route.provider, route.model].filter(Boolean).join("/") || "Not reported"}</span></p>
+        <p><strong>Route reason</strong><span>{route.route || "Not reported"}</span></p>
+        <p><strong>What happened</strong><span>{explainRoute(route.route, route.cache, route.status)}</span></p>
+        <p><strong>Cache</strong><span>{route.cache || "Not reported"}</span></p>
+        <p><strong>HTTP status</strong><span>{route.status}</span></p>
+      </div>}
+      <div class="response-panel" aria-labelledby="response-heading"><h3 id="response-heading">Response</h3><pre aria-label="Assistant response" aria-live="polite">{response || "The response will appear here."}</pre></div>
+    </section>
   );
 }
 
@@ -288,6 +457,39 @@ function History({ data }) {
       <p class="helper">Spend is estimated from provider usage or configured prices. Actual billing may differ.</p>
     </section>
   );
+}
+
+function explainRoute(route, cache, status) {
+  if (cache === "hit") return "Spillway served the saved exact-cache response.";
+  if (!route) return "No route reason was recorded.";
+  const parts = route.split(";").map((part) => part.trim());
+  const candidate = parts.find((part) => /^candidate \d+\/\d+$/.test(part));
+  const candidateMatch = candidate?.match(/^candidate (\d+)\/(\d+)$/);
+  const validPart = (part) => /^(direct|auto|rules|classifier|classifier fallback|default|rule \d+|difficulty [a-z]+|tier [a-z0-9-]+|fallback [a-z0-9-]+|needs (tools|vision|json_mode|structured_outputs)(, (tools|vision|json_mode|structured_outputs))*|candidate \d+\/\d+|exhausted \(\d+ eligible\)|no capable model)$/.test(part);
+  if (parts.some((part) => !validPart(part))) return "No plain-language explanation is available; the route reason above is shown verbatim.";
+  const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
+  const selection = candidateMatch
+    ? Number(candidateMatch[1]) > 1
+      ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
+      : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+    : "";
+  if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
+  if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
+  if (parts.includes("no capable model")) return "Spillway could not resolve a usable model for this request.";
+  const fallbackTier = parts.find((part) => part.startsWith("fallback "))?.slice(9);
+  const difficulty = parts.find((part) => part.startsWith("difficulty "))?.slice(11) || "configured";
+  if (parts[0] === "rules") {
+    const lead = parts.includes("classifier fallback")
+      ? "The local classifier could not choose a route, so deterministic routing used "
+      : parts.includes("default")
+        ? "No routing rule matched, so Spillway used the default "
+        : "A routing rule selected the ";
+    return `${lead}${difficulty} difficulty${tier ? ` in the ${tier} tier` : ""}${fallbackTier ? `, then spilled over to the ${fallbackTier} fallback tier` : ""}.${selection ? ` ${selection}` : ""}`;
+  }
+  if (parts[0] === "classifier") return `${parts.includes("classifier fallback") ? "Classifier fallback" : "The local classifier"} selected the ${difficulty} difficulty${tier ? ` in the ${tier} tier` : ""}${fallbackTier ? `, then spilled over to the ${fallbackTier} fallback tier` : ""}.${selection ? ` ${selection}` : ""}`;
+  if (parts[0].startsWith("tier ")) return `Spillway used the requested ${parts[0].slice(5)} tier.${selection ? ` ${selection}` : ""}`;
+  if (parts[0] === "auto") return `Spillway selected a candidate from the configured auto route${tier ? ` in the ${tier} tier` : ""}.${selection ? ` ${selection}` : ""}`;
+  return "Spillway used the configured route shown above.";
 }
 
 function Metric({ label, value, detail }) {

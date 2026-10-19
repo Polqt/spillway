@@ -40,6 +40,27 @@
         <div id="provider-status" class="provider-status-grid"><p class="empty">Loading configured providers…</p></div>
       </section>
 
+      <section class="section-block playground" aria-labelledby="playground-heading">
+        <div class="section-title"><div><p class="eyebrow">EXPLICIT PROVIDER REQUEST</p><h2 id="playground-heading">Request playground</h2></div></div>
+        <p class="provider-status-note">Your prompt will be sent to the configured provider for the selected model. Provider charges may apply.</p>
+        <form id="playground-form" class="playground-form">
+          <label for="playground-model">Model</label>
+          <select id="playground-model" required="required"></select>
+          <label for="playground-prompt">Prompt</label>
+          <textarea id="playground-prompt" rows="5" required="required"></textarea>
+          <div class="playground-options">
+            <label class="stream-option"><input id="playground-stream" type="checkbox" checked="checked" /> Stream response</label>
+            <label for="playground-max-tokens">Max response tokens</label>
+            <input id="playground-max-tokens" type="number" min="1" max="32768" value="512" />
+          </div>
+          <p id="playground-estimate" class="provider-status-note" aria-live="polite" hidden="hidden"></p>
+          <div class="playground-actions"><button id="playground-submit" type="submit">Send request</button><button id="playground-cancel" class="secondary" type="button" hidden="hidden">Cancel request</button></div>
+        </form>
+        <p id="playground-message" class="provider-status-note" role="status" aria-live="polite"></p>
+        <div id="playground-route" class="playground-route" aria-label="Routing explanation" hidden="hidden"></div>
+        <div class="playground-response" aria-labelledby="playground-response-heading"><h3 id="playground-response-heading">Response</h3><pre id="playground-response" aria-label="Assistant response" aria-live="polite">The response will appear here.</pre></div>
+      </section>
+
       <section class="budget-grid" aria-label="Estimated spend">
         <article class="budget-card budget-today">
           <div class="card-heading"><div><p class="eyebrow">TODAY <span class="utc-note">UTC</span></p><h2>Estimated spend</h2></div><span class="card-icon" aria-hidden="true">↗</span></div>

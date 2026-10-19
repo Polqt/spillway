@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -65,7 +66,12 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 			{Name: "app", Key: redact.NewSecret(chatOnlyKey)},
 		},
 		AllowedHosts: api.LoopbackHosts("127.0.0.1"), Logger: slog.New(slog.DiscardHandler),
-		UsageRecorder: db, DashboardStore: db, Dashboard: web.Handler(), Tracker: tracker, BudgetGate: gate, Now: func() time.Time { return now },
+		UsageRecorder: db, DashboardStore: db, Dashboard: web.Handler(), Tracker: tracker, BudgetGate: gate,
+		CostEstimator: budget.NewPricer(config.Config{}), Now: func() time.Time { return now },
+		DashboardPricing: map[string]config.Price{
+			"groq/paid-model": {InputMicroUSDPerMillion: 500_000, OutputMicroUSDPerMillion: 1_000_000},
+			"mock/echo":       {InputMicroUSDPerMillion: 7_000_000, OutputMicroUSDPerMillion: 9_000_000},
+		},
 		DashboardProviders: []api.DashboardProvider{
 			{Name: "mock"},
 			{Name: "groq", CredentialRequired: true, CredentialPresent: true},
@@ -76,6 +82,76 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 		t.Fatal(err)
 	}
 	return handler, db, now
+}
+
+func TestDashboardPricing_RequiresDashboardKeyAndReturnsDeclaredPrices(t *testing.T) {
+	handler, _, _ := dashboardEnv(t)
+
+	for _, test := range []struct {
+		name string
+		key  string
+		want int
+	}{
+		{name: "dashboard key", key: dashboardKey, want: http.StatusOK},
+		{name: "chat key", key: chatOnlyKey, want: http.StatusForbidden},
+		{name: "missing key", want: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := dashboardRequest(t, handler, "/api/pricing", test.key, "127.0.0.1")
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body)
+			}
+			if test.want == http.StatusOK {
+				for _, expected := range []string{`"groq/paid-model"`, `"input_micro_usd_per_million":500000`, `"output_micro_usd_per_million":1000000`} {
+					if !strings.Contains(response.Body.String(), expected) {
+						t.Errorf("pricing response does not contain %s: %s", expected, response.Body)
+					}
+				}
+				if strings.Contains(response.Body.String(), dashboardKey) || strings.Contains(response.Body.String(), "Authorization") {
+					t.Errorf("pricing response contains sensitive data: %s", response.Body)
+				}
+				if strings.Contains(response.Body.String(), "mock/echo") {
+					t.Errorf("pricing response includes a price for the always-free mock provider: %s", response.Body)
+				}
+				if response.Header().Get("Cache-Control") != "no-store" {
+					t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+				}
+			}
+		})
+	}
+}
+
+func TestRequestPlayground_UsesMockModelsAndDoesNotPersistPromptOrKey(t *testing.T) {
+	handler, db, _ := dashboardEnv(t)
+	models := dashboardRequest(t, handler, "/v1/models", dashboardKey, "127.0.0.1")
+	if models.Code != http.StatusOK || !strings.Contains(models.Body.String(), `"id":"mock/echo"`) {
+		t.Fatalf("models response = %d %s, want configured mock model", models.Code, models.Body)
+	}
+	const prompt = "playground-private-prompt-c26e"
+	body := []byte(`{"model":"mock/echo","messages":[{"role":"user","content":"` + prompt + `"}]}`)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+dashboardKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Host = "127.0.0.1"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "You said: "+prompt) {
+		t.Fatalf("chat response = %d %s, want successful mock echo", response.Code, response.Body)
+	}
+	if strings.Contains(response.Body.String(), dashboardKey) {
+		t.Fatal("chat response contains local key")
+	}
+	requests, _, err := db.Recent(t.Context(), store.RecentQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), prompt) || strings.Contains(string(encoded), dashboardKey) {
+		t.Fatalf("stored playground metadata contains prompt or key: %s", encoded)
+	}
 }
 
 func TestDashboardPage_HostCheckedButUnauthenticated(t *testing.T) {

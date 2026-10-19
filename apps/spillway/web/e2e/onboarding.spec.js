@@ -24,8 +24,19 @@ test("dashboard key connects, explains optional history and can be forgotten", a
       });
       return;
     }
+    if (route.request().url().includes("/api/pricing")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prices: {} }) });
+      return;
+    }
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "store_disabled", message: "Usage storage is not configured." } }) });
   });
+  await page.route("**/v1/models", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "mock/echo" }] }) }));
+  await page.route("**/v1/chat/completions", (route) => route.fulfill({
+    status: 200,
+    contentType: "text/event-stream",
+    headers: { "x-spillway-provider": "mock", "x-spillway-model": "echo", "x-spillway-route": "direct; unknown marker", "x-spillway-cache": "hit" },
+    body: 'data: {"choices":[{"delta":{"content":"fallback answer"}}]}\n\ndata: [DONE]\n\n',
+  }));
 
   await page.clock.install({ time: new Date("2026-10-18T10:00:00Z") });
   await page.goto("/dashboard");
@@ -52,12 +63,12 @@ test("dashboard key connects, explains optional history and can be forgotten", a
   await expect(page.locator(".provider-status")).toContainText("mock-model-with-a-long-unbroken-name-for-mobile-layouts");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
-  expect(calls).toHaveLength(3);
+  expect(calls).toHaveLength(4);
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/providers");
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/usage");
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBe("sk-test-dashboard");
   await page.clock.fastForward(10000);
-  await expect.poll(() => calls.length).toBe(6);
+  await expect.poll(() => calls.length).toBe(8);
 
   await page.getByRole("button", { name: "Forget dashboard key" }).click();
   await expect(page.getByRole("heading", { name: "Connect with a dashboard key" })).toBeVisible();
@@ -88,6 +99,16 @@ test("Go install fallback connects and stays usable without usage storage", asyn
     contentType: "application/json",
     body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [{ model: "mock-model-with-a-long-unbroken-name-for-mobile-layouts", reason: "rate_limit", breaker_state: "open", upstream_failures: 7, cooldown_until: "2026-10-18T10:01:00Z" }] }] }),
   }));
+  await page.route("**/api/pricing", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prices: {} }) }));
+  await page.route("**/v1/models", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "mock/echo" }] }) }));
+  let fallbackRoute = "direct; unknown marker";
+  let fallbackCache = "hit";
+  await page.route("**/v1/chat/completions", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    headers: { "x-spillway-provider": "mock", "x-spillway-model": "echo", "x-spillway-route": fallbackRoute, "x-spillway-cache": fallbackCache },
+    body: JSON.stringify({ choices: [{ message: { content: "fallback answer" } }] }),
+  }));
   await page.route("**/api/usage**", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "store_disabled", message: "Usage storage is not configured." } }) }));
 
   await page.setViewportSize({ width: 320, height: 900 });
@@ -100,6 +121,19 @@ test("Go install fallback connects and stays usable without usage storage", asyn
   await expect(page.locator("#provider-status")).toContainText("At least 7 upstream failures observed.");
   await expect(page.locator("#provider-status")).toContainText("Observed rate_limit; circuit open");
   await expect(page.locator("#provider-status")).toContainText("mock-model-with-a-long-unbroken-name-for-mobile-layouts");
+  await page.getByLabel("Stream response").uncheck();
+  await page.getByLabel("Prompt").fill("fallback private prompt");
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.locator("#playground-route")).toContainText("direct; unknown marker");
+  await expect(page.locator("#playground-route")).toContainText("Spillway served the saved exact-cache response.");
+  await expect(page.locator("#playground-route")).toContainText("hit");
+  await expect(page.locator("#playground-response")).toContainText("fallback answer");
+  await expect(page.locator("#playground-message")).toHaveText("Request complete.");
+  await expect(page.locator("body")).not.toContainText("fallback private prompt");
+  fallbackRoute = "rules; rule 1; difficulty hard; tier free; fallback strong; candidate 1/1";
+  fallbackCache = "miss";
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.locator("#playground-route")).toContainText("A routing rule selected the hard difficulty in the free tier, then spilled over to the strong fallback tier.");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBe("sk-test-dashboard");
@@ -127,6 +161,8 @@ test("invalid dashboard access gives the config hint without retaining the key",
 });
 
 test("provider status API failures remain visible instead of looking like an empty configuration", async ({ page }) => {
+  await page.route("**/v1/models", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "mock/echo" }] }) }));
+  await page.route("**/api/pricing", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prices: {} }) }));
   await page.route("**/api/budget", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "{}" }));
   await page.route("**/api/providers", (route) => route.fulfill({
     status: 503,
@@ -141,6 +177,7 @@ test("provider status API failures remain visible instead of looking like an emp
 });
 
 test("stored history remains available and renders untrusted model names as text", async ({ page }) => {
+  await page.route("**/v1/models", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "mock/echo" }] }) }));
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     expect(route.request().headers().authorization).toBe("Bearer sk-test-dashboard");

@@ -177,6 +177,23 @@ func serveProviderStatus(w http.ResponseWriter, _ *http.Request, o Options) {
 	}{statuses})
 }
 
+func servePricing(w http.ResponseWriter, o Options) {
+	type price struct {
+		InputMicroUSDPerMillion  int64 `json:"input_micro_usd_per_million"`
+		OutputMicroUSDPerMillion int64 `json:"output_micro_usd_per_million"`
+	}
+	prices := make(map[string]price, len(o.DashboardPricing))
+	for model, configured := range o.DashboardPricing {
+		if strings.HasPrefix(model, "mock/") {
+			continue
+		}
+		prices[model] = price{configured.InputMicroUSDPerMillion, configured.OutputMicroUSDPerMillion}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Prices map[string]price `json:"prices"`
+	}{prices})
+}
+
 func parseTimeParam(r *http.Request, name string, fallback time.Time) (time.Time, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {

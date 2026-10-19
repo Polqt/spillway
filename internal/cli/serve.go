@@ -257,19 +257,20 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		usageRecorder = usageStore
 	}
 	options := api.Options{
-		Providers:      set,
-		Router:         planner,
-		Tiers:          tiers,
-		LocalKeys:      keys,
-		AllowedHosts:   allowedHosts,
-		Logger:         logger,
-		UsageRecorder:  usageRecorder,
-		DashboardStore: usageStore,
-		Dashboard:      web.Handler(),
-		CostEstimator:  budget.NewPricer(cfg),
-		BudgetGate:     budgetGate,
-		ExactCache:     exactCache,
-		Now:            now,
+		Providers:        set,
+		Router:           planner,
+		Tiers:            tiers,
+		LocalKeys:        keys,
+		AllowedHosts:     allowedHosts,
+		Logger:           logger,
+		UsageRecorder:    usageRecorder,
+		DashboardStore:   usageStore,
+		Dashboard:        web.Handler(),
+		CostEstimator:    budget.NewPricer(cfg),
+		DashboardPricing: cfg.Pricing,
+		BudgetGate:       budgetGate,
+		ExactCache:       exactCache,
+		Now:              now,
 	}
 	for name, provider := range cfg.Providers {
 		preset, _ := providers.LookupPreset(name)
