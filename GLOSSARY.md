@@ -10,6 +10,11 @@ A self-hosted gateway that gives client apps one OpenAI-compatible endpoint and 
 One configured upstream service that serves models, such as Groq, Gemini or a local Ollama.
 _Avoid_: vendor, backend, upstream
 
+**Provider status**:
+The dashboard summary of whether a provider is configured, whether its required credential is present, and any observed cooldown or failure signals.
+It does not establish current reachability or guarantee that a request will succeed.
+_Avoid_: provider health, connection status
+
 **Model reference**:
 How a client names a model: `provider/model`, for example `groq/llama-3.1-8b-instant`.
 _Avoid_: model name, model id
@@ -139,6 +144,11 @@ _Avoid_: cached completion
 A local key marked `dashboard: true` that grants read access to `/api/*` usage data.
 Chat-only keys do not grant dashboard access (ADR 0012).
 _Avoid_: admin key
+
+**Request playground**:
+A dashboard interface where a user explicitly submits a chat request through Spillway and inspects the response and route reason.
+It does not retain prompt or response text.
+_Avoid_: test chat, provider console
 
 **Catalog**:
 Provider-published model metadata printed by the explicit `spillway catalog` command as a suggestion for the user's config.

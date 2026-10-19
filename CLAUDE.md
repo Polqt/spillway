@@ -16,6 +16,7 @@ This file adds only the Claude Code specific parts.
 | 4. Verify | `verifier` agent |
 | 5. Review | `/code-review` since the milestone's starting commit |
 | 6. Security audit | `security-auditor` agent |
+| 7. Checklist | Reopen the ticket after verification, tests, fixes, review and any required security audit. Check only acceptance items supported by evidence, record unmet items, and report completion only when all are met. |
 | Feature branches and pull requests | Follow the branch, rebase, and PR standards in `AGENTS.md` |
 | Hard bug | `/diagnosing-bugs` |
 
