@@ -81,6 +81,11 @@ _Avoid_: Spillway key, server key, API key
 A program that sends requests to Spillway, identified by the name of the local key it uses.
 _Avoid_: project, consumer, caller
 
+**Client example**:
+A copyable snippet that configures a client app with the local endpoint and a local key placeholder.
+It never contains a real key.
+_Avoid_: SDK sample, integration
+
 ### Delivery
 
 **Spillover**:
@@ -149,6 +154,11 @@ _Avoid_: admin key
 A dashboard interface where a user explicitly submits a chat request through Spillway and inspects the response and route reason.
 It does not retain prompt or response text.
 _Avoid_: test chat, provider console
+
+**Fallback dashboard**:
+The checked-in dashboard served by a binary built without the embedded Preact assets, such as one from `go install`.
+It is a supported channel with the same content and security rules as the embedded dashboard (ADR 0021).
+_Avoid_: legacy dashboard
 
 **Catalog**:
 Provider-published model metadata printed by the explicit `spillway catalog` command as a suggestion for the user's config.
