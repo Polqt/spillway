@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -20,17 +19,9 @@ func (e commandError) Error() string { return "command failed" }
 
 func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), exitCode *int) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "spillway",
-		Short: "A local OpenAI-compatible LLM gateway",
-		Long: strings.TrimSpace(`Spillway routes OpenAI-compatible requests across the providers you configure.
-
-Quick start:
-  spillway init
-  spillway check -config config.yaml
-  spillway serve -config config.yaml`),
-		Example: `  spillway init
-  spillway check -config config.yaml
-  spillway serve -config config.yaml`,
+		Use:           "spillway",
+		Short:         "A local OpenAI-compatible LLM gateway",
+		Long:          "Route requests across your configured providers.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -42,14 +33,15 @@ Quick start:
 {{.Short}}{{end}}
 {{if .Long}}
 {{.Long}}{{end}}
-{{if .HasAvailableSubCommands}}
-commands:
-{{range .Commands}}{{if (and (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
-{{end}}{{end}}{{end}}{{if .HasExample}}
+{{if .HasAvailableSubCommands}}{{range .Groups}}{{$groupID := .ID}}{{.Title}}:
+{{range $.Commands}}{{if and (eq .GroupID $groupID) (not .Hidden) (not .Deprecated)}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}{{end}}{{end}}{{if .HasExample}}
 Examples:
 {{.Example}}{{end}}{{if .HasAvailableLocalFlags}}
 flags:
-{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if not .HasParent}}
+Run 'spillway <command> --help' for details.
+{{end}}
 `)
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		out := cmd.OutOrStdout()
@@ -60,6 +52,11 @@ flags:
 		}
 	})
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
+	root.AddGroup(
+		&cobra.Group{ID: "start", Title: "Get started"},
+		&cobra.Group{ID: "tools", Title: "Tools"},
+		&cobra.Group{ID: "experimental", Title: "Experimental"},
+	)
 	showVersion := false
 	root.Flags().BoolVar(&showVersion, "version", false, "print version information")
 	root.RunE = func(cmd *cobra.Command, _ []string) error {
@@ -79,17 +76,17 @@ flags:
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
-	addLegacyCommand(root, exitCode, "check", "validate config and print it with secrets redacted", `  spillway check -config config.yaml`, func(cmd *cobra.Command, args []string) int {
+	addLegacyCommand(root, exitCode, "check", "validate your config", `  spillway check -config config.yaml`, func(cmd *cobra.Command, args []string) int {
 		return check(legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
-	addLegacyCommand(root, exitCode, "catalog", "suggest model declarations and pricing from configured providers", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
+	addLegacyCommand(root, exitCode, "catalog", "show model and pricing suggestions", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
 		return catalogCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
-	addLegacyCommand(root, exitCode, "init", "create a zero-spend config and local key", `  spillway init
+	addLegacyCommand(root, exitCode, "init", "create a local config and key", `  spillway init
   spillway init -providers groq,gemini -yes`, func(cmd *cobra.Command, args []string) int {
 		return initCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
@@ -99,7 +96,7 @@ flags:
 		flags.Bool("store", false, "enable the local usage store and dashboard key")
 		flags.Bool("yes", false, "accept defaults and run without prompts")
 	})
-	addLegacyCommand(root, exitCode, "eval", "run a paired routing evaluation (experimental)", `  spillway eval -dataset prompts.json -arms current=auto -out results`, func(cmd *cobra.Command, args []string) int {
+	addLegacyCommand(root, exitCode, "eval", "run a paired routing evaluation", `  spillway eval -dataset prompts.json -arms current=auto -out results`, func(cmd *cobra.Command, args []string) int {
 		return evalCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("dataset", "", "versioned prompt set JSON path")
@@ -111,13 +108,23 @@ flags:
 		flags.Duration("timeout", 2*time.Hour, "whole-run deadline")
 		flags.String("prices", "", "optional JSON map of model references to declared prices")
 		flags.String("out", "", "directory for evaluation artifacts")
+		flags.Bool("rules-benchmark", false, "validate sample size, repeats, seed and arms for a rules benchmark")
+		flags.String("candidate-set-sha256", "", "operator-attested shared candidate-set SHA-256 digest; verify both routing configs match")
+		flags.Bool("benchmark-pilot", false, "run a zero-spend mock rules benchmark pilot")
+		flags.Bool("benchmark-live", false, "run a paid rules benchmark after required approvals")
+		flags.Bool("approve-live-run", false, "record separate owner approval for this live benchmark run")
+		flags.Bool("approve-candidate-set", false, "record separate owner approval for the candidate set")
+		flags.Bool("approve-t19-recovery", false, "record resolution of T19 or approval of its documented recovery path")
+		flags.String("mock-pilot-report", "", "completed zero-spend mock pilot report required for a live benchmark")
+		flags.Bool("mock-pilot-inspected", false, "confirm the zero-spend mock pilot was inspected")
+		flags.Float64("cost-ceiling-usd", 0, "separately approved estimated-cost ceiling for the live run in USD")
 	})
-	addLegacyCommand(root, exitCode, "eval-score", "summarize a completed blinded evaluation score sheet (experimental)", `  spillway eval-score -run results`, func(cmd *cobra.Command, args []string) int {
+	addLegacyCommand(root, exitCode, "eval-score", "summarize evaluation scores", `  spillway eval-score -run results`, func(cmd *cobra.Command, args []string) int {
 		return evalScoreCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("run", "", "evaluation artifact directory")
 	})
-	addLegacyCommand(root, exitCode, "eval-report", "compare run artifacts and rater sheets against ADR 0014 gates (experimental)", `  spillway eval-report -run results -baseline current`, func(cmd *cobra.Command, args []string) int {
+	addLegacyCommand(root, exitCode, "eval-report", "compare evaluation results", `  spillway eval-report -run results -baseline current`, func(cmd *cobra.Command, args []string) int {
 		return evalReportCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("run", "", "evaluation artifact directory")
@@ -126,7 +133,7 @@ flags:
 		flags.Int64("seed", 1, "paired bootstrap random seed")
 		flags.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
 	})
-	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version", func(cmd *cobra.Command, _ []string) int {
+	addLegacyCommand(root, exitCode, "version", "show version information", "  spillway version", func(cmd *cobra.Command, _ []string) int {
 		if _, err := fmt.Fprintln(stdout, versionLine()); err != nil {
 			report(stderr, "spillway: write version: %v\n", err)
 			return 1
@@ -138,10 +145,18 @@ flags:
 }
 
 func addLegacyCommand(root *cobra.Command, exitCode *int, name, short, example string, run func(*cobra.Command, []string) int, addFlags func(*pflag.FlagSet)) {
+	group := "tools"
+	switch name {
+	case "init", "check", "serve":
+		group = "start"
+	case "eval", "eval-score", "eval-report":
+		group = "experimental"
+	}
 	command := &cobra.Command{
 		Use:     name,
 		Short:   short,
 		Example: example,
+		GroupID: group,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			*exitCode = normalizeExitCode(run(cmd, args))

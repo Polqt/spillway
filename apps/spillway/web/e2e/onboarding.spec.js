@@ -40,7 +40,7 @@ test("dashboard key connects, explains optional history and can be forgotten", a
 
   await page.clock.install({ time: new Date("2026-10-18T10:00:00Z") });
   await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: "Welcome to Spillway." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your gateway, in view." })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Your dashboard is ready." })).toHaveCount(0);
   expect(calls).toHaveLength(0);
 
@@ -134,6 +134,12 @@ test("Go install fallback connects and stays usable without usage storage", asyn
   fallbackCache = "miss";
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.locator("#playground-route")).toContainText("A routing rule selected the hard difficulty in the free tier, then spilled over to the strong fallback tier.");
+  fallbackRoute = "rules; default; difficulty moderate; tier balanced; candidate 1/1";
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.locator("#playground-route")).toContainText("No routing rule matched, so Spillway used the default moderate difficulty in the balanced tier.");
+  fallbackRoute = "rules; classifier fallback; rule 1; difficulty hard; tier free; fallback strong; candidate 1/1";
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.locator("#playground-route")).toContainText("The local classifier could not choose a route, so deterministic routing used hard difficulty in the free tier, then spilled over to the strong fallback tier.");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBe("sk-test-dashboard");
@@ -188,7 +194,20 @@ test("stored history remains available and renders untrusted model names as text
     } else if (url.pathname === "/api/usage") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ key: "mock/echo", requests: 1, cost_micro_usd: 2500 }] }) });
     } else if (url.pathname === "/api/decisions") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ at: "2026-10-18T10:00:00Z", model: "<img src=x onerror=alert(1)>", provider: "mock", status: 200, route: "auto; candidate 1/1" }] }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [
+        { at: "2026-10-18T10:00:00Z", model: "<img src=x onerror=alert(1)>", provider: "mock", status: 200, route: "vendor route reason; new marker", cache: "miss", skips: [{ provider: "other", model: "small", reason: "capability not declared" }], attempts: [{ provider: "mock", model: "echo", outcome: "success" }], prompt: "private prompt must never render" },
+        { model: "plain", provider: "mock", status: 200, route: "direct", cache: "miss" },
+        { model: "tiered", provider: "mock", status: 200, route: "tier demo; candidate 1/2", cache: "miss" },
+        { model: "automatic", provider: "mock", status: 200, route: "auto; needs tools; tier smart; candidate 1/2", cache: "miss" },
+        { model: "ruled", provider: "mock", status: 200, route: "rules; rule 1; difficulty hard; tier free; fallback strong; candidate 1/1", cache: "miss" },
+        { model: "spilled", provider: "mock", status: 200, route: "auto; tier free; candidate 2/3", cache: "miss", skips: [{ provider: "other", model: "small", reason: "rate limited" }] },
+        { model: "cached", provider: "mock", status: 200, route: "tier demo; candidate 1/2", cache: "hit" },
+        { model: "failed", status: 503, route: "auto; exhausted (1 eligible)", cache: "miss", attempts: [{ provider: "mock", model: "echo", outcome: "unavailable" }] },
+        { model: "rejected", status: 400, route: "direct", cache: "miss" },
+        { model: "unconfigured", status: 404, route: "auto; no capable model", cache: "miss" },
+        { model: "defaulted", provider: "mock", status: 200, route: "rules; default; difficulty moderate; tier balanced; candidate 1/1", cache: "miss" },
+        { model: "classifier-fallback", provider: "mock", status: 200, route: "rules; classifier fallback; rule 1; difficulty hard; tier free; fallback strong; candidate 1/1", cache: "miss" },
+      ] }) });
     } else if (url.pathname === "/api/providers") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [{ name: "mock", credential_required: false, credential_present: false, signals: [] }] }) });
     } else {
@@ -202,5 +221,24 @@ test("stored history remains available and renders untrusted model names as text
   await expect(page.getByRole("heading", { name: "Usage and routing history" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "History storage is enabled" })).toBeVisible();
   await expect(page.getByText("<img src=x onerror=alert(1)>")).toBeVisible();
+  const decisions = page.locator(".decision-details");
+  await expect(decisions).toHaveCount(12);
+  await expect(decisions.nth(0)).toContainText("vendor route reason; new marker");
+  await expect(decisions.nth(0)).toContainText("miss");
+  await expect(decisions.nth(0)).toContainText("other/small · capability not declared");
+  await expect(decisions.nth(0)).toContainText("mock/echo · success");
+  await expect(decisions.nth(0)).not.toContainText("private prompt");
+  await expect(decisions.nth(0)).toContainText("No plain-language explanation is available; the route reason above is shown verbatim.");
+  await expect(decisions.nth(1)).toContainText("Spillway sent the requested model directly to its provider.");
+  await expect(decisions.nth(2)).toContainText("Spillway used the requested demo tier. Spillway selected candidate 1 of 2.");
+  await expect(decisions.nth(3)).toContainText("Spillway selected a candidate from the configured auto route in the smart tier. Spillway selected candidate 1 of 2.");
+  await expect(decisions.nth(4)).toContainText("A routing rule selected the hard difficulty in the free tier, then spilled over to the strong fallback tier.");
+  await expect(decisions.nth(5)).toContainText("Spillway spilled over to candidate 2 of 3 after earlier candidates were unavailable.");
+  await expect(decisions.nth(6)).toContainText("Spillway served the saved exact-cache response.");
+  await expect(decisions.nth(7)).toContainText("Spillway had no eligible candidate that could serve this request.");
+  await expect(decisions.nth(8)).toContainText("Spillway handled this as a direct-model request, but it failed before a successful response.");
+  await expect(decisions.nth(9)).toContainText("Spillway could not resolve a usable model for this request.");
+  await expect(decisions.nth(10)).toContainText("No routing rule matched, so Spillway used the default moderate difficulty in the balanced tier.");
+  await expect(decisions.nth(11)).toContainText("The local classifier could not choose a route, so deterministic routing used hard difficulty in the free tier, then spilled over to the strong fallback tier.");
   await expect(page.locator("img")).toHaveCount(0);
 });

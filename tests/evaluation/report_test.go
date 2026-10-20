@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,8 +90,8 @@ func TestBuildGateReportStopsDuringBootstrap(t *testing.T) {
 
 func pairedTrialData() ([]evaluation.Trial, []evaluation.Assignment) {
 	trials := []evaluation.Trial{
-		{AnswerID: "base", PromptID: "prompt", Difficulty: "simple", Arm: "baseline", LatencyMS: 10, CostUSD: .02, CostSource: "reported"},
-		{AnswerID: "candidate", PromptID: "prompt", Difficulty: "simple", Arm: "candidate", LatencyMS: 10, CostUSD: .01, CostSource: "reported"},
+		{AnswerID: "base", PromptID: "prompt", Difficulty: "simple", Arm: "baseline", LatencyMS: 10, CostUSD: .02, CostSource: "reported", Outcome: evaluation.OutcomeSucceeded},
+		{AnswerID: "candidate", PromptID: "prompt", Difficulty: "simple", Arm: "candidate", LatencyMS: 10, CostUSD: .01, CostSource: "reported", Outcome: evaluation.OutcomeSucceeded},
 	}
 	assignments := []evaluation.Assignment{
 		{AnswerID: "base", PromptID: "prompt", Arm: "baseline"},
@@ -121,7 +122,7 @@ func TestReport_IdenticalArmsGiveZeroIntervals(t *testing.T) {
 		id := string(rune('a' + p))
 		for _, arm := range []string{"current-auto", "rules"} {
 			answerID := id + arm
-			trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "simple", Arm: arm, Repeat: 1, LatencyMS: 100, CostUSD: .01, CostSource: "reported", AnswerID: answerID})
+			trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "simple", Arm: arm, Repeat: 1, LatencyMS: 100, CostUSD: .01, CostSource: "reported", Outcome: evaluation.OutcomeSucceeded, AnswerID: answerID})
 			assignments = append(assignments, evaluation.Assignment{AnswerID: answerID, PromptID: id, Arm: arm, Repeat: 1})
 			scores = append(scores, evaluation.Score{AnswerID: answerID, RaterID: "r1", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
 		}
@@ -130,8 +131,8 @@ func TestReport_IdenticalArmsGiveZeroIntervals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Results) != 10 {
-		t.Fatalf("got %d gate results, want 10 across aggregate and simple difficulty", len(got.Results))
+	if len(got.Results) != 12 {
+		t.Fatalf("got %d gate results, want 12 across aggregate and simple difficulty", len(got.Results))
 	}
 	for _, gate := range got.Results {
 		if gate.Arm != "rules" {
@@ -151,6 +152,68 @@ func TestReport_IdenticalArmsGiveZeroIntervals(t *testing.T) {
 		if gate.Lower != wantEstimate || gate.Upper != wantEstimate {
 			t.Errorf("%s/%s interval = [%v,%v], want [%v,%v]", gate.Difficulty, gate.Gate, gate.Lower, gate.Upper, wantEstimate, wantEstimate)
 		}
+	}
+}
+
+func TestReport_RequiresIndependentRatingsAndIncludesSuccessGate(t *testing.T) {
+	trials := []evaluation.Trial{
+		{AnswerID: "base", PromptID: "prompt-1", Category: "code", Difficulty: "simple", Arm: "auto", Repeat: 1, CostUSD: .01, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeSucceeded, RatedForReview: true},
+		{AnswerID: "candidate", PromptID: "prompt-1", Category: "code", Difficulty: "simple", Arm: "rules", Repeat: 1, CostUSD: .009, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeFailed, RatedForReview: true},
+	}
+	assignments := []evaluation.Assignment{
+		{AnswerID: "base", PromptID: "prompt-1", Arm: "auto", Repeat: 1, RatedForReview: true},
+		{AnswerID: "candidate", PromptID: "prompt-1", Arm: "rules", Repeat: 1, RatedForReview: true},
+	}
+	baseScores := []evaluation.Score{{AnswerID: "base", RaterID: "rater-a", Correctness: 4, Completeness: 4, InstructionFollowing: 4}}
+	if _, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{FormatVersion: 2, Trials: trials}, assignments, [][]evaluation.Score{baseScores}, evaluation.GateOptions{Baseline: "auto", Replicates: 10000}); err == nil || !strings.Contains(err.Error(), "exactly two") {
+		t.Fatalf("single-rater report error = %v, want independent-rater validation", err)
+	}
+	candidateScores := []evaluation.Score{
+		{AnswerID: "base", RaterID: "rater-b", Correctness: 4, Completeness: 4, InstructionFollowing: 4},
+	}
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{FormatVersion: 2, Trials: trials}, assignments, [][]evaluation.Score{baseScores, candidateScores}, evaluation.GateOptions{Baseline: "auto", Seed: 3, Replicates: 10000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	foundCategory := false
+	for _, gate := range got.Results {
+		if gate.Gate == "request_success_difference" && gate.Difficulty == "all" {
+			if gate.Category == "all" {
+				found = true
+			}
+			if gate.Category == "code" {
+				foundCategory = true
+			}
+			if gate.Estimate != -100 || gate.Unit != "percentage points" {
+				t.Errorf("request success gate = %#v, want -100 percentage points", gate)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("report does not contain the ADR 0023 request-success gate")
+	}
+	if !foundCategory {
+		t.Fatal("report does not contain category-level gates")
+	}
+}
+
+func TestReport_RejectsMissingPreselectedRatings(t *testing.T) {
+	trials := []evaluation.Trial{
+		{AnswerID: "base", PromptID: "prompt-1", Category: "code", Difficulty: "simple", Arm: "auto", Repeat: 1, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeSucceeded, RatedForReview: true},
+		{AnswerID: "rules", PromptID: "prompt-1", Category: "code", Difficulty: "simple", Arm: "rules", Repeat: 1, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeSucceeded, RatedForReview: true},
+	}
+	assignments := []evaluation.Assignment{
+		{AnswerID: "base", PromptID: "prompt-1", Arm: "auto", Repeat: 1, RatedForReview: true},
+		{AnswerID: "rules", PromptID: "prompt-1", Arm: "rules", Repeat: 1, RatedForReview: true},
+	}
+	sheets := [][]evaluation.Score{
+		{{AnswerID: "base", RaterID: "rater-a", Correctness: 4, Completeness: 4, InstructionFollowing: 4}},
+		{{AnswerID: "base", RaterID: "rater-b", Correctness: 4, Completeness: 4, InstructionFollowing: 4}},
+	}
+	_, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{FormatVersion: 3, Trials: trials}, assignments, sheets, evaluation.GateOptions{Baseline: "auto", Replicates: 10000})
+	if err == nil || !strings.Contains(err.Error(), "preselected successful trial \"rules\" requires two ratings") {
+		t.Fatalf("BuildGateReport error = %v, want missing preselected rating rejection", err)
 	}
 }
 
@@ -179,7 +242,7 @@ func TestReport_GateVerdictsOnConstructedData(t *testing.T) {
 				case "uncertain":
 					costSource = "unknown"
 				}
-				trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "moderate", Arm: arm, Repeat: repeat, LatencyMS: latency, CostUSD: cost, CostSource: costSource, AnswerID: answerID})
+				trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "moderate", Arm: arm, Repeat: repeat, LatencyMS: latency, CostUSD: cost, CostSource: evaluation.CostSource(costSource), Outcome: evaluation.OutcomeSucceeded, AnswerID: answerID})
 				assignments = append(assignments, evaluation.Assignment{AnswerID: answerID, PromptID: id, Arm: arm, Repeat: repeat})
 				scores = append(scores, evaluation.Score{AnswerID: answerID, RaterID: "r1", Correctness: score, Completeness: score, InstructionFollowing: score, SevereCorrectnessFault: severe})
 			}
@@ -248,6 +311,44 @@ func TestReport_ZeroBaselineCostIsInconclusive(t *testing.T) {
 	}
 }
 
+func TestReport_RecommendsLowerRuleDifficultyOnlyWithPairedEvidence(t *testing.T) {
+	trials := make([]evaluation.Trial, 0, 60)
+	assignments := make([]evaluation.Assignment, 0, 60)
+	raterA := make([]evaluation.Score, 0, 60)
+	raterB := make([]evaluation.Score, 0, 60)
+	for index := 0; index < 30; index++ {
+		promptID := fmt.Sprintf("prompt-%02d", index)
+		for _, arm := range []string{"current-auto", "rules"} {
+			answerID := promptID + "-" + arm
+			trial := evaluation.Trial{
+				AnswerID: answerID, PromptID: promptID, Category: "coding", Difficulty: "simple",
+				Arm: arm, Repeat: 1, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeSucceeded,
+				RatedForReview: true, CostUSD: .01,
+			}
+			if arm == "rules" {
+				trial.CostUSD = .02
+				trial.RouteReason = "rules; rule 1; difficulty hard; tier smart; candidate 1/1"
+			}
+			trials = append(trials, trial)
+			assignments = append(assignments, evaluation.Assignment{AnswerID: answerID, PromptID: promptID, Arm: arm, Repeat: 1, RatedForReview: true})
+			raterA = append(raterA, evaluation.Score{AnswerID: answerID, RaterID: "rater-a", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
+			raterB = append(raterB, evaluation.Score{AnswerID: answerID, RaterID: "rater-b", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
+		}
+	}
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{FormatVersion: 3, Trials: trials}, assignments, [][]evaluation.Score{raterA, raterB}, evaluation.GateOptions{Baseline: "current-auto", Seed: 77, Replicates: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RoutingFindings) != 2 {
+		t.Fatalf("routing findings = %d, want aggregate and coding findings: %#v", len(got.RoutingFindings), got.RoutingFindings)
+	}
+	for _, finding := range got.RoutingFindings {
+		if finding.Pattern != "over_routing" || finding.Verdict != evaluation.VerdictPass || !strings.Contains(finding.Recommendation, "lowering") || finding.PromptClusters != 30 || finding.CostLower95USD <= 0 || finding.QualityUpper95 > 0 {
+			t.Errorf("routing finding = %#v, want evidence-backed lower-difficulty recommendation", finding)
+		}
+	}
+}
+
 func TestReport_ReproducesV05Stage2Intervals(t *testing.T) {
 	file, err := os.Open(filepath.Join("testdata", "stage2-metrics.json"))
 	if err != nil {
@@ -273,7 +374,7 @@ func TestReport_ReproducesV05Stage2Intervals(t *testing.T) {
 	want := map[string][2]float64{"rules": {0, 0}, "classifier-unavailable": {0, 50}}
 	found := map[string]bool{}
 	for _, result := range got.Results {
-		if result.Difficulty != "all" || result.Gate != "latency_p95_regression" {
+		if result.Difficulty != "all" || result.Category != "all" || result.Gate != "latency_p95_regression" {
 			continue
 		}
 		interval, ok := want[result.Arm]
@@ -302,7 +403,7 @@ func reportFixture() ([]evaluation.Trial, []evaluation.Assignment, []evaluation.
 		id := string(rune('a' + p))
 		for _, arm := range []string{"current-auto", "rules"} {
 			answerID := id + arm
-			trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "simple", Arm: arm, Repeat: 1, LatencyMS: int64(100 + p), CostUSD: .01, CostSource: "reported", AnswerID: answerID})
+			trials = append(trials, evaluation.Trial{PromptID: id, Difficulty: "simple", Arm: arm, Repeat: 1, LatencyMS: int64(100 + p), CostUSD: .01, CostSource: "reported", Outcome: evaluation.OutcomeSucceeded, AnswerID: answerID})
 			assignments = append(assignments, evaluation.Assignment{AnswerID: answerID, PromptID: id, Arm: arm, Repeat: 1})
 			score := 4
 			switch arm {

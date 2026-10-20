@@ -31,6 +31,7 @@ async function connectDashboard(page, calls) {
   await page.getByRole("textbox", { name: "Dashboard key" }).fill("sk-test-dashboard");
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.getByRole("heading", { name: "Request playground" })).toBeVisible();
+  await page.getByRole("heading", { name: "Request playground" }).click();
 }
 
 test("request playground sends an explicit non-streaming mock request and keeps its text private", async ({ page }) => {

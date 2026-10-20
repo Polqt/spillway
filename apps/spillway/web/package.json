@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --strictPort",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "walkthrough": "node walkthrough.mjs"
   },
   "dependencies": {
     "preact": "11.0.1"

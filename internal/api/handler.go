@@ -49,6 +49,7 @@ type dashboardStore interface {
 	Usage(context.Context, store.UsageQuery) ([]store.UsageRow, error)
 	Recent(context.Context, store.RecentQuery) ([]store.Request, string, error)
 	CostQuality(context.Context, time.Time) (store.CostQuality, error)
+	EvaluationRuns(context.Context, int) ([]store.EvaluationRun, error)
 }
 
 // Planner resolves virtual model requests and lists configured virtual models.
@@ -136,12 +137,14 @@ func NewHandler(o Options) (http.Handler, error) {
 	mux.HandleFunc("GET /api/quotas", func(w http.ResponseWriter, r *http.Request) { serveQuotas(w, r, o) })
 	mux.HandleFunc("GET /api/providers", func(w http.ResponseWriter, r *http.Request) { serveProviderStatus(w, r, o) })
 	mux.HandleFunc("GET /api/pricing", func(w http.ResponseWriter, _ *http.Request) { servePricing(w, o) })
+	mux.HandleFunc("GET /api/evaluations", func(w http.ResponseWriter, r *http.Request) { serveEvaluations(w, r, o) })
 	mux.Handle("/api/usage", methodNotAllowed("GET"))
 	mux.Handle("/api/decisions", methodNotAllowed("GET"))
 	mux.Handle("/api/budget", methodNotAllowed("GET"))
 	mux.Handle("/api/quotas", methodNotAllowed("GET"))
 	mux.Handle("/api/providers", methodNotAllowed("GET"))
 	mux.Handle("/api/pricing", methodNotAllowed("GET"))
+	mux.Handle("/api/evaluations", methodNotAllowed("GET"))
 	planner := o.Router
 	if planner == nil {
 		var err error
