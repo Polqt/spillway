@@ -131,7 +131,7 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 		if err := write("\nInstall\n"); err != nil {
 			return failed, err
 		}
-		if err := reportInstall(status, channel, executable, options); err != nil {
+		if err := reportInstall(ctx, status, channel, executable, options); err != nil {
 			return failed, err
 		}
 		return failed, nil
@@ -163,7 +163,7 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 	if err := write("\nInstall\n"); err != nil {
 		return failed, err
 	}
-	if err := reportInstall(status, channel, executable, options); err != nil {
+	if err := reportInstall(ctx, status, channel, executable, options); err != nil {
 		return failed, err
 	}
 	return failed, nil
@@ -328,12 +328,19 @@ func reportStore(ctx context.Context, status func(string, string, ...any) error,
 	return status("ok", "%s schema %d is supported", inspection.Path, inspection.Version)
 }
 
-func reportInstall(status func(string, string, ...any) error, channel installChannel, executable string, options Options) error {
+func reportInstall(ctx context.Context, status func(string, string, ...any) error, channel installChannel, executable string, options Options) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := status("ok", "%s; %s", channel.name, channel.instruction); err != nil {
 		return err
 	}
 	path, _ := options.LookupEnv("PATH")
-	if resolved, ok := findOnPath("spillway", path, options.GOOS); ok && !sameExecutable(resolved, executable, options.GOOS) {
+	resolved, found, err := findOnPath(ctx, "spillway", path, options.GOOS)
+	if err != nil {
+		return err
+	}
+	if found && !sameExecutable(resolved, executable, options.GOOS) {
 		return status("warn", "spillway on PATH resolves to %s, not this executable", resolved)
 	}
 	return nil
@@ -372,11 +379,14 @@ func sameExecutable(left, right, goos string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
 }
 
-func findOnPath(name, path, goos string) (string, bool) {
+func findOnPath(ctx context.Context, name, path, goos string) (string, bool, error) {
 	if path == "" {
-		return "", false
+		return "", false, nil
 	}
 	for _, directory := range filepath.SplitList(path) {
+		if err := ctx.Err(); err != nil {
+			return "", false, err
+		}
 		candidate := filepath.Join(directory, name)
 		if goos == "windows" && filepath.Ext(candidate) == "" {
 			candidate += ".exe"
@@ -387,8 +397,8 @@ func findOnPath(name, path, goos string) (string, bool) {
 		}
 		absolute, err := filepath.Abs(candidate)
 		if err == nil {
-			return absolute, true
+			return absolute, true, nil
 		}
 	}
-	return "", false
+	return "", false, ctx.Err()
 }

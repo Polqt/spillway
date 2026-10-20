@@ -66,14 +66,10 @@ func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) 
 	dir := filepath.Dir(d.path)
 	base := filepath.Base(d.path)
 	backup := d.path + "." + options.Now().UTC().Format("20060102T150405Z") + ".bak"
-	if err := writeBackup(backup, d.data); err != nil {
+	if err := prepareBackup(ctx, backup, d.data); err != nil {
 		return CommitResult{}, explainWriteError(d.path, err)
 	}
-	if err := copySecurityDescriptor(d.path, backup); err != nil {
-		_ = os.Remove(backup)
-		return CommitResult{}, fmt.Errorf("config: preserve backup permissions for %s: %w", d.path, err)
-	}
-	temp, err := writeTemp(dir, base, c.after)
+	temp, err := writeTemp(ctx, dir, base, c.after)
 	if err != nil {
 		return CommitResult{}, explainWriteError(d.path, err)
 	}
@@ -83,55 +79,26 @@ func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) 
 			_ = os.Remove(temp)
 		}
 	}()
-	if err := copySecurityDescriptor(d.path, temp); err != nil {
-		return CommitResult{}, fmt.Errorf("config: preserve replacement permissions for %s: %w", d.path, err)
-	}
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
 	}
-	if err := replaceFile(ctx, temp, d.path); err != nil {
+	if err := replaceFile(ctx, temp, d.path, backup); err != nil {
 		return CommitResult{}, explainWriteError(d.path, err)
 	}
 	removeTemp = false
-	if err := syncDirectory(dir); err != nil {
+	if err := syncDirectory(ctx, dir); err != nil {
 		return CommitResult{}, fmt.Errorf("config: sync directory %s after replacement: %w", dir, err)
 	}
-	if err := pruneBackups(d.path, options.KeepBackups); err != nil {
+	if err := pruneBackups(ctx, d.path, options.KeepBackups); err != nil {
 		return CommitResult{}, fmt.Errorf("config: prune backups for %s: %w", d.path, err)
 	}
 	return CommitResult{Path: d.path, BackupPath: backup, ModeTightened: runtime.GOOS != "windows" && d.mode.Perm()&0o077 != 0}, nil
 }
 
-func writeBackup(path string, data []byte) error {
-	// #nosec G304 -- path is generated beside the already-opened config file.
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create backup: %w", err)
+func writeTemp(ctx context.Context, dir, base string, data []byte) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	complete := false
-	defer func() {
-		_ = file.Close()
-		if !complete {
-			_ = os.Remove(path)
-		}
-	}()
-	if err := file.Chmod(0o600); err != nil {
-		return fmt.Errorf("protect backup: %w", err)
-	}
-	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("write backup: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync backup: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close backup: %w", err)
-	}
-	complete = true
-	return nil
-}
-
-func writeTemp(dir, base string, data []byte) (string, error) {
 	file, err := os.CreateTemp(dir, "."+base+".spillway-*")
 	if err != nil {
 		return "", fmt.Errorf("create temporary config: %w", err)
@@ -147,11 +114,20 @@ func writeTemp(dir, base string, data []byte) (string, error) {
 	if err := file.Chmod(0o600); err != nil {
 		return "", fmt.Errorf("protect temporary config: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if _, err := file.Write(data); err != nil {
 		return "", fmt.Errorf("write temporary config: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := file.Sync(); err != nil {
 		return "", fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	if err := file.Close(); err != nil {
 		return "", fmt.Errorf("close temporary config: %w", err)
@@ -160,7 +136,10 @@ func writeTemp(dir, base string, data []byte) (string, error) {
 	return path, nil
 }
 
-func pruneBackups(path string, keep int) error {
+func pruneBackups(ctx context.Context, path string, keep int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -169,6 +148,9 @@ func pruneBackups(path string, keep int) error {
 	prefix := base + "."
 	var names []string
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".bak") {
 			continue
@@ -181,6 +163,9 @@ func pruneBackups(path string, keep int) error {
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(names)))
 	for _, name := range names[min(keep, len(names)):] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

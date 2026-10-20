@@ -13,9 +13,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func replaceFile(ctx context.Context, source, target string) error {
+func prepareBackup(ctx context.Context, _ string, _ []byte) error { return ctx.Err() }
+
+func replaceFile(ctx context.Context, source, target, backup string) error {
 	for attempt := 0; ; attempt++ {
-		err := replaceFileWindows(source, target)
+		err := replaceFileWindows(source, target, backup)
 		if err == nil || !retryableReplaceError(err) || attempt >= 5 {
 			return err
 		}
@@ -29,8 +31,12 @@ func replaceFile(ctx context.Context, source, target string) error {
 	}
 }
 
-func replaceFileWindows(source, target string) error {
+func replaceFileWindows(source, target, backup string) error {
 	sourcePtr, err := windows.UTF16PtrFromString(source)
+	if err != nil {
+		return err
+	}
+	backupPtr, err := windows.UTF16PtrFromString(backup)
 	if err != nil {
 		return err
 	}
@@ -44,7 +50,7 @@ func replaceFileWindows(source, target string) error {
 		return fmt.Errorf("load ReplaceFileW: %w", err)
 	}
 	// #nosec G103 -- ReplaceFileW requires pointers to the UTF-16 paths and does not retain them.
-	result, _, callErr := proc.Call(uintptr(unsafe.Pointer(targetPtr)), uintptr(unsafe.Pointer(sourcePtr)), 0, 0, 0, 0)
+	result, _, callErr := proc.Call(uintptr(unsafe.Pointer(targetPtr)), uintptr(unsafe.Pointer(sourcePtr)), uintptr(unsafe.Pointer(backupPtr)), 0, 0, 0)
 	if result != 0 {
 		return nil
 	}
@@ -59,25 +65,4 @@ func retryableReplaceError(err error) bool {
 	return errors.As(err, &errno) && (errno == windows.ERROR_SHARING_VIOLATION || errno == windows.ERROR_LOCK_VIOLATION)
 }
 
-func syncDirectory(string) error { return nil }
-
-func copySecurityDescriptor(source, target string) error {
-	const permissions = windows.OWNER_SECURITY_INFORMATION | windows.GROUP_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
-	descriptor, err := windows.GetNamedSecurityInfo(source, windows.SE_FILE_OBJECT, permissions)
-	if err != nil {
-		return err
-	}
-	owner, _, err := descriptor.Owner()
-	if err != nil {
-		return err
-	}
-	group, _, err := descriptor.Group()
-	if err != nil {
-		return err
-	}
-	dacl, _, err := descriptor.DACL()
-	if err != nil {
-		return err
-	}
-	return windows.SetNamedSecurityInfo(target, windows.SE_FILE_OBJECT, permissions, owner, group, dacl, nil)
-}
+func syncDirectory(ctx context.Context, _ string) error { return ctx.Err() }

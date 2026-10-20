@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -112,6 +113,31 @@ func TestCommit_ConcurrentChangeAborts(t *testing.T) {
 	backups, _ := filepath.Glob(doc.Path() + ".*.bak")
 	if len(backups) != 0 {
 		t.Errorf("concurrent edit created backups: %v", backups)
+	}
+}
+
+func TestCommit_CanceledContextLeavesConfigUnchanged(t *testing.T) {
+	t.Parallel()
+	doc, change, before := commitFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := doc.Commit(ctx, change, config.CommitOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Commit error = %v, want context.Canceled", err)
+	}
+	got, err := os.ReadFile(doc.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(before) {
+		t.Errorf("config changed after cancellation: %q", got)
+	}
+	backups, err := filepath.Glob(doc.Path() + ".*.bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Errorf("canceled commit created backups: %v", backups)
 	}
 }
 
