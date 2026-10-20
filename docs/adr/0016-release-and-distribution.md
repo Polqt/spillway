@@ -17,7 +17,7 @@ Provider `base_url` values must use https unless the host is loopback, so a cont
 - Releases are built by GoReleaser v2.18.2, pinned as a `tool` in `tools/go.mod` and run through Makefile targets.
 - Targets are linux, darwin and windows on amd64 and arm64.
   windows/arm64 is built but not run-tested, and the docs say so.
-- Every build uses `CGO_ENABLED=0`, `-trimpath`, `-ldflags "-s -w -X github.com/Polqt/spillway/internal/cli.version={{.Version}}"` and the commit timestamp as file modification time, so two builds of one commit with one Go version are byte-identical.
+- Every build uses `CGO_ENABLED=0`, `-trimpath`, `-ldflags "-s -w -X github.com/Polqt/spillway/internal/cli.version=v{{ .Version }}"` and the commit timestamp as file modification time, so two builds of one commit with one Go version are byte-identical.
   The release Go version is one exact patch release pinned in the release workflow and named in the release notes.
 - Commit, build time and dirty state come from Go build info, not extra ldflags, so `go install ...@vX.Y.Z` reports the right version too.
 - Archives are `tar.gz`, or `zip` on Windows, and contain the binary, `LICENSE`, `README.md` and `examples/config.mock.yaml`.
