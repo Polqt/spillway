@@ -200,12 +200,14 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 		t.Fatal("start spillway serve:", err)
 	}
 	wait := make(chan error, 1)
-	go func() { wait <- command.Wait() }()
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
 	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			<-wait
-		}
+		_ = command.Process.Kill()
+		<-waitDone
 	})
 	baseURL := "http://" + addr
 	waitForBinaryServer(t, baseURL, wait)
