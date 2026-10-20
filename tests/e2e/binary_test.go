@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -190,7 +191,7 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 
 	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
 	command.Dir = workDir
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr synchronizedBuffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
@@ -236,6 +237,23 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	if strings.Contains(combinedOutput, appKey) || strings.Contains(combinedOutput, dashboardKey) {
 		t.Error("generated local key appeared in command output")
 	}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 func runBinary(t *testing.T, dir string, args ...string) (string, error) {

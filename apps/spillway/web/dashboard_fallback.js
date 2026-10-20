@@ -18,6 +18,9 @@
   const playgroundMessage = document.querySelector("#playground-message");
   const playgroundSubmit = document.querySelector("#playground-submit");
   const playgroundCancel = document.querySelector("#playground-cancel");
+  const playgroundCopyCurl = document.querySelector("#playground-copy-curl");
+  const playgroundCopyStatus = document.querySelector("#playground-copy-status");
+  const playgroundFailures = document.querySelector("#playground-failures");
   const keyName = "spillway-dashboard-key";
   let key = "";
   let refreshTimer = 0;
@@ -286,8 +289,47 @@
       option.textContent = model.id;
       playgroundModel.append(option);
     }
-    if (models.some((model) => model.id === selected)) playgroundModel.value = selected;
+    if (models.some((model) => model.id === selected)) {
+      playgroundModel.value = selected;
+    } else {
+      playgroundModel.value = models.find((model) => model.id === "auto")?.id || models.find((model) => model.id.startsWith("spillway/"))?.id || models[0]?.id || "";
+    }
+    playgroundCopyCurl.disabled = !playgroundModel.value;
     updatePlaygroundEstimate();
+  }
+
+  function renderPlaygroundFailures(message) {
+    playgroundFailures.replaceChildren();
+    const marker = " can serve this request: ";
+    const start = message.indexOf(marker);
+    if (!message.startsWith("No candidate in tier ") || start === -1) {
+      playgroundFailures.hidden = true;
+      return;
+    }
+    for (const entry of message.slice(start + marker.length).split("; ")) {
+      const separator = entry.indexOf(" ");
+      if (separator <= 0) continue;
+      const item = document.createElement("li");
+      const model = document.createElement("strong");
+      model.textContent = entry.slice(0, separator);
+      item.append(model, document.createTextNode(`: ${entry.slice(separator + 1)}`));
+      playgroundFailures.append(item);
+    }
+    playgroundFailures.hidden = playgroundFailures.children.length === 0;
+  }
+
+  async function copyPlaygroundCurl() {
+    const body = JSON.stringify({ model: playgroundModel.value, messages: [{ role: "user", content: playgroundPrompt.value }], stream: playgroundStream.checked, max_tokens: Number(playgroundMaxTokens.value) });
+    const windows = /Win/i.test(navigator.userAgentData?.platform || navigator.platform);
+    const quote = windows ? (value) => `'${value.replaceAll("'", "''")}'` : (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    const curl = windows ? "curl.exe" : "curl";
+    const command = `${curl} -sS ${quote(`${window.location.origin}/v1/chat/completions`)} -H ${quote("Authorization: Bearer <LOCAL_APP_KEY>")} -H ${quote("Content-Type: application/json")} --data ${quote(body)}`;
+    try {
+      await navigator.clipboard.writeText(command);
+      playgroundCopyStatus.textContent = windows ? "Copied PowerShell curl command." : "Copied curl command.";
+    } catch {
+      playgroundCopyStatus.textContent = "Could not copy the curl command. Check clipboard permissions and try again.";
+    }
   }
 
   function renderPlaygroundRoute(metadata) {
@@ -380,6 +422,7 @@
     playgroundController = controller;
     playgroundResponse.textContent = "";
     renderPlaygroundRoute(null);
+    renderPlaygroundFailures("");
     playgroundMessage.textContent = "Sending request…";
     playgroundMessage.setAttribute("role", "status");
     playgroundCancel.hidden = false;
@@ -417,6 +460,7 @@
       } else {
         playgroundMessage.textContent = error.message || "The request failed.";
         playgroundMessage.setAttribute("role", "alert");
+        renderPlaygroundFailures(error.message || "");
       }
     } finally {
       if (playgroundController === controller) playgroundController = null;
@@ -563,6 +607,7 @@
 
   playgroundForm.addEventListener("submit", submitPlayground);
   playgroundCancel.addEventListener("click", () => playgroundController?.abort());
+  playgroundCopyCurl.addEventListener("click", copyPlaygroundCurl);
   playgroundModel.addEventListener("change", updatePlaygroundEstimate);
   playgroundPrompt.addEventListener("input", updatePlaygroundEstimate);
   playgroundMaxTokens.addEventListener("input", updatePlaygroundEstimate);

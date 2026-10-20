@@ -114,7 +114,9 @@ function Dashboard() {
       const availableModels = modelResponse?.data || [];
       setModels(availableModels);
       setPrices(pricingResponse?.prices || {});
-      setSelectedModel((current) => availableModels.some((model) => model.id === current) ? current : availableModels[0]?.id || "");
+      setSelectedModel((current) => availableModels.some((model) => model.id === current)
+        ? current
+        : availableModels.find((model) => model.id === "auto")?.id || availableModels.find((model) => model.id.startsWith("spillway/"))?.id || availableModels[0]?.id || "");
       setKey(token);
       setConnected(true);
     } catch (error) {
@@ -398,9 +400,24 @@ function ClientExamples() {
 }
 
 function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt, maxTokens, setMaxTokens, streaming, setStreaming, response, route, message, busy, onSubmit, onCancel, error }) {
+  const [copyMessage, setCopyMessage] = useState("");
   const price = prices[model];
   const estimatedTokens = Math.ceil(Array.from(prompt).length / 4);
   const estimateUSD = price ? (estimatedTokens * price.input_micro_usd_per_million + Number(maxTokens) * price.output_micro_usd_per_million) / 1_000_000_000_000 : null;
+  const failures = error ? exhaustionCandidates(message) : [];
+  async function copyCurl() {
+    const body = JSON.stringify({ model, messages: [{ role: "user", content: prompt }], stream: streaming, max_tokens: Number(maxTokens) });
+    const windows = /Win/i.test(navigator.userAgentData?.platform || navigator.platform);
+    const quote = windows ? (value) => `'${value.replaceAll("'", "''")}'` : (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    const curl = windows ? "curl.exe" : "curl";
+    const command = `${curl} -sS ${quote(`${window.location.origin}/v1/chat/completions`)} -H ${quote("Authorization: Bearer <LOCAL_APP_KEY>")} -H ${quote("Content-Type: application/json")} --data ${quote(body)}`;
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopyMessage(windows ? "Copied PowerShell curl command." : "Copied curl command.");
+    } catch {
+      setCopyMessage("Could not copy the curl command. Check clipboard permissions and try again.");
+    }
+  }
   return (
     <section class="request-playground" aria-labelledby="playground-heading">
       <div class="history-title"><div><p class="step-label">EXPLICIT PROVIDER REQUEST</p><h2 id="playground-heading">Request playground</h2></div></div>
@@ -410,6 +427,7 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         <select id="playground-model" value={model} onChange={(event) => setModel(event.currentTarget.value)} required disabled={busy || models.length === 0}>
           {models.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
         </select>
+        <p class="helper">Direct model references skip spillover. Choose auto or spillway/&lt;tier&gt; to let Spillway try eligible candidates in order.</p>
         <label for="playground-prompt">Prompt</label>
         <textarea id="playground-prompt" value={prompt} onInput={(event) => setPrompt(event.currentTarget.value)} rows="5" required disabled={busy} />
         <div class="playground-options">
@@ -420,11 +438,14 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         {estimateUSD !== null && <p class="estimate-note" aria-live="polite">Estimated cost: about ${estimateUSD.toFixed(6)}. Based on a rough prompt token estimate and the selected output limit; actual cost may differ.</p>}
         <div class="playground-actions">
           <button type="submit" disabled={busy || !models.length || !prompt.trim()}>{busy ? "Requesting…" : "Send request"}</button>
+          <button class="secondary" type="button" onClick={copyCurl} disabled={!model}>Copy as curl</button>
           {busy && <button class="secondary" type="button" onClick={onCancel}>Cancel request</button>}
         </div>
+        <p class="copy-status" role="status" aria-live="polite">{copyMessage}</p>
       </form>
       {!models.length && <p class="empty">No configured models are available.</p>}
       {message && <p class="playground-message" role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>{message}</p>}
+      {failures.length > 0 && <ul aria-label="Exhausted candidates">{failures.map((failure) => <li key={failure.model}><strong>{failure.model}</strong>: {failure.reason}</li>)}</ul>}
       {route && <div class="playground-route" aria-label="Routing explanation">
         <h3>Routing explanation</h3>
         <p><strong>Provider and model</strong><span>{[route.provider, route.model].filter(Boolean).join("/") || "Not reported"}</span></p>
@@ -436,6 +457,16 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
       <div class="response-panel" aria-labelledby="response-heading"><h3 id="response-heading">Response</h3><pre aria-label="Assistant response" aria-live="polite">{response || "The response will appear here."}</pre></div>
     </section>
   );
+}
+
+function exhaustionCandidates(message) {
+  const marker = " can serve this request: ";
+  const start = message.indexOf(marker);
+  if (!message.startsWith("No candidate in tier ") || start === -1) return [];
+  return message.slice(start + marker.length).split("; ").flatMap((entry) => {
+    const separator = entry.indexOf(" ");
+    return separator > 0 ? [{ model: entry.slice(0, separator), reason: entry.slice(separator + 1) }] : [];
+  });
 }
 
 function ProviderStatus({ providers }) {
