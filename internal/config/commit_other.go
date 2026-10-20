@@ -16,7 +16,7 @@ func replaceFile(_ context.Context, source, target string) error {
 }
 
 func syncDirectory(path string) error {
-	directory, err := os.Open(path)
+	directory, err := os.Open(path) // #nosec G304 -- the absolute config directory is opened only to sync after replacement.
 	if err != nil {
 		return err
 	}
