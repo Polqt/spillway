@@ -9,18 +9,22 @@ import (
 
 // Options injects operating-system and terminal information used by commands.
 type Options struct {
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	LookupEnv      func(string) (string, bool)
-	PersistentEnv  func(string) (string, bool)
-	GOOS           string
-	Shell          string
-	Executable     func() (string, error)
-	Now            func() time.Time
-	ProbeTransport http.RoundTripper
-	StdinTerminal  bool
-	StdoutTerminal bool
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+	LookupEnv       func(string) (string, bool)
+	PersistentEnv   func(string) (string, bool)
+	GOOS            string
+	Version         string
+	ModuleVersion   string
+	VCSModified     string
+	DashboardAssets string
+	Shell           string
+	Executable      func() (string, error)
+	Now             func() time.Time
+	ProbeTransport  http.RoundTripper
+	StdinTerminal   bool
+	StdoutTerminal  bool
 }
 
 func (o Options) withDefaults(stdin io.Reader, stdout, stderr io.Writer) Options {

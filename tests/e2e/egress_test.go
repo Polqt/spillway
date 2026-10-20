@@ -25,14 +25,36 @@ func TestEgress_OnlyAllowlistedURLLiterals(t *testing.T) {
 		"http://localhost:11434":                                  {},
 	}
 	localEndpoints := map[string]struct{}{"http://127.0.0.1:8080": {}} // Local endpoint used by the eval command.
+	printedOnlyURLs := map[string]struct{}{"https://github.com/Polqt/spillway/releases": {}}
 
 	for value, source := range got {
 		if _, ok := egressAllowlist[value]; ok {
 			continue
 		}
+		if _, ok := printedOnlyURLs[value]; ok {
+			if !strings.Contains(source, "internal/cli/install_channel.go") {
+				t.Errorf("printed-only URL %q appears in unexpected production code %s", value, source)
+			}
+			continue
+		}
 		if _, ok := localEndpoints[value]; !ok {
 			t.Errorf("unallowlisted URL literal %q in %s", value, source)
 		}
+	}
+}
+
+func TestEgress_ReleasesPageIsPrintedOnly(t *testing.T) {
+	root := filepath.Join("..", "..")
+	got, err := productionURLLiterals(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, exists := got["https://github.com/Polqt/spillway/releases"]
+	if !exists {
+		t.Fatal("release page URL is absent")
+	}
+	if !strings.Contains(source, "internal/cli/install_channel.go") {
+		t.Errorf("source = %q", source)
 	}
 }
 

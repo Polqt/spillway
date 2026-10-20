@@ -192,6 +192,9 @@ flags:
 
 func addManagementCommands(root *cobra.Command, options Options) {
 	addProviderCommands(root, options)
+	doctor := doctorCommand(options)
+	doctor.GroupID = "diagnose"
+	root.AddCommand(doctor)
 	for _, command := range root.Commands() {
 		if command.Name() == "provider" {
 			command.GroupID = "manage"
