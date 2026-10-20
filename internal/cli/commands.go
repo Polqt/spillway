@@ -195,6 +195,7 @@ func addManagementCommands(root *cobra.Command, options Options) {
 	for _, command := range root.Commands() {
 		if command.Name() == "provider" {
 			command.GroupID = "manage"
+			command.AddCommand(providerAddCommand(options))
 		}
 	}
 }

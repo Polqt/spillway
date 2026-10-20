@@ -23,3 +23,5 @@ func syncDirectory(path string) error {
 	defer func() { _ = directory.Close() }()
 	return directory.Sync()
 }
+
+func copySecurityDescriptor(string, string) error { return nil }

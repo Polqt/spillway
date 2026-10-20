@@ -76,7 +76,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 	if err := writeInitConfig(ctx, *configPath, content); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			report(stderr, "spillway: init: %s already exists: %v\ninit never overwrites a config. Validate it with `spillway check -config %s`, or create another with `spillway init -config <new-path>`.\n", *configPath, err, *configPath)
+			report(stderr, "spillway: init: %s already exists: %v\ninit never overwrites a config. Validate it with `spillway check -config %s`, add another provider with `spillway provider add`, or create another config with `spillway init -config <new-path>`.\n", *configPath, err, *configPath)
 		} else {
 			report(stderr, "spillway: init: create %s: %v\n", *configPath, err)
 		}

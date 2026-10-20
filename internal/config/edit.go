@@ -118,7 +118,7 @@ func (e *Edit) AppendTierModel(tier, modelRef string) error {
 // looksLikeKey catches a provider key pasted where a variable name belongs;
 // Groq and Gemini keys are otherwise valid variable names.
 func looksLikeKey(name string) bool {
-	return len(name) > 64 || strings.Contains(name, "gsk_") || strings.Contains(name, "AIza")
+	return len(name) > 64 || strings.Contains(name, "sk-") || strings.Contains(name, "gsk_") || strings.Contains(name, "AIza")
 }
 
 func isControl(r rune) bool {

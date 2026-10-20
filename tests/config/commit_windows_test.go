@@ -20,15 +20,18 @@ func TestCommit_WindowsKeepsSecurityDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := doc.Commit(t.Context(), change, config.CommitOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	after, err := windows.GetNamedSecurityInfo(doc.Path(), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.GROUP_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	result, err := doc.Commit(t.Context(), change, config.CommitOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.String() != after.String() {
-		t.Errorf("security descriptor changed: before %q, after %q", before.String(), after.String())
+	for _, path := range []string{doc.Path(), result.BackupPath} {
+		after, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.GROUP_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before.String() != after.String() {
+			t.Errorf("security descriptor on %s changed: before %q, after %q", path, before.String(), after.String())
+		}
 	}
 }
 

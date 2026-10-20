@@ -16,7 +16,7 @@ import (
 func replaceFile(ctx context.Context, source, target string) error {
 	for attempt := 0; ; attempt++ {
 		err := replaceFileWindows(source, target)
-		if err == nil || !retryableReplaceError(err) || attempt >= 4 {
+		if err == nil || !retryableReplaceError(err) || attempt >= 5 {
 			return err
 		}
 		timer := time.NewTimer(200 * time.Millisecond)
@@ -59,3 +59,24 @@ func retryableReplaceError(err error) bool {
 }
 
 func syncDirectory(string) error { return nil }
+
+func copySecurityDescriptor(source, target string) error {
+	const permissions = windows.OWNER_SECURITY_INFORMATION | windows.GROUP_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
+	descriptor, err := windows.GetNamedSecurityInfo(source, windows.SE_FILE_OBJECT, permissions)
+	if err != nil {
+		return err
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	group, _, err := descriptor.Group()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(target, windows.SE_FILE_OBJECT, permissions, owner, group, dacl, nil)
+}

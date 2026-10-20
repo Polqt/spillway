@@ -69,6 +69,10 @@ func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) 
 	if err := writeBackup(backup, d.data); err != nil {
 		return CommitResult{}, explainWriteError(d.path, err)
 	}
+	if err := copySecurityDescriptor(d.path, backup); err != nil {
+		_ = os.Remove(backup)
+		return CommitResult{}, fmt.Errorf("config: preserve backup permissions for %s: %w", d.path, err)
+	}
 	temp, err := writeTemp(dir, base, c.after)
 	if err != nil {
 		return CommitResult{}, explainWriteError(d.path, err)
