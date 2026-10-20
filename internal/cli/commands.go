@@ -141,13 +141,19 @@ flags:
 		flags.Int64("seed", 1, "paired bootstrap random seed")
 		flags.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
 	})
-	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version", func(cmd *cobra.Command, _ []string) int {
-		if _, err := fmt.Fprintln(stdout, versionLine()); err != nil {
+	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version\n  spillway version -verbose", func(cmd *cobra.Command, _ []string) int {
+		lines := []string{versionLine()}
+		if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+			lines = append(lines, versionDetails()...)
+		}
+		if _, err := fmt.Fprintln(stdout, strings.Join(lines, "\n")); err != nil {
 			report(stderr, "spillway: write version: %v\n", err)
 			return 1
 		}
 		return 0
-	}, nil)
+	}, func(flags *pflag.FlagSet) {
+		flags.Bool("verbose", false, "also print the executable path, module, VCS settings and dashboard assets")
+	})
 	for _, command := range root.Commands() {
 		switch command.Name() {
 		case "init", "serve":

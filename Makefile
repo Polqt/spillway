@@ -8,7 +8,8 @@ RELEASE_TOOL := $(GO) tool -modfile tools/release/go.mod
 PNPM = corepack pnpm@$(shell node -p "require('./apps/spillway/web/package.json').packageManager.split('@')[1].split('+')[0]")
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
-VERSION ?= dev
+# git describe already carries the v prefix that go install and release builds report.
+VERSION ?= $(or $(shell git describe --tags --always --dirty),dev)
 LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/store"
@@ -830,6 +831,77 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "sk-test-GROQ_API_KEY") || strings.Contains(logs.String(), "sk-test-GEMINI_API_KEY") {
 		t.Errorf("serve logs contain provider key: %s", logs.String())
+	}
+}
+
+func TestServe_LogsVersionAndExecutable(t *testing.T) {
+	t.Parallel()
+	const dashboardSecret = "sk-test-" + "local-identity-dashboard"
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: admin\n      key: "+dashboardSecret+"\n      dashboard: true\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
+	lookup := func(name string) (string, bool) { return "sk-test-provider-canary-" + strings.ToLower(name), true }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, io.Discard, pw, lookup)
+		_ = pw.Close()
+	}()
+	var addr string
+	select {
+	case addr = <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/gateway", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+dashboardSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := regexp.MustCompile(`msg="spillway starting" version=(\S+) executable=(\S+) config=(\S+)`)
+	var identityLine, listenLine = -1, -1
+	for i, line := range strings.Split(logs.String(), "\n") {
+		if m := identity.FindStringSubmatch(line); m != nil && identityLine < 0 {
+			identityLine = i
+			if m[1] != "dev" || m[2] != executable || m[3] != path {
+				t.Errorf("identity fields = version %q executable %q config %q, want dev, %q, %q", m[1], m[2], m[3], executable, path)
+			}
+		}
+		if strings.Contains(line, "msg=listening") {
+			listenLine = i
+		}
+	}
+	if identityLine < 0 || identityLine > listenLine {
+		t.Errorf("identity line index %d, listening line index %d: want identity before listening:\n%s", identityLine, listenLine, logs)
+	}
+	if got, want := strings.TrimSpace(string(body)), `{"version":"dev","dashboard_assets":"`+web.Assets()+`"}`; resp.StatusCode != http.StatusOK || got != want {
+		t.Errorf("GET /api/gateway = %d %s, want 200 %s", resp.StatusCode, got, want)
+	}
+	for _, secret := range []string{dashboardSecret, "sk-test-provider-canary-groq_api_key"} {
+		if strings.Contains(logs.String(), secret) || strings.Contains(string(body), secret) {
+			t.Errorf("logs or gateway response contain a key")
+		}
 	}
 }
 

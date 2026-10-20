@@ -19,6 +19,9 @@ import (
 
 var spillwayBinary string
 
+// binaryVersion is stamped the way release builds stamp it, through -X.
+const binaryVersion = "v9.9.9"
+
 func TestMain(m *testing.M) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -35,7 +38,7 @@ func TestMain(m *testing.M) {
 		spillwayBinary += ".exe"
 	}
 	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
-	build := exec.CommandContext(buildCtx, "go", "build", "-trimpath", "-o", spillwayBinary, "./apps/spillway") //nolint:gosec // The test invokes the Go tool with fixed build arguments.
+	build := exec.CommandContext(buildCtx, "go", "build", "-trimpath", "-ldflags", "-X github.com/Polqt/spillway/internal/cli.version="+binaryVersion, "-o", spillwayBinary, "./apps/spillway") //nolint:gosec // The test invokes the Go tool with fixed build arguments.
 	build.Dir = root
 	build.Env = setEnv(os.Environ(), "CGO_ENABLED", "0")
 	output, buildErr := build.CombinedOutput()
@@ -82,6 +85,16 @@ func TestBinary_VersionShowsCommit(t *testing.T) {
 	format += ` ` + regexp.QuoteMeta(runtime.Version()+" "+runtime.GOOS+"/"+runtime.GOARCH) + `$`
 	if !regexp.MustCompile(format).MatchString(line) {
 		t.Fatalf("version output = %q, want ticket 06 version field format", line)
+	}
+}
+
+func TestBinary_LdflagsVersionIsPrinted(t *testing.T) {
+	output, err := exec.CommandContext(t.Context(), spillwayBinary, "version").CombinedOutput() //nolint:gosec // TestMain built this executable from the current source tree.
+	if err != nil {
+		t.Fatalf("spillway version: %v\n%s", err, output)
+	}
+	if !strings.HasPrefix(string(output), "spillway "+binaryVersion+" ") {
+		t.Errorf("version output = %q, want prefix %q", output, "spillway "+binaryVersion+" ")
 	}
 }
 

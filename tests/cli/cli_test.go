@@ -3,12 +3,15 @@ package cli_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/cli"
 )
 
@@ -47,6 +50,56 @@ func TestRun_VersionAliases(t *testing.T) {
 			expected = stdout.String()
 		} else if stdout.String() != expected {
 			t.Errorf("args %q: stdout = %q, want %q", args, stdout.String(), expected)
+		}
+	}
+}
+
+func TestVersion_VerboseShowsExecutableAndAssets(t *testing.T) {
+	t.Parallel()
+	lookup := func(name string) (string, bool) {
+		return "sk-test-" + name + "-canary", true
+	}
+	var plain strings.Builder
+	if code := cli.Run(t.Context(), []string{"version"}, nil, &plain, io.Discard, lookup); code != 0 {
+		t.Fatalf("version exit code = %d", code)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-verbose", "--verbose"} {
+		var stdout, stderr strings.Builder
+		if code := cli.Run(t.Context(), []string{"version", flag}, nil, &stdout, &stderr, lookup); code != 0 {
+			t.Fatalf("version %s exit code = %d; stderr: %s", flag, code, stderr.String())
+		}
+		lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+		if lines[0]+"\n" != plain.String() {
+			t.Errorf("version %s first line = %q, want the plain version line %q", flag, lines[0], plain.String())
+		}
+		fields := map[string]string{}
+		for _, line := range lines[1:] {
+			key, value, ok := strings.Cut(line, ": ")
+			if !ok {
+				t.Errorf("version %s line %q is not key: value", flag, line)
+				continue
+			}
+			fields[key] = value
+		}
+		if fields["executable"] != executable {
+			t.Errorf("executable = %q, want %q", fields["executable"], executable)
+		}
+		if !strings.HasPrefix(fields["module"], "github.com/Polqt/spillway ") {
+			t.Errorf("module = %q, want the spillway module path and version", fields["module"])
+		}
+		if fields["dashboard_assets"] != web.Assets() {
+			t.Errorf("dashboard_assets = %q, want %q", fields["dashboard_assets"], web.Assets())
+		}
+		localCanary, _ := lookup("LOCAL_KEY")
+		providerCanary, _ := lookup("PROVIDER_KEY")
+		for _, secret := range []string{localCanary, providerCanary} {
+			if strings.Contains(stdout.String(), secret) {
+				t.Errorf("version output contains key canary %q", secret)
+			}
 		}
 	}
 }

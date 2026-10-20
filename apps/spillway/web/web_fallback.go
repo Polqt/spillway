@@ -12,6 +12,11 @@ import (
 //go:embed dashboard.html dashboard.css dashboard_fallback.js
 var fallbackFiles embed.FS
 
+// Assets reports "fallback": this binary serves the checked-in fallback dashboard.
+func Assets() string {
+	return "fallback"
+}
+
 // Handler serves the checked-in dashboard shell and its assets.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

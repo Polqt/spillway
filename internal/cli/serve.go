@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -63,6 +65,16 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		return 1
 	}
 	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}), scrubber))
+	// Names the running copy and config so an older server or a different config is visible.
+	executable, err := os.Executable()
+	if err != nil {
+		executable = "unknown"
+	}
+	absoluteConfig, err := filepath.Abs(*configPath)
+	if err != nil {
+		absoluteConfig = *configPath
+	}
+	logger.InfoContext(ctx, "spillway starting", "version", currentVersion(), "executable", executable, "config", absoluteConfig)
 	var usageStore *store.Store
 	if cfg.Store != nil {
 		usageStore, err = store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
@@ -271,6 +283,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		BudgetGate:       budgetGate,
 		ExactCache:       exactCache,
 		Now:              now,
+		Gateway:          api.Gateway{Version: currentVersion(), DashboardAssets: web.Assets()},
 	}
 	for name, provider := range cfg.Providers {
 		preset, _ := providers.LookupPreset(name)

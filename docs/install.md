@@ -46,6 +46,23 @@ go install github.com/Polqt/spillway/apps/spillway@v1.0.0
 
 The current stable image is `ghcr.io/polqt/spillway:1.0.0`; use a versioned image tag. See [Docker](docker.md) for loopback-only publishing, persistent data and container restrictions.
 
+## Upgrade and find older copies
+
+An older `spillway` earlier on your `PATH`, or a server you started before upgrading, can keep answering after you install a new version.
+List every copy your shell can find, in the order it searches them:
+
+```powershell
+Get-Command spillway -All
+```
+
+```sh
+which -a spillway
+```
+
+Then compare each copy with `spillway version -verbose`, which prints the running executable's path, its version and whether it serves the embedded or the fallback dashboard.
+Remove or replace the copies you no longer use.
+A running server logs `spillway starting` with its version, executable and config path, so restart `spillway serve` after an upgrade and check that line.
+
 ## First run
 
 Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. See the [README quickstart](../README.md#five-minute-offline-quickstart).

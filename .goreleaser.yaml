@@ -24,7 +24,7 @@ builds:
     tags:
       - dashboardassets
     ldflags:
-      - -s -w -X github.com/Polqt/spillway/internal/cli.version={{ .Version }}
+      - -s -w -X github.com/Polqt/spillway/internal/cli.version=v{{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
