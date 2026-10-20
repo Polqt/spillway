@@ -7,9 +7,10 @@ import "golang.org/x/sys/windows/registry"
 func persistentEnv(name string) (string, bool) {
 	for _, location := range []struct {
 		root  registry.Key
+		path  string
 		scope string
-	}{{registry.CURRENT_USER, "user"}, {registry.LOCAL_MACHINE, "machine"}} {
-		key, err := registry.OpenKey(location.root, `Environment`, registry.QUERY_VALUE)
+	}{{registry.CURRENT_USER, `Environment`, "user"}, {registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, "machine"}} {
+		key, err := registry.OpenKey(location.root, location.path, registry.QUERY_VALUE)
 		if err != nil {
 			continue
 		}

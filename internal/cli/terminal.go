@@ -8,7 +8,7 @@ import (
 
 func isTerminal(value any) bool {
 	file, ok := value.(*os.File)
-	return ok && isatty.IsTerminal(file.Fd())
+	return ok && (isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd()))
 }
 
 func lookupProcessEnv(name string) (string, bool) { return os.LookupEnv(name) }
