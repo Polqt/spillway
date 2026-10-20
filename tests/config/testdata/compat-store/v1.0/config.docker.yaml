@@ -1,0 +1,18 @@
+# Mock-only container config. Replace the fake local key before exposing the API.
+# Publish only to host loopback with -p 127.0.0.1:8080:8080.
+# A local key is mandatory because the container listens on 0.0.0.0.
+server:
+  listen: "0.0.0.0:8080"
+  api_keys:
+    - name: demo
+      key: "sk-test-spillway-docker"
+providers:
+  mock: {}
+tiers:
+  demo:
+    models: [mock/echo]
+router:
+  auto: [demo]
+store:
+  path: /var/lib/spillway/spillway.db
+  retention: 90d
