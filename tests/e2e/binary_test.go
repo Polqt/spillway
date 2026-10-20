@@ -58,6 +58,63 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestBinary_MockSpilloverMatchesDocs(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(root, "examples", "config.mock.yaml")) // #nosec G304 -- root is the repository root found from this test's source directory.
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	addr := freeLoopbackAddr(t)
+	config = bytes.Replace(config, []byte("127.0.0.1:8080"), []byte(addr), 1)
+	configPath := filepath.Join(workDir, "config.yaml")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
+	command.Dir = workDir
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal("start spillway serve:", err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- command.Wait() }()
+	t.Cleanup(func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			<-wait
+		}
+	})
+	baseURL := "http://" + addr
+	waitForBinaryServer(t, baseURL, wait)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"spillover demo"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer sk-test-spillway-mock")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close mock response: %v", err)
+		}
+	}()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("x-spillway-route") != "auto; tier demo; candidate 3/3" || !bytes.Contains(body, []byte("spillover demo")) {
+		t.Fatalf("mock response = %d route %q body %s", response.StatusCode, response.Header.Get("x-spillway-route"), body)
+	}
+}
+
 func TestBinary_VersionShowsCommit(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

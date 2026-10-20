@@ -38,10 +38,29 @@ The generated config contains a local app key and, because `-store` was selected
 curl.exe http://127.0.0.1:8080/v1/chat/completions `
   -H 'Authorization: Bearer <LOCAL_APP_KEY>' `
   -H 'Content-Type: application/json' `
-  -d '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
 ```
 
 Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. The response contains `Hello from Spillway`.
+
+### See spillover offline
+
+The shipped mock config demonstrates spillover across three mock candidates without provider credentials. Start it in place of the generated config:
+
+```sh
+spillway serve -config examples/config.mock.yaml
+```
+
+In another terminal, send the same `auto` request using the mock config's fake `demo` local key, `sk-test-spillway-mock`:
+
+```sh
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Authorization: Bearer sk-test-spillway-mock' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
+```
+
+The first two candidates simulate rate limiting and unavailability; the third responds. Check the response header `x-spillway-route: auto; tier demo; candidate 3/3`. This fake key works only with the shipped mock config on loopback; never use it with another config or expose it on a network. For copyable client examples, see [Connect a client app](docs/clients.md).
 
 ### Set up the dashboard
 
