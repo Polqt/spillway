@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +67,49 @@ func TestDoctor_ListenProbeDoesNotFollowRedirectOrPrintBody(t *testing.T) {
 	}
 }
 
+func TestDoctor_RejectsOpenAICompatibleListenerWithoutHostCheck(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
+	}))
+	defer server.Close()
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 1 {
+		t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "not Spillway (HTTP 200") || strings.Contains(stdout.String(), "authentication_error") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestDoctor_ListenProbeReadsAtMostFourKiB(t *testing.T) {
+	var maxRead int
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := &countedBody{Reader: strings.NewReader(strings.Repeat("x", 16<<10)), onClose: func(read int) {
+			if read > maxRead {
+				maxRead = read
+			}
+		}}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}}, Body: body, Request: request}, nil
+	})
+	path := writeDoctorConfigWithListen(t, freeDoctorListenAddress(t))
+	var stdout, stderr strings.Builder
+	options := cli.Options{LookupEnv: doctorHealthyEnv, ProbeTransport: transport}
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 1 {
+		t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if maxRead != 4<<10 || strings.Contains(stdout.String(), strings.Repeat("x", 32)) {
+		t.Fatalf("maximum bytes read = %d and stdout %q, want 4 KiB and no body text", maxRead, stdout.String())
+	}
+}
+
 func TestDoctor_NoProbeMakesNoListenRequests(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
@@ -78,6 +122,31 @@ func TestDoctor_NoProbeMakesNoListenRequests(t *testing.T) {
 	if requests != 0 || !strings.Contains(stdout.String(), "probe skipped (--no-probe)") {
 		t.Fatalf("requests = %d; stdout = %q", requests, stdout.String())
 	}
+}
+
+func TestDoctor_ClosedAddressReportsNothingListening(t *testing.T) {
+	path := writeDoctorConfigWithListen(t, freeDoctorListenAddress(t))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
+		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "nothing listening") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func freeDoctorListenAddress(t *testing.T) string {
+	t.Helper()
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
 }
 
 func TestDoctor_PortGuidanceIsLoopbackOnlyAndOSSpecific(t *testing.T) {
@@ -141,4 +210,27 @@ func doctorHealthyEnv(name string) (string, bool) {
 		return "gsk_test-doctor-listen-key-long-enough", true
 	}
 	return "", false
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type countedBody struct {
+	io.Reader
+	read    int
+	onClose func(int)
+}
+
+func (body *countedBody) Read(buffer []byte) (int, error) {
+	n, err := body.Reader.Read(buffer)
+	body.read += n
+	return n, err
+}
+
+func (body *countedBody) Close() error {
+	if body.onClose != nil {
+		body.onClose(body.read)
+	}
+	return nil
 }

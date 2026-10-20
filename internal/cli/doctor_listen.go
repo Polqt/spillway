@@ -39,35 +39,41 @@ func reportListen(ctx context.Context, status func(string, string, ...any) error
 	if err != nil {
 		return status("fail", "cannot inspect configured listen port")
 	}
-	client := doctorHTTPClient(options.ProbeTransport)
-	for _, target := range doctorProbeHosts(host) {
-		if strings.Contains(target, ":") && !ipv6LoopbackAvailable(ctx) {
-			if err := status("info", "IPv6 loopback probe skipped: IPv6 loopback is unavailable"); err != nil {
-				return err
-			}
-			continue
+	if port == 0 {
+		if err := status("info", "HTTP probe skipped: configured port 0 is assigned dynamically"); err != nil {
+			return err
 		}
-		result, err := probeSpillway(ctx, client, net.JoinHostPort(target, portText), isLoopbackHost(host))
-		if err != nil {
-			if errors.Is(err, syscall.ECONNREFUSED) || safeNetworkError(err) == "connection refused" {
-				if err := status("info", "%s: nothing listening", net.JoinHostPort(target, portText)); err != nil {
+	} else {
+		client := doctorHTTPClient(options.ProbeTransport)
+		for _, target := range doctorProbeHosts(host) {
+			if strings.Contains(target, ":") && !ipv6LoopbackAvailable(ctx) {
+				if err := status("info", "IPv6 loopback probe skipped: IPv6 loopback is unavailable"); err != nil {
 					return err
 				}
-			} else if writeErr := status("warn", "%s: probe failed (%s)", net.JoinHostPort(target, portText), safeNetworkError(err)); writeErr != nil {
-				return writeErr
+				continue
 			}
-			continue
-		}
-		if result.spillway {
-			if err := status("info", "%s: answers like Spillway; compare this config's providers with the provider list in the serve startup summary", net.JoinHostPort(target, portText)); err != nil {
-				return err
+			result, err := probeSpillway(ctx, client, net.JoinHostPort(target, portText), isLoopbackHost(host))
+			if err != nil {
+				if errors.Is(err, syscall.ECONNREFUSED) || safeNetworkError(err) == "connection refused" {
+					if err := status("info", "%s: nothing listening", net.JoinHostPort(target, portText)); err != nil {
+						return err
+					}
+				} else if writeErr := status("warn", "%s: probe failed (%s)", net.JoinHostPort(target, portText), safeNetworkError(err)); writeErr != nil {
+					return writeErr
+				}
+				continue
 			}
-		} else {
-			if err := status("fail", "%s: not Spillway (HTTP %d, %s)", net.JoinHostPort(target, portText), result.status, result.contentType); err != nil {
-				return err
-			}
-			if err := status("info", "%s", doctorPortGuidance(options.GOOS, port)); err != nil {
-				return err
+			if result.spillway {
+				if err := status("info", "%s: answers like Spillway; compare this config's providers with the provider list in the serve startup summary", net.JoinHostPort(target, portText)); err != nil {
+					return err
+				}
+			} else {
+				if err := status("fail", "%s: not Spillway (HTTP %d, %s)", net.JoinHostPort(target, portText), result.status, result.contentType); err != nil {
+					return err
+				}
+				if err := status("info", "%s", doctorPortGuidance(options.GOOS, port)); err != nil {
+					return err
+				}
 			}
 		}
 	}
