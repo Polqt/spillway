@@ -82,7 +82,7 @@ type Options struct {
 	Dashboard          http.Handler            // Serves the static dashboard shell and assets.
 	DashboardProviders []DashboardProvider     // Safe provider configuration metadata for the dashboard.
 	DashboardPricing   map[string]config.Price // Declared prices available to the request playground.
-	Gateway            Gateway                 // Identifies the running binary to the dashboard.
+	Gateway            Gateway                 // Gateway identifies the running binary to the dashboard.
 	CostEstimator      attemptPricer
 	BudgetGate         *budget.Gate
 	ExactCache         *cache.Cache
