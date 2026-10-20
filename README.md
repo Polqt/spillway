@@ -109,6 +109,10 @@ See [configuration](docs/configuration.md) before enabling paid models, budgets 
 
 Read [operations](docs/operations.md) for shutdown, store backup, retention and upgrade guidance. Known limits are listed in [limitations](docs/limitations.md); common failures are covered in [troubleshooting](docs/troubleshooting.md).
 
+For setup recovery, run `spillway doctor` to inspect the selected config, environment, local keys, store and listen address without contacting providers.
+Use `spillway provider list` or `spillway provider show <name>` to inspect configured presets.
+`spillway provider add <name>` is experimental in v1.1.x; see the [configuration guide](docs/configuration.md) before changing an existing config.
+
 ## License
 
 See [LICENSE](LICENSE).

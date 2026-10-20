@@ -186,3 +186,18 @@ _Avoid_: provider template
 **Known limitation**:
 A documented behavior or unsupported capability of the current release that users should account for, such as the absence of an embeddings endpoint or the lack of Windows/arm64 run testing.
 _Avoid_: bug (unless behavior is unintended)
+
+### v1.1 CLI management
+
+**Provider inspection**:
+The `spillway provider list` and `spillway provider show` views of configured presets and credential-variable presence; they do not reveal key values or contact providers.
+_Avoid_: provider test
+
+**Experimental provider add**:
+The v1.1.x `spillway provider add` command that previews, backs up and atomically adds a provider preset to an existing valid config.
+It accepts an environment-variable name, never a provider key value, and rejects duplicate provider instances.
+_Avoid_: provider setup wizard
+
+**Doctor probe**:
+The optional-by-flag, unauthenticated local HTTP and bind checks `spillway doctor` makes against the configured listen address; it never contacts configured providers or sends a key.
+_Avoid_: health check (too broad)

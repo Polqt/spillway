@@ -1,6 +1,6 @@
 # Known limitations
 
-- **Provider and API scope:** v1.0.0 supports chat completions, model listing and health checks. It does not implement embeddings. Built-in provider presets are Gemini, Groq, OpenRouter, Ollama and mock; other providers may be reachable through OpenRouter where available.
+- **Provider and API scope:** v1.0.0 supports chat completions, model listing and health checks. It does not implement the Responses API or embeddings. Built-in provider presets are Gemini, Groq, OpenRouter, Ollama and mock; other providers may be reachable through OpenRouter where available.
 - **No quota evasion:** Spillover is across configured providers only. Spillway does not rotate accounts or pool keys on one provider.
 - **Provider behavior:** rate limits, free tiers, prices, model names, service availability and provider data retention are controlled by each provider and can change. Review current terms before sending sensitive prompts.
 - **Free-tier attestation:** Spillway cannot verify whether a Groq account has a paid plan or a Gemini project has billing enabled. `free_tier: true` is the user's responsibility and must be kept accurate.

@@ -4,6 +4,18 @@
 
 If `spillway init -config <path>` reports that the config already exists, remember that init never overwrites a config.
 Validate it with `spillway check -config <path>`, or create a separate config with `spillway init -config <new-path>`.
+Use `spillway provider list -config <path>` to inspect configured providers.
+`spillway provider add <name> -config <path>` is experimental and prints a preview before saving.
+
+## Add a provider without replacing local keys
+
+For a valid existing config, use `spillway provider add <name> -config <path>` instead of generating a second config and swapping files.
+Review its diff and backup message, then run `spillway check -config <path>`.
+The command preserves the existing `server.api_keys` entries.
+
+If `spillway provider add <name>` says that provider is already configured, Spillway allows one config entry per provider.
+It never rotates accounts to evade a rate limit.
+Use another provider, upgrade the provider plan, or change the configured environment variable to the key for the same account.
 
 ## `spillway check` reports a missing variable
 
@@ -12,6 +24,43 @@ Use the shell-specific command printed by `spillway check` or `spillway init` to
 PowerShell prompts without putting the value in shell history: `$env:GROQ_API_KEY = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password`.
 In bash or zsh, type the key into the terminal and press Enter; input is hidden: `read -rs GROQ_API_KEY && export GROQ_API_KEY`.
 Do not paste provider key values into config files or share command output that contains credentials.
+`spillway doctor -config <path>` reports which variable is missing and prints shell-specific recovery guidance without showing values.
+
+## A variable exists in Windows settings but Spillway still reports it missing
+
+A process inherits environment variables when its terminal starts.
+If `spillway doctor` says a variable is set for your Windows user or machine but not in this terminal, open a new terminal and run `spillway doctor -config <path>` again.
+
+## Spillway appears to be using the wrong config or provider list
+
+`spillway doctor -config <path>` prints the absolute config path and provider names loaded from that file.
+Compare them with the `config` and `providers` fields in the `spillway serve` startup log.
+Stop the server and rerun `spillway serve -config <path>` when they differ.
+
+## You cannot find or use a local key
+
+Run `spillway doctor -config <path>` to see each local key entry's name, access, source and config line.
+It never prints the key.
+Client apps use the `default` entry; dashboard data requires an entry marked `dashboard: true`.
+
+## The configured listen address is occupied
+
+Run `spillway doctor -config <path>` to check whether the address answers like Spillway, belongs to another service, or has no listener.
+It gives an OS-specific port-owner command and suggests a loopback port.
+If the result is `answers like Spillway`, compare the config's provider names with the `providers` list in the server startup log to find an older process or different config.
+Use `spillway doctor --no-probe -config <path>` to skip network checks.
+
+## Gemini key shape looks wrong
+
+`spillway doctor -config <path>` can recognize a few certain credential mistakes and may give a format advisory based on the documented Gemini prefix.
+It never prints key characters and does not verify a key with Google.
+Check the value in your secret manager and set `GEMINI_API_KEY` in the current shell.
+
+## A client requires the Responses API
+
+Spillway serves Chat Completions at `/v1/chat/completions` and model listing at `/v1/models`; it does not serve `/v1/responses`.
+`spillway doctor` prints this limitation.
+Configure the client to use Chat Completions or choose a client that supports it.
 
 ## `spillway serve` cannot use the configured address
 

@@ -70,6 +70,11 @@ A running server logs `spillway starting` with its version, executable and confi
 Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. See the [README quickstart](../README.md#five-minute-offline-quickstart).
 For config fields, environment variables and validation rules, see the [configuration reference](configuration.md).
 
+After setup, `spillway doctor` checks the selected config, environment, local keys, store, installation path and configured listen address.
+It makes only unauthenticated requests to the configured local listener; use `spillway doctor --no-probe` to skip the listener check.
+`spillway provider list` and `spillway provider show <name>` inspect configured presets without contacting them.
+`spillway provider add <name>` is experimental in v1.1.x and edits the config after preview and backup; read [provider management](configuration.md#provider-management) first.
+
 For the interactive path, run `spillway init`, review the provider and optional store choices, then follow the suggested `check` and `serve` commands.
 The wizard creates a dashboard key when you enable the store.
 To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
