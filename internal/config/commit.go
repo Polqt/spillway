@@ -83,6 +83,9 @@ func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) 
 			_ = os.Remove(temp)
 		}
 	}()
+	if err := copySecurityDescriptor(d.path, temp); err != nil {
+		return CommitResult{}, fmt.Errorf("config: preserve replacement permissions for %s: %w", d.path, err)
+	}
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
 	}
