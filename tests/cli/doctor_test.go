@@ -217,6 +217,14 @@ func TestDoctor_InstallChannelInstructions(t *testing.T) {
 			if !strings.Contains(stdout.String(), test.want) {
 				t.Errorf("stdout = %q", stdout.String())
 			}
+			if test.name == "go install" {
+				if !strings.Contains(stdout.String(), "go install ./apps/spillway") {
+					t.Errorf("doctor does not explain the supported source-checkout install: %q", stdout.String())
+				}
+				if strings.Contains(stdout.String(), "apps/spillway@v") {
+					t.Errorf("doctor suggests the unsupported version-suffixed package install: %q", stdout.String())
+				}
+			}
 		})
 	}
 }

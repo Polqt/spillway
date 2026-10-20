@@ -25,7 +25,7 @@ func detectInstallChannel(goos, executable, version, moduleVersion, vcsModified,
 	case strings.HasPrefix(path, "/opt/homebrew/") || strings.HasPrefix(path, "/usr/local/cellar/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/"):
 		return installChannel{name: "Homebrew", instruction: "run brew upgrade spillway; Homebrew is not an official release channel"}
 	case version == "dev" && releaseVersionPattern.MatchString(moduleVersion):
-		return installChannel{name: "go install", instruction: "install a chosen release with go install github.com/Polqt/spillway/apps/spillway@vX.Y.Z"}
+		return installChannel{name: "go install", instruction: "clone the chosen release tag, then run go install ./apps/spillway from the repository root"}
 	case releaseVersionPattern.MatchString(version) && vcsModified == "false" && assets == "embedded":
 		return installChannel{name: "release archive", instruction: "download a newer archive from " + releasesPage + ", verify checksums.txt and gh attestation verify as described in docs/install.md, then replace the printed executable path"}
 	default:
