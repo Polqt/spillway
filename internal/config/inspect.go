@@ -9,11 +9,11 @@ import (
 
 // LocalKeySource contains safe metadata about a local API key declaration.
 type LocalKeySource struct {
-	Name      string
-	Variable  string
-	Dashboard bool
-	Line      int
-	Literal   bool
+	Name      string // Name is the configured local key name.
+	Variable  string // Variable is the environment variable referenced by the key declaration.
+	Dashboard bool   // Dashboard reports whether the key grants dashboard access.
+	Line      int    // Line is the source line of the key declaration.
+	Literal   bool   // Literal reports whether the config contains a literal key value.
 }
 
 // InspectLocalKeySources returns key names, variable references, access and source lines without key values.

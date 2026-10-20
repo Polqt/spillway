@@ -24,8 +24,8 @@ const SchemaVersion = 2
 
 // NewerSchemaError reports a database schema this binary cannot open.
 type NewerSchemaError struct {
-	Found     int
-	Supported int
+	Found     int // Found is the schema version stored in the database.
+	Supported int // Supported is the newest schema version this binary can open.
 }
 
 // Error describes the schema compatibility failure.

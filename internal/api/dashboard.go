@@ -197,8 +197,8 @@ func servePricing(w http.ResponseWriter, o Options) {
 // Gateway identifies the running binary so a user can tell an older server
 // is still answering. It holds no config values or secrets.
 type Gateway struct {
-	Version         string
-	DashboardAssets string // "embedded" or "fallback"
+	Version         string // Version is the version reported by the running binary.
+	DashboardAssets string // DashboardAssets identifies the embedded or fallback dashboard.
 }
 
 func serveGateway(w http.ResponseWriter, o Options) {

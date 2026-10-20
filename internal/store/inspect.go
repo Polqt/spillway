@@ -11,10 +11,10 @@ import (
 
 // Inspection reports a database schema without creating or migrating a store.
 type Inspection struct {
-	Path      string
-	Version   int
-	Supported int
-	Newer     bool
+	Path      string // Path is the absolute path of the inspected database.
+	Version   int    // Version is the schema version stored in the database.
+	Supported int    // Supported is the newest schema version this binary can open.
+	Newer     bool   // Newer reports whether the database schema exceeds Supported.
 }
 
 // Inspect opens path read-only and reports its SQLite schema version.
