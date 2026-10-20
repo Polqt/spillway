@@ -65,6 +65,27 @@ func (d *Document) Edit() *Edit {
 	return &Edit{doc: d}
 }
 
+// ProviderKeyVariable returns the environment-variable name used by one provider.
+func ProviderKeyVariable(path, provider string) (string, error) {
+	doc, err := OpenDocument(path)
+	if err != nil {
+		return "", err
+	}
+	root, _, err := parseDocument(doc.body())
+	if err != nil {
+		return "", fmt.Errorf("config: %w", err)
+	}
+	entry := mappingValue(mappingValue(root.Content[0], "providers"), provider)
+	key := mappingValue(entry, "api_key")
+	if key == nil {
+		return "", nil
+	}
+	if !providerKeyReference.MatchString(key.Value) {
+		return "", fmt.Errorf("config: providers.%s.api_key is not an environment-variable reference", provider)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(key.Value, "${"), "}"), nil
+}
+
 // body returns the file without a UTF-8 byte order mark, which the YAML
 // positions are relative to; the mark is restored on output.
 func (d *Document) body() []byte {
