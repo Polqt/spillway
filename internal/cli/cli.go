@@ -46,7 +46,7 @@ func RunWithOptions(ctx context.Context, args []string, stdin io.Reader, stdout,
 	}
 
 	exitCode := 0
-	options = options.withDefaults(stdin, stdout)
+	options = options.withDefaults(stdin, stdout, stderr)
 	root := newRootCommand(ctx, args, stdin, stdout, stderr, options.LookupEnv, &exitCode)
 	addManagementCommands(root, options)
 	root.SetArgs(normalizeLegacyFlags(root, args))

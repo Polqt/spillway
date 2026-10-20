@@ -12,3 +12,5 @@ func isTerminal(value any) bool {
 }
 
 func lookupProcessEnv(name string) (string, bool) { return os.LookupEnv(name) }
+
+func defaultExecutable() (string, error) { return os.Executable() }
