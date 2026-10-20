@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -660,7 +661,86 @@ func validateRun(client *http.Client, set PromptSet, options Options) error {
 	if _, err := LoadPromptSet(bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("invalid evaluation prompt set: %w", err)
 	}
+	if options.RulesBenchmark {
+		if err := validateRulesBenchmark(set, options); err != nil {
+			return err
+		}
+	} else if options.BenchmarkPilot || options.BenchmarkLive || options.LiveRunApproved || options.CandidateSetApproved || options.T19RecoveryApproved || options.MockPilotInspected || options.MockPilotReport != "" || options.CostCeilingUSD != 0 || options.CandidateSetSHA256 != "" {
+		return errors.New("benchmark options require rules benchmark mode")
+	}
 	return nil
+}
+
+func validateRulesBenchmark(set PromptSet, options Options) error {
+	if options.BenchmarkPilot == options.BenchmarkLive {
+		return errors.New("rules benchmark requires exactly one of pilot or live mode")
+	}
+	counts := map[string]int{}
+	for _, prompt := range set.Prompts {
+		counts[prompt.Difficulty]++
+	}
+	if options.BenchmarkLive {
+		if len(set.Prompts) < 90 || counts["simple"] < 30 || counts["moderate"] < 30 || counts["hard"] < 30 {
+			return errors.New("live rules benchmark requires at least 90 prompts and 30 per difficulty")
+		}
+		if options.Repeats < 3 {
+			return errors.New("live rules benchmark requires at least 3 repeats per prompt and arm")
+		}
+		if !options.LiveRunApproved || !options.CandidateSetApproved || !options.T19RecoveryApproved || !options.MockPilotInspected || options.MockPilotReport == "" || options.CostCeilingUSD <= 0 || math.IsNaN(options.CostCeilingUSD) || math.IsInf(options.CostCeilingUSD, 0) {
+			return errors.New("live rules benchmark requires separate run, candidate-set, T19 recovery, and cost-ceiling approvals plus an inspected mock pilot")
+		}
+	} else if len(set.Prompts) < 3 || counts["simple"] < 1 || counts["moderate"] < 1 || counts["hard"] < 1 {
+		return errors.New("mock rules pilot requires at least one prompt per difficulty")
+	}
+	if options.Seed == 0 {
+		return errors.New("rules benchmark requires an explicit non-zero seed")
+	}
+	if len(options.Arms) != 2 {
+		return errors.New("rules benchmark requires current-auto and rules arms")
+	}
+	arms := make(map[string]Arm, len(options.Arms))
+	for _, arm := range options.Arms {
+		arms[arm.Name] = arm
+	}
+	baseline, hasBaseline := arms["current-auto"]
+	rules, hasRules := arms["rules"]
+	if !hasBaseline || !hasRules || baseline.Model != "auto" || rules.Model != "auto" {
+		return errors.New("rules benchmark arms must be current-auto=auto and rules=auto")
+	}
+	baselineEndpoint, err := effectiveEndpoint(options.Endpoint, baseline.Endpoint)
+	if err != nil {
+		return err
+	}
+	rulesEndpoint, err := effectiveEndpoint(options.Endpoint, rules.Endpoint)
+	if err != nil {
+		return err
+	}
+	if baselineEndpoint == rulesEndpoint {
+		return errors.New("rules benchmark arms must use separate auto endpoints for their routing configurations")
+	}
+	digest, err := hex.DecodeString(options.CandidateSetSHA256)
+	if err != nil || len(digest) != sha256.Size {
+		return errors.New("rules benchmark requires the shared candidate-set SHA-256 digest")
+	}
+	if options.BenchmarkPilot && (options.LiveRunApproved || options.CandidateSetApproved || options.T19RecoveryApproved || options.MockPilotInspected || options.MockPilotReport != "" || options.CostCeilingUSD != 0) {
+		return errors.New("mock rules pilot does not accept live-run approvals or a live cost ceiling")
+	}
+	return nil
+}
+
+func effectiveEndpoint(defaultEndpoint, armEndpoint string) (string, error) {
+	if armEndpoint == "" {
+		endpoint, err := parseEndpoint(defaultEndpoint)
+		if err != nil {
+			return "", err
+		}
+		return endpoint.String(), nil
+	}
+	endpoint, err := parseEndpoint(armEndpoint)
+	if err != nil {
+		return "", err
+	}
+	return endpoint.String(), nil
 }
 
 func parseEndpoint(value string) (*url.URL, error) {
@@ -696,6 +776,7 @@ func runTrial(ctx context.Context, client *http.Client, endpoint *url.URL, apiKe
 		return Trial{}, "", errors.New("build evaluation request")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Spillway-Cache", "bypass")
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

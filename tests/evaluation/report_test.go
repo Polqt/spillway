@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,6 +307,44 @@ func TestReport_ZeroBaselineCostIsInconclusive(t *testing.T) {
 		}
 		if result.Gate == "cost_savings" && result.Available {
 			t.Error("zero-baseline cost savings should be unavailable")
+		}
+	}
+}
+
+func TestReport_RecommendsLowerRuleDifficultyOnlyWithPairedEvidence(t *testing.T) {
+	trials := make([]evaluation.Trial, 0, 60)
+	assignments := make([]evaluation.Assignment, 0, 60)
+	raterA := make([]evaluation.Score, 0, 60)
+	raterB := make([]evaluation.Score, 0, 60)
+	for index := 0; index < 30; index++ {
+		promptID := fmt.Sprintf("prompt-%02d", index)
+		for _, arm := range []string{"current-auto", "rules"} {
+			answerID := promptID + "-" + arm
+			trial := evaluation.Trial{
+				AnswerID: answerID, PromptID: promptID, Category: "coding", Difficulty: "simple",
+				Arm: arm, Repeat: 1, CostSource: evaluation.CostReported, Outcome: evaluation.OutcomeSucceeded,
+				RatedForReview: true, CostUSD: .01,
+			}
+			if arm == "rules" {
+				trial.CostUSD = .02
+				trial.RouteReason = "rules; rule 1; difficulty hard; tier smart; candidate 1/1"
+			}
+			trials = append(trials, trial)
+			assignments = append(assignments, evaluation.Assignment{AnswerID: answerID, PromptID: promptID, Arm: arm, Repeat: 1, RatedForReview: true})
+			raterA = append(raterA, evaluation.Score{AnswerID: answerID, RaterID: "rater-a", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
+			raterB = append(raterB, evaluation.Score{AnswerID: answerID, RaterID: "rater-b", Correctness: 4, Completeness: 4, InstructionFollowing: 4})
+		}
+	}
+	got, err := evaluation.BuildGateReport(t.Context(), evaluation.Report{FormatVersion: 3, Trials: trials}, assignments, [][]evaluation.Score{raterA, raterB}, evaluation.GateOptions{Baseline: "current-auto", Seed: 77, Replicates: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RoutingFindings) != 2 {
+		t.Fatalf("routing findings = %d, want aggregate and coding findings: %#v", len(got.RoutingFindings), got.RoutingFindings)
+	}
+	for _, finding := range got.RoutingFindings {
+		if finding.Pattern != "over_routing" || finding.Verdict != evaluation.VerdictPass || !strings.Contains(finding.Recommendation, "lowering") || finding.PromptClusters != 30 || finding.CostLower95USD <= 0 || finding.QualityUpper95 > 0 {
+			t.Errorf("routing finding = %#v, want evidence-backed lower-difficulty recommendation", finding)
 		}
 	}
 }

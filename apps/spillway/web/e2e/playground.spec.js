@@ -38,6 +38,7 @@ async function connectDashboard(page, calls, { build = "embedded", models = [{ i
   await page.getByRole("textbox", { name: "Dashboard key" }).fill(dashboardKey);
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.getByRole("heading", { name: "Request playground" })).toBeVisible();
+  await page.getByRole("heading", { name: "Request playground" }).click();
 }
 
 for (const build of ["embedded", "fallback"]) {

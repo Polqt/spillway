@@ -408,9 +408,13 @@ func TestRun_UsesConfiguredEndpointForEachArm(t *testing.T) {
 		t.Fatal(err)
 	}
 	var firstCalls, secondCalls atomic.Int32
+	var cacheBypassMisses atomic.Int32
 	newServer := func(counter *atomic.Int32) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			counter.Add(1)
+			if r.Header.Get("X-Spillway-Cache") != "bypass" {
+				cacheBypassMisses.Add(1)
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`)
 			_, _ = fmt.Fprintln(w, "data: [DONE]")

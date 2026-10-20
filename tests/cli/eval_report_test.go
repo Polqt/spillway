@@ -33,6 +33,25 @@ func TestRun_EvalFileCommandsHonorCanceledContext(t *testing.T) {
 	}
 }
 
+func TestRun_EvalRulesBenchmarkValidatesProtocolBeforeRequest(t *testing.T) {
+	datasetPath := filepath.Join(t.TempDir(), "prompts.json")
+	dataset := `{"version":1,"prompts":[{"id":"p1","category":"general","difficulty":"simple","prompt":"test"}]}`
+	if err := os.WriteFile(datasetPath, []byte(dataset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{
+		"eval", "-dataset", datasetPath, "-endpoint", "http://127.0.0.1:1234",
+		"-arms", "current-auto=auto@http://127.0.0.1:1234,rules=auto@http://127.0.0.1:1235",
+		"-repeats", "3", "-seed", "17", "-rules-benchmark", "-benchmark-live",
+		"-approve-live-run", "-approve-candidate-set", "-approve-t19-recovery", "-mock-pilot-inspected", "-mock-pilot-report", "pilot.json", "-cost-ceiling-usd", "5",
+		"-candidate-set-sha256", strings.Repeat("a", 64), "-out", t.TempDir(),
+	}, nil, &stdout, &stderr, noEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "at least 90 prompts and 30 per difficulty") {
+		t.Fatalf("exit = %d; stderr = %q; want benchmark sample validation", code, stderr.String())
+	}
+}
+
 func TestRun_EvalScoreReplacesQualitySummaryAtomically(t *testing.T) {
 	runDir := t.TempDir()
 	writeEvalScoreInputs(t, runDir)

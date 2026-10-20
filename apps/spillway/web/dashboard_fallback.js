@@ -154,6 +154,9 @@
       const route = document.createElement("div");
       route.className = "decision-route";
       route.textContent = row.route || "No route reason recorded";
+      const explanation = document.createElement("div");
+      explanation.className = "decision-skips";
+      explanation.textContent = `What happened: ${explainRoute(row.route, row.cache, row.status)}`;
       const status = document.createElement("span");
       status.className = `status-pill${Number(row.status) >= 400 ? " error" : ""}`;
       status.textContent = Number(row.status) >= 400 ? "Error" : row.cache === "hit" ? "Cache hit" : "Served";
@@ -163,11 +166,22 @@
       time.textContent = row.at ? new Date(row.at).toLocaleString() : "";
       const routeWrap = document.createElement("div");
       routeWrap.append(route);
+      routeWrap.append(explanation);
+      const cache = document.createElement("div");
+      cache.className = "decision-skips";
+      cache.textContent = `Cache: ${row.cache || "not recorded"}`;
+      routeWrap.append(cache);
       if (Array.isArray(row.skips) && row.skips.length) {
         const skips = document.createElement("div");
         skips.className = "decision-skips";
         skips.textContent = `Skipped: ${row.skips.map((skip) => `${skip.provider}/${skip.model} (${skip.reason})`).join(", ")}`;
         routeWrap.append(skips);
+      }
+      if (Array.isArray(row.attempts) && row.attempts.length) {
+        const attempts = document.createElement("div");
+        attempts.className = "decision-skips";
+        attempts.textContent = `Attempts: ${row.attempts.map((attempt) => `${attempt.provider}/${attempt.model} (${attempt.outcome})`).join(", ")}`;
+        routeWrap.append(attempts);
       }
       const timing = document.createElement("div");
       timing.append(status, time);

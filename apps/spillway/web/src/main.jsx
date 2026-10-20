@@ -243,8 +243,8 @@ function Dashboard() {
       <main class="page">
         <section class="intro" aria-labelledby="welcome-title">
           <p class="eyebrow">YOUR LOCAL GATEWAY</p>
-          <h1 id="welcome-title">Welcome to Spillway.</h1>
-          <p class="intro-copy">Connect your dashboard to see what is configured and choose a useful next step.</p>
+          <h1 id="welcome-title">Your gateway, in view.</h1>
+          <p class="intro-copy">A clear view of your local providers, requests, and usage.</p>
         </section>
 
         {!connected ? (
@@ -266,15 +266,10 @@ function Dashboard() {
           </section>
         ) : (
           <>
-            <section class="card welcome-card" aria-labelledby="ready-title">
-              <div class="ready-mark" aria-hidden="true">✓</div>
-              <div>
-                <p class="step-label">CONNECTED</p>
-                <h2 id="ready-title">Your dashboard is ready.</h2>
-                <p>Spillway runs locally. You choose when to send requests to configured providers.</p>
-              </div>
+            <section class="welcome-line" aria-labelledby="ready-title">
+              <h2 id="ready-title">Your dashboard is ready.</h2>
+              <p>Spillway is local. You choose when to send requests to configured providers.</p>
             </section>
-
             <section class="next-grid" aria-label="Next steps">
               <ClientExamples />
 
@@ -290,14 +285,20 @@ function Dashboard() {
               </article>
             </section>
             <ProviderStatus providers={providerStatus} />
-            <RequestPlayground
-              models={models} prices={prices} model={selectedModel} setModel={setSelectedModel}
-              prompt={prompt} setPrompt={setPrompt} maxTokens={maxTokens} setMaxTokens={setMaxTokens}
-              streaming={streaming} setStreaming={setStreaming} response={responseText}
-              route={playgroundRoute}
-              message={playgroundMessage} busy={playgroundBusy} onSubmit={submitPlayground} onCancel={cancelPlayground}
-              error={playgroundError}
-            />
+            <details class="request-disclosure">
+              <summary>
+                <span><p class="step-label">OPTIONAL</p><h2 id="playground-heading">Request playground</h2></span>
+                <span class="disclosure-hint">Sends only when you choose · provider charges may apply</span>
+              </summary>
+              <RequestPlayground
+                models={models} prices={prices} model={selectedModel} setModel={setSelectedModel}
+                prompt={prompt} setPrompt={setPrompt} maxTokens={maxTokens} setMaxTokens={setMaxTokens}
+                streaming={streaming} setStreaming={setStreaming} response={responseText}
+                route={playgroundRoute}
+                message={playgroundMessage} busy={playgroundBusy} onSubmit={submitPlayground} onCancel={cancelPlayground}
+                error={playgroundError}
+              />
+            </details>
             {dashboardData && <History data={dashboardData} />}
             {message && <p class="notice" role="status">{message}</p>}
             <div class="actions"><button class="secondary" type="button" onClick={forget}>Forget dashboard key</button></div>
@@ -421,7 +422,6 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
   }
   return (
     <section class="request-playground" aria-labelledby="playground-heading">
-      <div class="history-title"><div><p class="step-label">EXPLICIT PROVIDER REQUEST</p><h2 id="playground-heading">Request playground</h2></div></div>
       <p class="helper">Your prompt will be sent to the configured provider for the selected model. Provider charges may apply.</p>
       <form class="playground-form" onSubmit={onSubmit}>
         <label for="playground-model">Model</label>
@@ -528,7 +528,13 @@ function History({ data }) {
           <ul class="decision-list">{data.decisions.map((decision, index) => (
             <li key={`${decision.at}-${index}`}>
               <div><strong>{decision.model || decision.requested_model || "Model unavailable"}</strong><span>{decision.provider || "No provider recorded"} · {decision.status || "unknown status"}</span></div>
-              <p>{decision.route || "No route reason recorded"}</p>
+              <div class="decision-details">
+                <p><strong>Route</strong><span>{decision.route || "No route reason recorded"}</span></p>
+                <p><strong>What happened</strong><span>{explainRoute(decision.route, decision.cache, decision.status)}</span></p>
+                <p><strong>Cache</strong><span>{decision.cache || "Not recorded"}</span></p>
+                {decision.skips?.length > 0 && <div><strong>Skipped candidates</strong><ul>{decision.skips.map((skip, skipIndex) => <li key={`${skip.provider}/${skip.model}/${skipIndex}`}>{skip.provider}/{skip.model} · {skip.reason}</li>)}</ul></div>}
+                {decision.attempts?.length > 0 && <div><strong>Provider attempts</strong><ul>{decision.attempts.map((attempt, attemptIndex) => <li key={`${attempt.provider}/${attempt.model}/${attemptIndex}`}>{attempt.provider}/{attempt.model} · {attempt.outcome}</li>)}</ul></div>}
+              </div>
               <time dateTime={decision.at}>{decision.at ? new Date(decision.at).toLocaleString() : ""}</time>
             </li>
           ))}</ul>

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -67,7 +66,9 @@ commands:
 Examples:
 {{.Example}}{{end}}{{if .HasAvailableLocalFlags}}
 flags:
-{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if not .HasParent}}
+Run 'spillway <command> --help' for details.
+{{end}}
 `)
 	root.AddGroup(
 		&cobra.Group{ID: "start", Title: "Get started"},
@@ -98,6 +99,11 @@ flags:
 		writeHelp(cmd, cmd.OutOrStdout())
 	})
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
+	root.AddGroup(
+		&cobra.Group{ID: "start", Title: "Get started"},
+		&cobra.Group{ID: "tools", Title: "Tools"},
+		&cobra.Group{ID: "experimental", Title: "Experimental"},
+	)
 	showVersion := false
 	root.Flags().BoolVar(&showVersion, "version", false, "print version information")
 	root.RunE = func(cmd *cobra.Command, _ []string) error {
@@ -171,7 +177,7 @@ flags:
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
-	addLegacyCommand(root, exitCode, "init", "create a zero-spend config and local key", `  spillway init
+	addLegacyCommand(root, exitCode, "init", "create a local config and key", `  spillway init
   spillway init -providers groq,gemini -yes`, func(cmd *cobra.Command, args []string) int {
 		return initCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
@@ -214,6 +220,16 @@ flags:
 		flags.Duration("timeout", 2*time.Hour, "whole-run deadline")
 		flags.String("prices", "", "optional JSON map of model references to declared prices")
 		flags.String("out", "", "directory for evaluation artifacts")
+		flags.Bool("rules-benchmark", false, "validate sample size, repeats, seed and arms for a rules benchmark")
+		flags.String("candidate-set-sha256", "", "operator-attested shared candidate-set SHA-256 digest; verify both routing configs match")
+		flags.Bool("benchmark-pilot", false, "run a zero-spend mock rules benchmark pilot")
+		flags.Bool("benchmark-live", false, "run a paid rules benchmark after required approvals")
+		flags.Bool("approve-live-run", false, "record separate owner approval for this live benchmark run")
+		flags.Bool("approve-candidate-set", false, "record separate owner approval for the candidate set")
+		flags.Bool("approve-t19-recovery", false, "record resolution of T19 or approval of its documented recovery path")
+		flags.String("mock-pilot-report", "", "completed zero-spend mock pilot report required for a live benchmark")
+		flags.Bool("mock-pilot-inspected", false, "confirm the zero-spend mock pilot was inspected")
+		flags.Float64("cost-ceiling-usd", 0, "separately approved estimated-cost ceiling for the live run in USD")
 	})
 	addLegacyCommand(root, exitCode, "eval-score", "summarize a completed blinded evaluation score sheet (experimental)", `  spillway eval-score -run results`, func(cmd *cobra.Command, args []string) int {
 		var result bytes.Buffer
@@ -331,10 +347,18 @@ func addManagementCommands(ctx context.Context, root *cobra.Command, options Opt
 }
 
 func addLegacyCommand(root *cobra.Command, exitCode *int, name, short, example string, run func(*cobra.Command, []string) int, addFlags func(*pflag.FlagSet)) {
+	group := "tools"
+	switch name {
+	case "init", "check", "serve":
+		group = "start"
+	case "eval", "eval-score", "eval-report":
+		group = "experimental"
+	}
 	command := &cobra.Command{
 		Use:     name,
 		Short:   short,
 		Example: example,
+		GroupID: group,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			*exitCode = normalizeExitCode(run(cmd, args))
