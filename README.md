@@ -8,10 +8,12 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
-Install the current release with Go:
+Install the current release from its source tag with Go:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
+cd spillway
+go install ./apps/spillway
 ```
 
 Or pull the current Docker image:

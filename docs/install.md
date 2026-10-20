@@ -34,13 +34,17 @@ Extract the archive, place `spillway` on your `PATH`, and run `spillway version`
 
 ## Install with Go
 
-With Go 1.26 or later:
+With Go 1.26 or later, clone the release tag and run `go install` from the repository root:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
+cd spillway
+go install ./apps/spillway
 ```
 
-`go install` fetches source through the Go module proxy rather than verifying a GitHub release archive. Check the version with `spillway version`.
+The version-suffixed package form `go install github.com/Polqt/spillway/apps/spillway@v1.0.0` does not work with this repository layout because Go looks for a module rooted at `apps/spillway` and a tag prefixed with `apps/spillway/`.
+Cloning the root module tag avoids that lookup and installs the binary into `GOBIN` or `GOPATH/bin`.
+Check the version with `spillway version`.
 Because `go install` does not run the dashboard asset build, it serves the supported fallback dashboard included in the source.
 The fallback dashboard supports onboarding, provider status, the playground and route explanations; see [known limitations](limitations.md) for the distinction from release archives.
 
