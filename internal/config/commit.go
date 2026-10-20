@@ -21,14 +21,15 @@ var ErrConcurrentEdit = errors.New("config changed since it was read")
 
 // CommitOptions controls backup retention and timestamps.
 type CommitOptions struct {
-	Now         func() time.Time
-	KeepBackups int
+	Now         func() time.Time // Now supplies timestamps for backup names.
+	KeepBackups int              // KeepBackups is the maximum number of backups to retain.
 }
 
 // CommitResult reports where the previous config was saved.
 type CommitResult struct {
-	Path, BackupPath string
-	ModeTightened    bool
+	Path          string // Path is the config file that was replaced.
+	BackupPath    string // BackupPath is the saved copy of the previous config.
+	ModeTightened bool   // ModeTightened reports whether the replacement restricted file permissions.
 }
 
 // Commit backs up the current file and atomically replaces it with c.

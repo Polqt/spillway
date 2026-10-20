@@ -9,22 +9,22 @@ import (
 
 // Options injects operating-system and terminal information used by commands.
 type Options struct {
-	Stdin           io.Reader
-	Stdout          io.Writer
-	Stderr          io.Writer
-	LookupEnv       func(string) (string, bool)
-	PersistentEnv   func(string) (string, bool)
-	GOOS            string
-	Version         string
-	ModuleVersion   string
-	VCSModified     string
-	DashboardAssets string
-	Shell           string
-	Executable      func() (string, error)
-	Now             func() time.Time
-	ProbeTransport  http.RoundTripper
-	StdinTerminal   bool
-	StdoutTerminal  bool
+	Stdin           io.Reader                   // Stdin is the command input stream.
+	Stdout          io.Writer                   // Stdout is the command output stream.
+	Stderr          io.Writer                   // Stderr is the command error stream.
+	LookupEnv       func(string) (string, bool) // LookupEnv reads an environment variable.
+	PersistentEnv   func(string) (string, bool) // PersistentEnv reads a user-level environment variable.
+	GOOS            string                      // GOOS names the operating system used for platform-specific behavior.
+	Version         string                      // Version is the version embedded in the binary.
+	ModuleVersion   string                      // ModuleVersion is the version recorded in Go build information.
+	VCSModified     string                      // VCSModified reports whether the source tree was modified at build time.
+	DashboardAssets string                      // DashboardAssets identifies the embedded or fallback dashboard.
+	Shell           string                      // Shell is the user's shell path, when known.
+	Executable      func() (string, error)      // Executable returns the current executable path.
+	Now             func() time.Time            // Now returns the current time.
+	ProbeTransport  http.RoundTripper           // ProbeTransport sends doctor HTTP probes.
+	StdinTerminal   bool                        // StdinTerminal reports whether stdin is an interactive terminal.
+	StdoutTerminal  bool                        // StdoutTerminal reports whether stdout is an interactive terminal.
 }
 
 func (o Options) withDefaults(stdin io.Reader, stdout, stderr io.Writer) Options {
