@@ -18,9 +18,9 @@ var providerKeyReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 // MissingEnvironmentError identifies an unset environment reference in a config file.
 type MissingEnvironmentError struct {
-	Field    string
-	Line     int
-	Variable string
+	Field    string // Field is the config path containing the unset reference.
+	Line     int    // Line is the source line containing the unset reference.
+	Variable string // Variable is the name of the unset environment variable.
 }
 
 // Error describes the unset environment reference without exposing a value.

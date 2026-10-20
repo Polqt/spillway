@@ -40,17 +40,17 @@ type hunk struct {
 // ProviderEntry is a provider to add. It has no key field, so a key value
 // cannot be written through it.
 type ProviderEntry struct {
-	Name     string // preset name
-	KeyEnv   string // variable name, written as "${KeyEnv}"; empty for presets without keys
-	BaseURL  string // empty keeps the preset default
-	FreeTier bool   // free-tier attestation, groq and gemini only
+	Name     string // Name is the provider preset name.
+	KeyEnv   string // KeyEnv is the variable name written as "${KeyEnv}"; empty for presets without keys.
+	BaseURL  string // BaseURL overrides the preset URL; empty keeps the preset default.
+	FreeTier bool   // FreeTier enables free-tier attestation for Groq or Gemini.
 }
 
 // ProviderExistsError reports that the provider is already configured.
 // Spillway keeps one entry per provider (no account rotation), so it is never merged.
 type ProviderExistsError struct {
-	Name string
-	Line int
+	Name string // Name is the provider already present in the configuration.
+	Line int    // Line is the source line of the existing provider.
 }
 
 func (e *ProviderExistsError) Error() string {
@@ -60,10 +60,10 @@ func (e *ProviderExistsError) Error() string {
 // LayoutError reports a file layout that an edit will not rewrite, with the
 // YAML snippet the user can add by hand.
 type LayoutError struct {
-	Path    string // YAML path such as tiers.free.models
-	Line    int
-	Reason  string
-	Snippet string
+	Path    string // Path is the YAML path such as tiers.free.models.
+	Line    int    // Line is the source line of the unsupported layout.
+	Reason  string // Reason explains why the layout cannot be edited safely.
+	Snippet string // Snippet is YAML the user can add manually.
 }
 
 func (e *LayoutError) Error() string {
