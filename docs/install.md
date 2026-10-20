@@ -41,6 +41,8 @@ go install github.com/Polqt/spillway/apps/spillway@v1.0.0
 ```
 
 `go install` fetches source through the Go module proxy rather than verifying a GitHub release archive. Check the version with `spillway version`.
+Because `go install` does not run the dashboard asset build, it serves the supported fallback dashboard included in the source.
+The fallback dashboard supports onboarding, provider status, the playground and route explanations; see [known limitations](limitations.md) for the distinction from release archives.
 
 ## Install with Docker
 
@@ -66,6 +68,7 @@ A running server logs `spillway starting` with its version, executable and confi
 ## First run
 
 Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. See the [README quickstart](../README.md#five-minute-offline-quickstart).
+For config fields, environment variables and validation rules, see the [configuration reference](configuration.md).
 
 For the interactive path, run `spillway init`, review the provider and optional store choices, then follow the suggested `check` and `serve` commands.
 The wizard creates a dashboard key when you enable the store.

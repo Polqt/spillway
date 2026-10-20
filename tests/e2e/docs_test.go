@@ -85,6 +85,34 @@ func TestDocs_FullConfigExamplesValidate(t *testing.T) {
 	}
 }
 
+func TestDocs_TroubleshootingCoversCLIRecoveryCases(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide, err := os.ReadFile(filepath.Join(root, "docs", "troubleshooting.md")) // #nosec G304 -- path is fixed under the repository root.
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		want string
+	}{
+		{name: "init does not overwrite configs", want: "init never overwrites a config"},
+		{name: "missing environment variable", want: "environment variable"},
+		{name: "set a variable in the current shell", want: "set it in this shell"},
+		{name: "address already in use", want: "Another process (possibly an older Spillway)"},
+		{name: "newer store schema", want: "newer Spillway binary that wrote this database"},
+		{name: "start after config check", want: "spillway serve -config"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(string(guide), tt.want) {
+				t.Errorf("troubleshooting guide does not cover %q", tt.want)
+			}
+		})
+	}
+}
+
 func fullConfigExamples(markdown string) ([]string, error) {
 	const info = "yaml spillway-config"
 	var examples []string

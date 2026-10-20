@@ -21,6 +21,7 @@ docker pull ghcr.io/polqt/spillway:1.0.0
 ```
 
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
+For config fields and validation, see the [configuration reference](docs/configuration.md).
 
 ## Five-minute offline quickstart
 
