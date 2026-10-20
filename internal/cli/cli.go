@@ -47,6 +47,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return coded.code
 		}
 		report(stderr, "spillway: %v\n", err)
+		if _, _, findErr := root.Find(args); findErr != nil {
+			_, _ = fmt.Fprintln(stderr, "Run 'spillway --help' to list commands.")
+			return 2
+		}
 		_, _ = fmt.Fprint(stderr, root.UsageString())
 		return 2
 	}

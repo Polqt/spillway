@@ -27,8 +27,15 @@ func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader,
 Quick start:
   spillway init
   spillway check -config config.yaml
-  spillway serve -config config.yaml`),
+  spillway serve -config config.yaml
+
+Offline mock path:
+  spillway init -yes -providers mock -store
+  spillway serve -config config.yaml
+
+Flags accept one or two dashes: -config or --config.`),
 		Example: `  spillway init
+  spillway init -yes -providers mock -store
   spillway check -config config.yaml
   spillway serve -config config.yaml`,
 		SilenceUsage:  true,
@@ -44,13 +51,21 @@ Quick start:
 {{.Long}}{{end}}
 {{if .HasAvailableSubCommands}}
 commands:
-{{range .Commands}}{{if (and (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
-{{end}}{{end}}{{end}}{{if .HasExample}}
+{{range .Groups}}{{$group := .}}{{.Title}}
+{{range $.Commands}}{{if (and (eq .GroupID $group.ID) (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}{{end}}{{end}}{{if .HasExample}}
 Examples:
 {{.Example}}{{end}}{{if .HasAvailableLocalFlags}}
 flags:
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
 `)
+	root.AddGroup(
+		&cobra.Group{ID: "start", Title: "Get started"},
+		&cobra.Group{ID: "tools", Title: "Tools"},
+		&cobra.Group{ID: "experimental", Title: "Experimental"},
+	)
+	root.SetHelpCommandGroupID("tools")
+	root.SetCompletionCommandGroupID("tools")
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		out := cmd.OutOrStdout()
 		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Spillway")
@@ -133,6 +148,28 @@ flags:
 		}
 		return 0
 	}, nil)
+	for _, command := range root.Commands() {
+		switch command.Name() {
+		case "init", "serve":
+			command.GroupID = "start"
+		case "eval", "eval-score", "eval-report":
+			command.GroupID = "experimental"
+		default:
+			command.GroupID = "tools"
+		}
+	}
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	if help := root.Commands(); len(help) > 0 {
+		for _, command := range help {
+			switch command.Name() {
+			case "help":
+				command.Short = "help about any command"
+			case "completion":
+				command.Short = "generate shell completion scripts"
+			}
+		}
+	}
 
 	return root
 }

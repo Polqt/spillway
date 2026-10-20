@@ -74,6 +74,50 @@ func TestRun_HelpAliases(t *testing.T) {
 	}
 }
 
+func TestRun_RootHelpShowsQuickPathAndCommandGroups(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run(t.Context(), nil, nil, &stdout, &stderr, noEnv); code != 2 {
+		t.Fatalf("bare command exit code = %d, want 2; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "spillway init -yes -providers mock -store") {
+		t.Errorf("bare command output = %q, want offline mock quick path", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run(t.Context(), []string{"--help"}, nil, &stdout, &stderr, noEnv); code != 0 {
+		t.Fatalf("help exit code = %d, want 0; stderr: %q", code, stderr.String())
+	}
+	help := stdout.String()
+	for _, want := range []string{
+		"Quick start:",
+		"spillway init -yes -providers mock -store",
+		"Get started",
+		"Tools",
+		"Experimental",
+		"completion",
+		"help",
+		"Flags accept one or two dashes: -config or --config.",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help = %q, want %q", help, want)
+		}
+	}
+	for _, want := range []string{"Get started\n  init", "Tools\n  catalog", "Experimental\n  eval"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help = %q, want grouped commands at %q", help, want)
+		}
+	}
+	for _, want := range []string{"print the version", "help about any command", "generate shell completion"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("root help = %q, want lowercase description %q", help, want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRun_CommandHelp(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
@@ -104,6 +148,9 @@ func TestRun_UnknownCommandSuggestsValidCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "ser" for "spillway"`) || !strings.Contains(stderr.String(), "Did you mean this?") || !strings.Contains(stderr.String(), "serve") {
 		t.Errorf("stderr = %q, want a command suggestion", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Run 'spillway --help' to list commands.") || strings.Contains(stderr.String(), "commands:") {
+		t.Errorf("stderr = %q, want a one-line help pointer without full usage", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout = %q, want empty", stdout.String())
@@ -253,8 +300,11 @@ func TestRun_UsageError(t *testing.T) {
 			if code != 2 {
 				t.Errorf("exit code = %d, want 2", code)
 			}
-			if !strings.Contains(stderr.String(), "usage: spillway <command>") {
+			if tt.name == "no args" && !strings.Contains(stderr.String(), "usage: spillway <command>") {
 				t.Errorf("stderr = %q, want usage text", stderr.String())
+			}
+			if tt.name == "unknown command" && (!strings.Contains(stderr.String(), "Run 'spillway --help' to list commands.") || strings.Contains(stderr.String(), "usage: spillway <command>")) {
+				t.Errorf("stderr = %q, want a concise help pointer", stderr.String())
 			}
 			if stdout.Len() != 0 {
 				t.Errorf("stdout = %q, want empty", stdout.String())
