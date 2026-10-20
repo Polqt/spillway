@@ -385,8 +385,8 @@ func TestRun_CheckValidRedactsSecrets(t *testing.T) {
 	if !strings.Contains(stdout.String(), "shutdown_timeout: 15s") {
 		t.Errorf("check output = %q, want shutdown timeout", stdout.String())
 	}
-	if stderr.String() != "config OK\n" {
-		t.Errorf("stderr = %q, want config OK", stderr.String())
+	if !strings.Contains(stderr.String(), "config OK") || !strings.Contains(stderr.String(), "spillway serve -config "+path) {
+		t.Errorf("stderr = %q, want config OK and serve next step", stderr.String())
 	}
 	for _, secret := range []string{"sk-test-local-check", "sk-test-groq-check"} {
 		if strings.Contains(stdout.String()+stderr.String(), secret) {

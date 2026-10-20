@@ -160,7 +160,7 @@ func TestRun_InitNeverOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path) {
+	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path+" already exists") || !strings.Contains(stderr.String(), "init never overwrites a config") || !strings.Contains(stderr.String(), "spillway check -config "+path) || !strings.Contains(stderr.String(), "new-path") {
 		t.Errorf("init = %d, stderr %q, contents %q; want exit 1, path in error, unchanged bytes", code, stderr.String(), after)
 	}
 }

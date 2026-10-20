@@ -75,7 +75,11 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return 1
 	}
 	if err := writeInitConfig(ctx, *configPath, content); err != nil {
-		report(stderr, "spillway: init: create %s: %v\n", *configPath, err)
+		if errors.Is(err, os.ErrExist) {
+			report(stderr, "spillway: init: %s already exists: %v\ninit never overwrites a config. Validate it with `spillway check -config %s`, or create another with `spillway init -config <new-path>`.\n", *configPath, err, *configPath)
+		} else {
+			report(stderr, "spillway: init: create %s: %v\n", *configPath, err)
+		}
 		return 1
 	}
 	for _, status := range statuses {
