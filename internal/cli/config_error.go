@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"runtime"
 
 	"github.com/Polqt/spillway/internal/config"
 )
@@ -26,11 +25,4 @@ func reportConfigLoadError(stderr io.Writer, configPath string, explicit bool, e
 		return
 	}
 	report(stderr, "spillway: %v\nCheck the config syntax and values with `spillway check -config %s`.\n", err, configPath)
-}
-
-func environmentRecoveryCommand(name string) string {
-	if runtime.GOOS == "windows" {
-		return "$env:" + name + " = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password"
-	}
-	return "read -rs " + name + " && export " + name
 }

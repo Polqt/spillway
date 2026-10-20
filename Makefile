@@ -10,7 +10,6 @@ EXE     := $(shell $(GO) env GOEXE)
 BIN     := bin/spillway$(EXE)
 # git describe already carries the v prefix that go install and release builds report.
 VERSION ?= $(or $(shell git describe --tags --always --dirty),dev)
-LDFLAGS := -s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
@@ -31,8 +30,9 @@ web-test: web-build
 
 build: web-build
 build: export CGO_ENABLED=0
+build: export GOFLAGS = -tags=dashboardassets -trimpath "-ldflags=-s -w -X github.com/Polqt/spillway/internal/cli.version=$(VERSION)"
 build:
-	$(GO) build -tags dashboardassets -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./apps/spillway
+	$(GO) build -o $(BIN) ./apps/spillway
 
 test: web-test
 	$(GO) test $(RACE) -tags dashboardassets -count=1 ./...

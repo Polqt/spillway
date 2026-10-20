@@ -1,0 +1,303 @@
+package cli_test
+
+import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Polqt/spillway/internal/cli"
+)
+
+func TestDoctor_ListenProbeRecognizesExpectedUnauthenticatedResponses(t *testing.T) {
+	requests := make([]string, 0, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		requests = append(requests, r.Method+" "+r.URL.Path+" Host="+r.Host)
+		switch r.URL.Path {
+		case "/healthz":
+			if r.Host == "doctor.invalid" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":"host_not_allowed"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+		case "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
+		}
+	}))
+	defer server.Close()
+	listen := strings.TrimPrefix(server.URL, "http://")
+	path := writeDoctorConfigWithListen(t, listen)
+	var stdout, stderr strings.Builder
+	options := cli.Options{LookupEnv: doctorHealthyEnv}
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 0 {
+		t.Fatalf("exit = %d; stdout = %q; stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "answers like Spillway") || !strings.Contains(stdout.String(), "startup summary") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if len(requests) != 3 {
+		t.Fatalf("requests = %v, want health, models and invalid-host health probes", requests)
+	}
+}
+
+func TestDoctor_ListenProbeDoesNotFollowRedirectOrPrintBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/secret-canary", http.StatusFound)
+	}))
+	defer server.Close()
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 1 {
+		t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "not Spillway (HTTP 302") || strings.Contains(stdout.String(), "secret-canary") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestDoctor_RejectsOpenAICompatibleListenerWithoutHostCheck(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
+	}))
+	defer server.Close()
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 1 {
+		t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "not Spillway (HTTP 200") || strings.Contains(stdout.String(), "authentication_error") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestDoctor_ListenProbeReadsAtMostFourKiB(t *testing.T) {
+	var maxRead int
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := &countedBody{Reader: strings.NewReader(strings.Repeat("x", 16<<10)), onClose: func(read int) {
+			if read > maxRead {
+				maxRead = read
+			}
+		}}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}}, Body: body, Request: request}, nil
+	})
+	path := writeDoctorConfigWithListen(t, freeDoctorListenAddress(t))
+	var stdout, stderr strings.Builder
+	options := cli.Options{LookupEnv: doctorHealthyEnv, ProbeTransport: transport}
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 1 {
+		t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if maxRead != 4<<10 || strings.Contains(stdout.String(), strings.Repeat("x", 32)) {
+		t.Fatalf("maximum bytes read = %d and stdout %q, want 4 KiB and no body text", maxRead, stdout.String())
+	}
+}
+
+func TestDoctor_ListenProbeIgnoresHTTPProxy(t *testing.T) {
+	targetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetRequests++
+		if r.URL.Path == "/healthz" {
+			if r.Host == "doctor.invalid" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":"host_not_allowed"}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
+	}))
+	defer server.Close()
+
+	proxyRequests := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyRequests++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("http_proxy", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("REQUEST_METHOD", "")
+
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
+		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if proxyRequests != 0 || targetRequests < 2 || !strings.Contains(stdout.String(), "answers like Spillway") {
+		t.Fatalf("proxy requests=%d target requests=%d stdout=%q", proxyRequests, targetRequests, stdout.String())
+	}
+}
+
+func TestDoctor_DoesNotProbeNonLoopbackOrHostnameListeners(t *testing.T) {
+	for _, listen := range []string{"192.0.2.10:8787", "spillway.invalid:8787"} {
+		t.Run(listen, func(t *testing.T) {
+			requests := 0
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				requests++
+				return nil, io.ErrUnexpectedEOF
+			})
+			path := writeDoctorConfigWithListen(t, listen)
+			var stdout, stderr strings.Builder
+			options := cli.Options{LookupEnv: doctorHealthyEnv, ProbeTransport: transport}
+			if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 0 {
+				t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if requests != 0 || !strings.Contains(stdout.String(), "HTTP probe skipped: configured listen host is not loopback") {
+				t.Fatalf("requests=%d stdout=%q", requests, stdout.String())
+			}
+			if strings.Contains(listen, ".invalid") && !strings.Contains(stdout.String(), "bind probe skipped: configured listen host is a hostname") {
+				t.Fatalf("hostname bind probe was not skipped: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestDoctor_NoProbeMakesNoListenRequests(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path, "--no-probe"}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
+		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if requests != 0 || !strings.Contains(stdout.String(), "probe skipped (--no-probe)") {
+		t.Fatalf("requests = %d; stdout = %q", requests, stdout.String())
+	}
+}
+
+func TestDoctor_ClosedAddressReportsNothingListening(t *testing.T) {
+	path := writeDoctorConfigWithListen(t, freeDoctorListenAddress(t))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
+		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "nothing listening") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func freeDoctorListenAddress(t *testing.T) string {
+	t.Helper()
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+func TestDoctor_PortGuidanceIsLoopbackOnlyAndOSSpecific(t *testing.T) {
+	tests := []struct{ goos string }{
+		{"windows"},
+		{"darwin"},
+		{"linux"},
+	}
+	for _, test := range tests {
+		t.Run(test.goos, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("private response body"))
+			}))
+			defer server.Close()
+			listen := strings.TrimPrefix(server.URL, "http://")
+			_, port, err := net.SplitHostPort(listen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeDoctorConfigWithListen(t, listen)
+			var stdout, stderr strings.Builder
+			options := cli.Options{GOOS: test.goos, LookupEnv: doctorHealthyEnv}
+			if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 1 {
+				t.Fatalf("exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			text := stdout.String()
+			want := "ss -ltnp 'sport = :" + port + "'"
+			switch test.goos {
+			case "windows":
+				want = "Get-NetTCPConnection -LocalPort " + port + " -State Listen"
+			case "darwin":
+				want = "lsof -nP -iTCP:" + port + " -sTCP:LISTEN"
+			}
+			if !strings.Contains(text, want) || !strings.Contains(text, "127.0.0.1:8787") || strings.Contains(text, "0.0.0.0") || strings.Contains(text, "private response body") {
+				t.Errorf("guidance = %q", text)
+			}
+		})
+	}
+}
+
+func writeDoctorConfigWithListen(t *testing.T, listen string) string {
+	t.Helper()
+	path := writeDoctorConfig(t, "", "sk-test-local-doctor-key-0123456789ABCDEF", "")
+	// #nosec G304 -- path is returned by writeDoctorConfig and remains inside t.TempDir.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), "127.0.0.1:0", listen, 1))
+	// #nosec G703 -- path comes from writeDoctorConfig and remains under t.TempDir.
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(path)
+}
+
+func doctorHealthyEnv(name string) (string, bool) {
+	if name == "GROQ_API_KEY" {
+		return "gsk_test-doctor-listen-key-long-enough", true
+	}
+	return "", false
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type countedBody struct {
+	io.Reader
+	read    int
+	onClose func(int)
+}
+
+func (body *countedBody) Read(buffer []byte) (int, error) {
+	n, err := body.Reader.Read(buffer)
+	body.read += n
+	return n, err
+}
+
+func (body *countedBody) Close() error {
+	if body.onClose != nil {
+		body.onClose(body.read)
+	}
+	return nil
+}

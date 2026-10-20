@@ -1,7 +1,7 @@
 # Network destinations
 
 Spillway has no telemetry and makes no background network requests.
-Network calls happen only when a configured provider is used, when the operator runs `spillway catalog` or `spillway eval`, or when the optional local classifier is enabled.
+Network calls happen only when a configured provider is used, when the operator runs `spillway catalog` or `spillway eval`, when the optional local classifier is enabled, or when the operator runs `spillway doctor` (unauthenticated requests to the configured listen address only).
 When no providers are configured, `serve` makes no provider requests.
 The `mock` provider is offline.
 
@@ -32,6 +32,16 @@ The configured Ollama URL must use a loopback host, and the classifier sends no 
 `spillway eval` sends evaluation prompts to the explicitly selected Spillway-compatible endpoint.
 By default that endpoint is `http://127.0.0.1:8080`; `-endpoint` and per-arm `@endpoint` values can select another destination.
 The command sends no requests unless it is run with a dataset and arms.
+
+## Local doctor probe
+
+`spillway doctor` sends HTTP probes only to loopback addresses, mapping wildcard addresses and `localhost` to loopback for the checks.
+For a non-loopback IP, it skips HTTP requests and only checks whether the local machine can bind that IP.
+For a hostname other than `localhost`, it skips both HTTP and bind probes so it does not send requests or perform DNS lookups.
+It sends unauthenticated GET requests to `/healthz` and `/v1/models`, plus an invalid-Host check for loopback listeners.
+The probe does not follow redirects, uses no HTTP proxy, limits each response body to 4 KiB and has a two-second request timeout.
+`spillway doctor --no-probe` skips the HTTP checks and bind test.
+It never sends provider or local keys.
 
 ## HTTP proxies
 

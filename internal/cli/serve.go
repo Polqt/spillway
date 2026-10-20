@@ -135,6 +135,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	logger.InfoContext(ctx, "next steps",
 		"dashboard_key_configured", dashboardKeyConfigured,
 		"store_enabled", cfg.Store != nil,
+		"providers", sortedProviderNames(cfg.Providers),
 		"api", baseURL+"/v1",
 		"models", baseURL+"/v1/models",
 		"dashboard", baseURL+"/dashboard",

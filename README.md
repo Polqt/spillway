@@ -8,10 +8,12 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
-Install the current release with Go:
+Install the current release from its source tag with Go:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
+cd spillway
+go install ./apps/spillway
 ```
 
 Or pull the current Docker image:
@@ -108,6 +110,10 @@ See [configuration](docs/configuration.md) before enabling paid models, budgets 
 ## Operations and limitations
 
 Read [operations](docs/operations.md) for shutdown, store backup, retention and upgrade guidance. Known limits are listed in [limitations](docs/limitations.md); common failures are covered in [troubleshooting](docs/troubleshooting.md).
+
+For setup recovery, run `spillway doctor` to inspect the selected config, environment, local keys, store and listen address without contacting providers.
+Use `spillway provider list` or `spillway provider show <name>` to inspect configured presets.
+`spillway provider add <name>` is experimental in v1.1.x; see the [configuration guide](docs/configuration.md) before changing an existing config.
 
 ## License
 

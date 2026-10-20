@@ -5,6 +5,22 @@ Provider keys use `${NAME}` environment references; `spillway init` generates lo
 After init, use the `default` key entry for client apps and the `dashboard` entry for dashboard data when init created one with `-store`.
 See [install](install.md) for the first-run sequence and [client examples](clients.md) for SDK setup.
 
+## Provider management
+
+`spillway provider list -config <path>` shows configured providers, safe endpoint metadata and whether each required environment variable is set.
+`spillway provider show <name> -config <path>` shows one provider's preset and config location.
+Neither command prints provider key values or makes provider requests.
+
+`spillway provider add <name> -config <path>` is experimental in v1.1.x.
+It validates the existing config, previews the provider entry and proposed tier changes, creates a private backup, then atomically saves the edit.
+It does not accept provider key values; set the named environment variable in your shell.
+Use `--dry-run` to inspect the preview without writing.
+It refuses to add a second instance of the same provider, which avoids account rotation around provider limits.
+
+Run `spillway doctor -config <path>` to diagnose config selection, missing environment variables, local key entries, store schema, install channel and the configured listen address.
+It probes only that listener with unauthenticated requests and does not contact providers.
+`--no-probe` skips all listen checks.
+
 ## Complete example
 
 This example uses the mock provider and needs no network access or provider credential.

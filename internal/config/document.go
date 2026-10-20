@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -19,12 +21,17 @@ var utf8BOM = []byte{0xef, 0xbb, 0xbf}
 type Document struct {
 	path    string
 	data    []byte
+	digest  [32]byte
+	mode    os.FileMode
 	newline string
 }
 
 // OpenDocument reads path, following symlinks to the real file, and parses it
 // without expanding environment references.
-func OpenDocument(path string) (*Document, error) {
+func OpenDocument(ctx context.Context, path string) (*Document, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -42,10 +49,17 @@ func OpenDocument(path string) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", resolved, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(data) > maxFileBytes {
 		return nil, fmt.Errorf("config: %s is larger than 1 MiB", resolved)
 	}
-	doc := &Document{path: resolved, data: data, newline: "\n"}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("config: stat %s: %w", resolved, err)
+	}
+	doc := &Document{path: resolved, data: data, digest: sha256.Sum256(data), mode: info.Mode().Perm(), newline: "\n"}
 	if bytes.Contains(data, []byte("\r\n")) {
 		doc.newline = "\r\n"
 	}
@@ -63,6 +77,27 @@ func (d *Document) Path() string {
 // Edit returns an empty ordered edit of d.
 func (d *Document) Edit() *Edit {
 	return &Edit{doc: d}
+}
+
+// ProviderKeyVariable returns the environment-variable name used by one provider.
+func ProviderKeyVariable(ctx context.Context, path, provider string) (string, error) {
+	doc, err := OpenDocument(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	root, _, err := parseDocument(doc.body())
+	if err != nil {
+		return "", fmt.Errorf("config: %w", err)
+	}
+	entry := mappingValue(mappingValue(root.Content[0], "providers"), provider)
+	key := mappingValue(entry, "api_key")
+	if key == nil {
+		return "", nil
+	}
+	if !providerKeyReference.MatchString(key.Value) {
+		return "", fmt.Errorf("config: providers.%s.api_key is not an environment-variable reference", provider)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(key.Value, "${"), "}"), nil
 }
 
 // body returns the file without a UTF-8 byte order mark, which the YAML

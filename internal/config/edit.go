@@ -118,7 +118,7 @@ func (e *Edit) AppendTierModel(tier, modelRef string) error {
 // looksLikeKey catches a provider key pasted where a variable name belongs;
 // Groq and Gemini keys are otherwise valid variable names.
 func looksLikeKey(name string) bool {
-	return len(name) > 64 || strings.Contains(name, "gsk_") || strings.Contains(name, "AIza")
+	return len(name) > 64 || strings.Contains(name, "sk-") || strings.Contains(name, "gsk_") || strings.Contains(name, "AIza")
 }
 
 func isControl(r rune) bool {
@@ -165,7 +165,7 @@ func (e *Edit) Result() (Change, error) {
 	if err != nil {
 		return Change{}, fmt.Errorf("config: %w", err)
 	}
-	return Change{after: after, hunks: hunks, secrets: localKeyLiterals(root.Content[0])}, nil
+	return Change{after: after, beforePath: e.doc.path, beforeDigest: e.doc.digest, hunks: hunks, secrets: localKeyLiterals(root.Content[0])}, nil
 }
 
 func (e *Edit) proveIntent(before, after []byte) error {
@@ -189,9 +189,11 @@ func (e *Edit) proveIntent(before, after []byte) error {
 
 // Change is a validated edit ready to preview or commit.
 type Change struct {
-	after   []byte
-	hunks   []hunk
-	secrets []redact.Secret
+	after        []byte
+	beforePath   string
+	beforeDigest [32]byte
+	hunks        []hunk
+	secrets      []redact.Secret
 }
 
 // Content returns the edited file.

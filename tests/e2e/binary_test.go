@@ -243,6 +243,93 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	}
 }
 
+func TestBinary_ProviderAddDoctorJourney(t *testing.T) {
+	workDir := t.TempDir()
+	configPath := filepath.Join(workDir, "config.yaml")
+	providerKey := "gsk_test-provider-canary-do-not-print-0123456789"
+	environment := setEnv(os.Environ(), "GROQ_API_KEY", providerKey)
+	initOutput, initErr := runBinaryWithEnv(t, workDir, environment, "init", "-yes", "-providers", "groq", "-attest-free-tier", "groq", "-config", configPath)
+	if initErr != nil {
+		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
+	}
+	configData, err := os.ReadFile(configPath) //nolint:gosec // configPath is inside t.TempDir.
+	if err != nil {
+		t.Fatal(err)
+	}
+	localKeys := regexp.MustCompile(`key: "(sk-spillway-[A-Za-z0-9_-]+)"`).FindAllSubmatch(configData, -1)
+	if len(localKeys) != 1 {
+		t.Fatalf("generated config has %d local keys, want one", len(localKeys))
+	}
+	localKey := string(localKeys[0][1])
+
+	addr := freeLoopbackAddr(t)
+	configData = bytes.Replace(configData, []byte("127.0.0.1:8080"), []byte(addr), 1)
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil { //nolint:gosec // configPath is inside t.TempDir.
+		t.Fatal(err)
+	}
+	addOutput, addErr := runBinaryWithEnv(t, workDir, environment, "provider", "add", "mock", "--tier", "free", "--yes", "-config", configPath)
+	if addErr != nil {
+		t.Fatalf("spillway provider add: %v\n%s", addErr, addOutput)
+	}
+	if !strings.Contains(addOutput, "@@ providers @@") || !strings.Contains(addOutput, "backup at") {
+		t.Errorf("provider add output = %q, want preview and backup guidance", addOutput)
+	}
+	checkOutput, checkErr := runBinaryWithEnv(t, workDir, environment, "check", "-config", configPath)
+	if checkErr != nil {
+		t.Fatalf("spillway check: %v\n%s", checkErr, checkOutput)
+	}
+
+	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
+	command.Dir = workDir
+	command.Env = environment
+	var serverOutput synchronizedBuffer
+	command.Stdout, command.Stderr = &serverOutput, &serverOutput
+	if err := command.Start(); err != nil {
+		t.Fatal("start spillway serve:", err)
+	}
+	wait := make(chan error, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-waitDone:
+		default:
+			_ = command.Process.Kill()
+			<-waitDone
+		}
+	})
+	baseURL := "http://" + addr
+	waitForBinaryServer(t, baseURL, wait)
+	runningOutput, runningErr := runBinaryWithEnv(t, workDir, environment, "doctor", "-config", configPath)
+	if runningErr != nil || !strings.Contains(runningOutput, "answers like Spillway") {
+		t.Fatalf("doctor against running server: %v\n%s", runningErr, runningOutput)
+	}
+	if !strings.Contains(serverOutput.String(), `providers="[groq mock]"`) {
+		t.Errorf("serve startup summary = %q, want loaded providers", serverOutput.String())
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal("stop spillway serve:", err)
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spillway serve did not stop within 5s")
+	}
+	stoppedOutput, stoppedErr := runBinaryWithEnv(t, workDir, environment, "doctor", "-config", configPath)
+	if stoppedErr != nil || !strings.Contains(stoppedOutput, "nothing listening") {
+		t.Fatalf("doctor after server stopped: %v\n%s", stoppedErr, stoppedOutput)
+	}
+	allOutput := strings.Join([]string{initOutput, addOutput, checkOutput, serverOutput.String(), runningOutput, stoppedOutput}, "\n")
+	for _, canary := range []string{providerKey, localKey} {
+		if strings.Contains(allOutput, canary) {
+			t.Errorf("credential canary appeared in a command stream")
+		}
+	}
+}
+
 type synchronizedBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
@@ -264,6 +351,15 @@ func runBinary(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	command := exec.CommandContext(t.Context(), spillwayBinary, args...) //nolint:gosec // TestMain built this executable; callers use fixed CLI arguments.
 	command.Dir = dir
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func runBinaryWithEnv(t *testing.T, dir string, environment []string, args ...string) (string, error) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), spillwayBinary, args...) //nolint:gosec // TestMain built this executable; callers use fixed CLI arguments.
+	command.Dir = dir
+	command.Env = environment
 	output, err := command.CombinedOutput()
 	return string(output), err
 }

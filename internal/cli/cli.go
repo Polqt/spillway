@@ -27,6 +27,11 @@ const usage = "usage: spillway <command>\nRun 'spillway --help' for usage.\n"
 // Run executes one CLI invocation and returns the process exit code:
 // 0 on success, 1 on failure, 2 on a usage error.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
+	return RunWithOptions(ctx, args, stdin, stdout, stderr, Options{LookupEnv: lookupEnv})
+}
+
+// RunWithOptions executes the CLI with injectable environment and platform details.
+func RunWithOptions(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, options Options) int {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -41,12 +46,19 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	exitCode := 0
-	root := newRootCommand(ctx, args, stdin, stdout, stderr, lookupEnv, &exitCode)
+	options = options.withDefaults(stdin, stdout, stderr)
+	root := newRootCommand(ctx, args, stdin, stdout, stderr, options.LookupEnv, &exitCode)
+	addManagementCommands(ctx, root, options)
 	root.SetArgs(normalizeLegacyFlags(root, args))
 	if err := root.ExecuteContext(ctx); err != nil {
 		var coded commandError
 		if errors.As(err, &coded) {
 			return coded.code
+		}
+		var failed commandFailure
+		if errors.As(err, &failed) {
+			report(stderr, "spillway: %v\n", failed.err)
+			return failed.code
 		}
 		report(stderr, "spillway: %v\n", err)
 		if _, _, findErr := root.Find(args); findErr != nil {
@@ -73,7 +85,7 @@ func normalizeLegacyFlags(root *cobra.Command, args []string) []string {
 		if equal := strings.IndexByte(name, '='); equal >= 0 {
 			name = name[:equal]
 		}
-		if command.Flags().Lookup(name) != nil {
+		if command.Flags().Lookup(name) != nil || command.InheritedFlags().Lookup(name) != nil {
 			normalized[i] = "-" + arg
 		}
 	}

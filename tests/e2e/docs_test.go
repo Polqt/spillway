@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/config"
 )
 
@@ -40,6 +41,62 @@ func TestDocs_ClientExamplesUseLocalEndpointAutoAndPlaceholder(t *testing.T) {
 		}
 	}
 }
+
+func TestDocs_CoreCommandExamplesParse(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docPaths := []string{"README.md", filepath.Join("docs", "install.md"), filepath.Join("docs", "configuration.md"), filepath.Join("docs", "troubleshooting.md")}
+	var documentation strings.Builder
+	for _, relative := range docPaths {
+		data, err := os.ReadFile(filepath.Join(root, relative)) // #nosec G304 -- paths are fixed documentation files under the repository root.
+		if err != nil {
+			t.Fatal(err)
+		}
+		documentation.Write(data)
+	}
+	for _, command := range []string{"spillway doctor", "spillway provider list", "spillway provider show", "spillway provider add"} {
+		if !strings.Contains(documentation.String(), command) {
+			t.Errorf("core command %q is not documented", command)
+		}
+	}
+	commands := [][]string{
+		{"doctor", "-config", "config.yaml"},
+		{"doctor", "--no-probe", "-config", "config.yaml"},
+		{"provider", "list", "-config", "config.yaml"},
+		{"provider", "show", "groq", "-config", "config.yaml"},
+		{"provider", "add", "mock", "--tier", "free", "--yes", "-config", "config.yaml"},
+	}
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			args = append(append([]string(nil), args...), "--help")
+			if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnvironment); code != 0 {
+				t.Fatalf("documented command help exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestDocs_ClientsStateSupportedProtocols(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide, err := os.ReadFile(filepath.Join(root, "docs", "clients.md")) // #nosec G304 -- fixed document path under repository root.
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(guide)
+	for _, want := range []string{"/v1/chat/completions", "/v1/models", "/v1/responses", "does not implement the OpenAI Responses API"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("client guide lacks %q", want)
+		}
+	}
+}
+
+func noEnvironment(string) (string, bool) { return "", false }
 
 func TestDocs_FullConfigExamplesValidate(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))

@@ -18,6 +18,14 @@ type commandError struct {
 
 func (e commandError) Error() string { return "command failed" }
 
+type commandFailure struct {
+	code int
+	err  error
+}
+
+func (e commandFailure) Error() string { return e.err.Error() }
+func (e commandFailure) Unwrap() error { return e.err }
+
 func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), exitCode *int) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "spillway",
@@ -61,6 +69,8 @@ flags:
 `)
 	root.AddGroup(
 		&cobra.Group{ID: "start", Title: "Get started"},
+		&cobra.Group{ID: "diagnose", Title: "Diagnose"},
+		&cobra.Group{ID: "manage", Title: "Manage"},
 		&cobra.Group{ID: "tools", Title: "Tools"},
 		&cobra.Group{ID: "experimental", Title: "Experimental"},
 	)
@@ -178,6 +188,19 @@ flags:
 	}
 
 	return root
+}
+
+func addManagementCommands(ctx context.Context, root *cobra.Command, options Options) {
+	addProviderCommands(ctx, root, options)
+	doctor := doctorCommand(ctx, options)
+	doctor.GroupID = "diagnose"
+	root.AddCommand(doctor)
+	for _, command := range root.Commands() {
+		if command.Name() == "provider" {
+			command.GroupID = "manage"
+			command.AddCommand(providerAddCommand(ctx, options))
+		}
+	}
 }
 
 func addLegacyCommand(root *cobra.Command, exitCode *int, name, short, example string, run func(*cobra.Command, []string) int, addFlags func(*pflag.FlagSet)) {

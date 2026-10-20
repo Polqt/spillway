@@ -34,13 +34,17 @@ Extract the archive, place `spillway` on your `PATH`, and run `spillway version`
 
 ## Install with Go
 
-With Go 1.26 or later:
+With Go 1.26 or later, clone the release tag and run `go install` from the repository root:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
+cd spillway
+go install ./apps/spillway
 ```
 
-`go install` fetches source through the Go module proxy rather than verifying a GitHub release archive. Check the version with `spillway version`.
+The version-suffixed package form `go install github.com/Polqt/spillway/apps/spillway@v1.0.0` does not work with this repository layout because Go looks for a module rooted at `apps/spillway` and a tag prefixed with `apps/spillway/`.
+Cloning the root module tag avoids that lookup and installs the binary into `GOBIN` or `GOPATH/bin`.
+Check the version with `spillway version`.
 Because `go install` does not run the dashboard asset build, it serves the supported fallback dashboard included in the source.
 The fallback dashboard supports onboarding, provider status, the playground and route explanations; see [known limitations](limitations.md) for the distinction from release archives.
 
@@ -69,6 +73,11 @@ A running server logs `spillway starting` with its version, executable and confi
 
 Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. See the [README quickstart](../README.md#five-minute-offline-quickstart).
 For config fields, environment variables and validation rules, see the [configuration reference](configuration.md).
+
+After setup, `spillway doctor` checks the selected config, environment, local keys, store, installation path and configured listen address.
+It makes only unauthenticated requests to the configured local listener; use `spillway doctor --no-probe` to skip the listener check.
+`spillway provider list` and `spillway provider show <name>` inspect configured presets without contacting them.
+`spillway provider add <name>` is experimental in v1.1.x and edits the config after preview and backup; read [provider management](configuration.md#provider-management) first.
 
 For the interactive path, run `spillway init`, review the provider and optional store choices, then follow the suggested `check` and `serve` commands.
 The wizard creates a dashboard key when you enable the store.
