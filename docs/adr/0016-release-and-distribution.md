@@ -35,6 +35,8 @@ Provider `base_url` values must use https unless the host is loopback, so a cont
 - CI on pull requests runs `make check` with the race detector forced on ubuntu, macos and windows, on the oldest supported Go and the release Go version, plus `make vuln`, a GoReleaser snapshot reproducibility check and an image smoke test.
   Workflows pin actions by commit SHA and request only the permissions each job needs.
 - Releases run from `v*` tags.
+  On the v1.1 release line, pushing a version tag from `release/v1.1` starts publication.
+  The manual `workflow_dispatch` path is restricted to `main` and is only for publishing an existing release candidate.
   A release candidate tag `vX.Y.Z-rc.N` is published and verified on Windows, Linux, macOS and Docker before the final tag.
 
 ## Consequences
