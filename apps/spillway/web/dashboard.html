@@ -67,7 +67,9 @@ OPENAI_API_KEY=&lt;LOCAL_APP_KEY&gt;</code></pre></details>
       </section>
       <section class="section-block" aria-labelledby="provider-status-heading">
         <div class="section-title"><div><p class="eyebrow">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
-        <p class="provider-status-note">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+        <p class="provider-status-note"><strong>Configured:</strong> provider and credential state from local config.</p>
+        <p class="provider-status-note"><strong>Observed since this server started:</strong> request signals; these do not indicate current reachability. Spillway does not probe providers.</p>
+        <p id="provider-status-refreshed" class="provider-status-note">Last refreshed: Waiting</p>
         <div id="provider-status" class="provider-status-grid"><p class="empty">Loading configured providers…</p></div>
       </section>
 
@@ -92,6 +94,11 @@ OPENAI_API_KEY=&lt;LOCAL_APP_KEY&gt;</code></pre></details>
         <p id="playground-message" class="provider-status-note" role="status" aria-live="polite"></p>
         <ul id="playground-failures" aria-label="Exhausted candidates" hidden="hidden"></ul>
         <div id="playground-route" class="playground-route" aria-label="Routing explanation" hidden="hidden"></div>
+      <details class="route-glossary"><summary>Routing term definitions</summary><dl>
+        <dt id="cooldown-definition">Cooldown</dt><dd>A period during which a candidate is skipped after a rate limit or another temporary failure.</dd>
+        <dt id="circuit-breaker-definition">Circuit breaker</dt><dd>A temporary stop on a candidate after repeated upstream failures.</dd>
+        <dt id="exhaustion-definition">Exhaustion</dt><dd>The state where every candidate in a tier is unavailable or failed for a request.</dd>
+      </dl></details>
         <div class="playground-response" aria-labelledby="playground-response-heading"><h3 id="playground-response-heading">Response</h3><pre id="playground-response" aria-label="Assistant response" aria-live="polite">The response will appear here.</pre></div>
       </section>
 

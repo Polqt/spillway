@@ -53,6 +53,20 @@
     return `since=${encodeURIComponent(start.toISOString())}&until=${encodeURIComponent(end.toISOString())}`;
   }
 
+  function statusReason(reason) {
+    return ({ rate_limit: "Rate limit", "rate limited": "Rate limit", unavailable: "Unavailable", "upstream error": "Upstream error" })[reason] || reason;
+  }
+
+  function cooldownTime(value) {
+    const date = new Date(value);
+    const seconds = Math.ceil((date.getTime() - Date.now()) / 1000);
+    const minutes = seconds > 0 ? Math.ceil(seconds / 60) : Math.floor(-seconds / 60);
+    const relative = seconds > 0
+      ? seconds < 60 ? `in ${seconds} seconds` : `in ${minutes} minute${minutes === 1 ? "" : "s"}`
+      : seconds > -60 ? "ended less than a minute ago" : `ended ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    return `Until ${date.toLocaleTimeString()} (${relative})`;
+  }
+
   async function request(path, signal) {
     const response = await fetch(path, {
       headers: { Authorization: `Bearer ${key}` },
@@ -173,8 +187,12 @@
     const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
     const selection = candidateMatch
       ? Number(candidateMatch[1]) > 1
-        ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
-        : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+        ? status < 400
+          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered. Earlier candidates were skipped or failed.`
+          : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
+        : status < 400
+          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered.`
+          : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
       : "";
     if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
     if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
@@ -219,7 +237,7 @@
       const until = document.createElement("time");
       until.className = "cooldown-until";
       until.dateTime = candidate.cooldown_until;
-      until.textContent = `Until ${new Date(candidate.cooldown_until).toLocaleTimeString()}`;
+      until.textContent = cooldownTime(candidate.cooldown_until);
       item.append(model, reason, until);
       list.append(item);
     }
@@ -228,6 +246,7 @@
   function renderProviderStatus(providers) {
     const list = document.querySelector("#provider-status");
     list.replaceChildren();
+    setText("#provider-status-refreshed", `Last refreshed: ${new Date().toLocaleTimeString()}`);
     if (!providers.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
@@ -262,9 +281,9 @@
           const detail = document.createElement("span");
           const failures = Number(signal.upstream_failures || 0);
           const failureText = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
-          const reasonText = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
-          const breakerText = signal.breaker_state === "open" ? "; circuit open" : "";
-          const untilText = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+          const reasonText = signal.reason ? statusReason(signal.reason) : "No active cooldown";
+          const breakerText = signal.breaker_state === "open" ? " · Circuit breaker open" : "";
+          const untilText = signal.cooldown_until ? ` · ${cooldownTime(signal.cooldown_until)}` : "";
           detail.textContent = `${failureText}${reasonText}${breakerText}${untilText}`;
           row.append(model, detail);
           signals.append(row);
@@ -361,6 +380,17 @@
     summaryText.textContent = explainRoute(metadata.route, metadata.cache, metadata.status);
     summary.append(summaryLabel, summaryText);
     playgroundRoute.insertBefore(summary, playgroundRoute.children[3]);
+    const terms = document.createElement("p");
+    terms.className = "route-terms";
+    terms.append("Definitions: ");
+    for (const [index, [label, id]] of [["Cooldown", "cooldown-definition"], ["Circuit breaker", "circuit-breaker-definition"], ["Exhaustion", "exhaustion-definition"]].entries()) {
+      if (index) terms.append(" · ");
+      const link = document.createElement("a");
+      link.href = `#${id}`;
+      link.textContent = label;
+      terms.append(link);
+    }
+    playgroundRoute.append(terms);
   }
 
   function updatePlaygroundEstimate() {

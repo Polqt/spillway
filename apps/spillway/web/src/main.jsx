@@ -453,7 +453,13 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         <p><strong>What happened</strong><span>{explainRoute(route.route, route.cache, route.status)}</span></p>
         <p><strong>Cache</strong><span>{route.cache || "Not reported"}</span></p>
         <p><strong>HTTP status</strong><span>{route.status}</span></p>
+        <p class="route-terms">Definitions: <a href="#cooldown-definition">Cooldown</a> · <a href="#circuit-breaker-definition">Circuit breaker</a> · <a href="#exhaustion-definition">Exhaustion</a></p>
       </div>}
+      <details class="route-glossary"><summary>Routing term definitions</summary><dl>
+        <dt id="cooldown-definition">Cooldown</dt><dd>A period during which a candidate is skipped after a rate limit or another temporary failure.</dd>
+        <dt id="circuit-breaker-definition">Circuit breaker</dt><dd>A temporary stop on a candidate after repeated upstream failures.</dd>
+        <dt id="exhaustion-definition">Exhaustion</dt><dd>The state where every candidate in a tier is unavailable or failed for a request.</dd>
+      </dl></details>
       <div class="response-panel" aria-labelledby="response-heading"><h3 id="response-heading">Response</h3><pre aria-label="Assistant response" aria-live="polite">{response || "The response will appear here."}</pre></div>
     </section>
   );
@@ -470,10 +476,14 @@ function exhaustionCandidates(message) {
 }
 
 function ProviderStatus({ providers }) {
+  const [refreshedAt, setRefreshedAt] = useState(new Date());
+  useEffect(() => setRefreshedAt(new Date()), [providers]);
   return (
     <section class="provider-status" aria-labelledby="provider-status-heading">
       <div class="history-title"><div><p class="step-label">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
-      <p class="helper">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+      <p class="helper"><strong>Configured:</strong> provider and credential state from local config.</p>
+      <p class="helper"><strong>Observed since this server started:</strong> request signals; these do not indicate current reachability. Spillway does not probe providers.</p>
+      <p class="provider-refresh">Last refreshed: {refreshedAt.toLocaleTimeString()}</p>
       {providers.length ? (
         <div class="provider-status-grid">{providers.map((provider) => (
           <article class="card provider-status-card" key={provider.name}>
@@ -483,9 +493,9 @@ function ProviderStatus({ providers }) {
               <ul class="provider-signals">{provider.signals.map((signal) => {
                 const failures = Number(signal.upstream_failures || 0);
                 const count = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
-                const reason = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
-                const breaker = signal.breaker_state === "open" ? "; circuit open" : "";
-                const until = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+                const reason = signal.reason ? statusReason(signal.reason) : "No active cooldown";
+                const breaker = signal.breaker_state === "open" ? " · Circuit breaker open" : "";
+                const until = signal.cooldown_until ? ` · ${cooldownTime(signal.cooldown_until)}` : "";
                 return <li key={signal.model}><strong>{signal.model}</strong><span>{count}{reason}{breaker}{until}</span></li>;
               })}</ul>
             ) : <p class="empty">No active cooldown or failure signal observed.</p>}
@@ -551,8 +561,12 @@ function explainRoute(route, cache, status) {
   const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
   const selection = candidateMatch
     ? Number(candidateMatch[1]) > 1
-      ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
-      : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+      ? status < 400
+        ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered. Earlier candidates were skipped or failed.`
+        : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
+      : status < 400
+        ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered.`
+        : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
     : "";
   if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
   if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
@@ -571,6 +585,20 @@ function explainRoute(route, cache, status) {
   if (parts[0].startsWith("tier ")) return `Spillway used the requested ${parts[0].slice(5)} tier.${selection ? ` ${selection}` : ""}`;
   if (parts[0] === "auto") return `Spillway selected a candidate from the configured auto route${tier ? ` in the ${tier} tier` : ""}.${selection ? ` ${selection}` : ""}`;
   return "Spillway used the configured route shown above.";
+}
+
+function statusReason(reason) {
+  return ({ rate_limit: "Rate limit", "rate limited": "Rate limit", unavailable: "Unavailable", "upstream error": "Upstream error" })[reason] || reason;
+}
+
+function cooldownTime(value) {
+  const date = new Date(value);
+  const seconds = Math.ceil((date.getTime() - Date.now()) / 1000);
+  const minutes = seconds > 0 ? Math.ceil(seconds / 60) : Math.floor(-seconds / 60);
+  const relative = seconds > 0
+    ? seconds < 60 ? `in ${seconds} seconds` : `in ${minutes} minute${minutes === 1 ? "" : "s"}`
+    : seconds > -60 ? "ended less than a minute ago" : `ended ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  return `Until ${date.toLocaleTimeString()} (${relative})`;
 }
 
 function Metric({ label, value, detail }) {

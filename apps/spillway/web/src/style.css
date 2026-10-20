@@ -110,6 +110,13 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; margin: 18px 0 10px; paddi
 .provider-signals li { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
 .provider-signals li strong { overflow-wrap: anywhere; }
 .provider-signals li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.provider-refresh { margin: -8px 0 14px; color: var(--muted); font-size: 12px; }
+.route-terms { display: flex; flex-wrap: wrap; gap: 6px; }
+.route-glossary { margin: 12px 0; color: var(--muted); font-size: 13px; }
+.route-glossary summary { cursor: pointer; font-weight: 700; }
+.route-glossary dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 12px 0; }
+.route-glossary dt { color: var(--text); font-weight: 700; }
+.route-glossary dd { margin: 0; }
 .history-title { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
 .history-title h2 { margin: 0; }
 .estimate-label { padding: 4px 9px; border-radius: 99px; background: var(--green-soft); color: var(--green); font-size: 12px; font-weight: 700; }

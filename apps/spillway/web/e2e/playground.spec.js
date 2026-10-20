@@ -187,7 +187,8 @@ for (const build of ["embedded", "fallback"]) test(`${build} request playground 
   await expect(page.getByLabel("Assistant response")).toContainText("mock response text");
   await expect(page.getByLabel("Routing explanation")).toContainText("mock/paid");
   await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 2/3");
-  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Spillway spilled over to candidate 2 of 3 after earlier candidates were unavailable.");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Candidate 2 of 3 answered. Earlier candidates were skipped or failed.");
+  await expect(page.getByLabel("Routing explanation").getByRole("link", { name: "Cooldown" })).toHaveAttribute("href", "#cooldown-definition");
   await expect(page.getByLabel("Routing explanation")).toContainText("miss");
   expect(chatRequest.postDataJSON()).toEqual({
     model: "mock/paid",
@@ -282,4 +283,25 @@ test("fallback playground reports a dropped stream as incomplete", async ({ page
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByLabel("Assistant response")).toContainText("partial fallback");
   await expect(page.getByRole("alert")).toHaveText("The response stream ended before completion.");
+});
+
+for (const build of ["embedded", "fallback"]) test(`${build} explains the final candidate and preserves unknown route reasons`, async ({ page }) => {
+  await connectDashboard(page, [], { build });
+  await page.getByLabel("Prompt").fill("explain this route");
+  let routeReason = "tier demo; candidate 3/3";
+  await page.route("**/v1/chat/completions", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    headers: { "x-spillway-provider": "mock", "x-spillway-model": "echo", "x-spillway-route": routeReason, "x-spillway-cache": "miss" },
+    body: JSON.stringify({ choices: [{ message: { content: "mock response" } }] }),
+  }));
+
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 3/3");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Candidate 3 of 3 answered. Earlier candidates were skipped or failed.");
+
+  routeReason = "provider supplied unknown marker";
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByLabel("Routing explanation")).toContainText("provider supplied unknown marker");
+  await expect(page.getByLabel("Routing explanation")).toContainText("No plain-language explanation is available; the route reason above is shown verbatim.");
 });
