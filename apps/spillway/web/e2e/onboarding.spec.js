@@ -63,12 +63,12 @@ test("dashboard key connects, explains optional history and can be forgotten", a
   await expect(page.locator(".provider-status")).toContainText("mock-model-with-a-long-unbroken-name-for-mobile-layouts");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));
   expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
-  expect(calls).toHaveLength(4);
+  expect(calls).toHaveLength(5);
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/providers");
   expect(calls.map((call) => new URL(call.url()).pathname)).toContain("/api/usage");
   expect(await page.evaluate(() => sessionStorage.getItem("spillway-dashboard-key"))).toBe("sk-test-dashboard");
   await page.clock.fastForward(10000);
-  await expect.poll(() => calls.length).toBe(8);
+  await expect.poll(() => calls.length).toBe(10);
 
   await page.getByRole("button", { name: "Forget dashboard key" }).click();
   await expect(page.getByRole("heading", { name: "Connect with a dashboard key" })).toBeVisible();

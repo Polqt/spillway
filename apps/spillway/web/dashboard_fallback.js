@@ -25,6 +25,7 @@
   let session = 0;
   let playgroundPrices = {};
   let playgroundController = null;
+  let gatewayVersion = "";
 
   function setText(selector, value) {
     const element = document.querySelector(selector);
@@ -33,7 +34,7 @@
 
   function setConnection(connected) {
     document.querySelector("#connection-dot").classList.toggle("online", connected);
-    setText("#connection-label", connected ? "Connected" : "Not connected");
+    setText("#connection-label", connected ? gatewayVersion ? `Connected to Spillway ${gatewayVersion}` : "Connected" : "Not connected");
   }
 
   function dollars(microUSD) {
@@ -433,7 +434,8 @@
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     try {
       const signal = controller.signal;
-      const [budget, today, quotas, providerStatus, modelResponse, pricing] = await Promise.all([
+      const [gateway, budget, today, quotas, providerStatus, modelResponse, pricing] = await Promise.all([
+        request("/api/gateway", signal).catch(() => null),
         request("/api/budget", signal),
         request(`/api/usage?${dateRange(todayStart, now)}&group=day`, signal),
         request("/api/quotas", signal),
@@ -442,6 +444,11 @@
         request("/api/pricing", signal)
       ]);
       if (currentSession !== session) return;
+      gatewayVersion = gateway?.version || "";
+      setConnection(true);
+      document.querySelectorAll(".client-examples code").forEach((example) => {
+        example.textContent = example.textContent.replaceAll("{{ORIGIN}}", window.location.origin);
+      });
       renderProviderStatus(providerStatus.providers || []);
       playgroundPrices = pricing.prices || {};
       renderPlaygroundModels(modelResponse.data || []);
@@ -491,6 +498,7 @@
     refreshController = null;
     renderPlaygroundRoute(null);
     key = "";
+    gatewayVersion = "";
     try { sessionStorage.removeItem(keyName); } catch (_error) { /* Storage may be disabled. */ }
     content.hidden = true;
     accessPanel.hidden = false;

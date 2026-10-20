@@ -82,6 +82,11 @@ button:not(.text-button) { height: 40px; padding: 0 17px; border: 0; border-radi
 .budget-caption { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
 .section-block { margin-top: 37px; }
 .provider-status-note { margin: -3px 0 12px; color: var(--muted); font-size: 12px; }
+.client-examples > .provider-status-note { color: var(--text); }
+.client-examples details { border-top: 1px solid var(--line); }
+.client-examples details:last-child { border-bottom: 1px solid var(--line); }
+.client-examples summary { padding: 10px 2px; color: var(--text); font-size: 13px; font-weight: 700; cursor: pointer; }
+.client-examples pre { max-height: 260px; overflow: auto; margin: 0 0 12px; }
 .playground { padding: 19px 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .playground-form { display: grid; gap: 8px; margin-top: 13px; }
 .playground-form > label, .playground-options > label { font-size: 13px; font-weight: 700; }

@@ -8,6 +8,7 @@ function Dashboard() {
   const [key, setKey] = useState("");
   const [entry, setEntry] = useState("");
   const [connected, setConnected] = useState(false);
+  const [gateway, setGateway] = useState(null);
   const [historyAvailable, setHistoryAvailable] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   const [providerStatus, setProviderStatus] = useState([]);
@@ -77,7 +78,8 @@ function Dashboard() {
     setMessage("");
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const [budget, providerResponse, modelResponse, pricingResponse] = await Promise.all([
+      const [gatewayResponse, budget, providerResponse, modelResponse, pricingResponse] = await Promise.all([
+        request("/api/gateway", token, controller.signal).catch(() => null),
         request("/api/budget", token, controller.signal),
         request("/api/providers", token, controller.signal),
         request("/v1/models", token, controller.signal),
@@ -105,6 +107,7 @@ function Dashboard() {
       } catch {
         setMessage("The key is active for this page, but this browser could not save it for the tab.");
       }
+      setGateway(gatewayResponse);
       setHistoryAvailable(history !== null);
       setDashboardData(historyData);
       setProviderStatus(providerResponse?.providers || []);
@@ -127,6 +130,7 @@ function Dashboard() {
         setDashboardData(null);
         setHistoryAvailable(null);
         setProviderStatus([]);
+        setGateway(null);
       }
       setMessage(error.name === "AbortError" ? "The dashboard request timed out. Check that Spillway is running and try again." : error.message);
     } finally {
@@ -145,6 +149,7 @@ function Dashboard() {
     activeRequest.current = null;
     setKey("");
     setConnected(false);
+    setGateway(null);
     setBusy(false);
     setHistoryAvailable(null);
     setDashboardData(null);
@@ -228,7 +233,7 @@ function Dashboard() {
         </a>
         <span class="connection" role="status" aria-live="polite">
           <span class={`connection-dot${connected ? " online" : ""}`} aria-hidden="true" />
-          {connected ? "Connected" : "Not connected"}
+          {connected ? gateway?.version ? `Connected to Spillway ${gateway.version}` : "Connected" : "Not connected"}
         </span>
       </header>
 
@@ -268,14 +273,7 @@ function Dashboard() {
             </section>
 
             <section class="next-grid" aria-label="Next steps">
-              <article class="card next-card">
-                <p class="step-label">NEXT · TRY A REQUEST</p>
-                <h2>Use Spillway from your app</h2>
-                <p>Point an OpenAI-compatible client at <code>http://127.0.0.1:8080/v1</code>. Requests go to the configured provider and may incur cost.</p>
-                <pre><code>curl http://127.0.0.1:8080/v1/models \
-  -H 'Authorization: Bearer YOUR_LOCAL_KEY'</code></pre>
-                <p class="helper">Replace the placeholder in your terminal. Never paste a real key into a shared document.</p>
-              </article>
+              <ClientExamples />
 
               <article class="card next-card" aria-labelledby="history-title">
                 <p class="step-label">OPTIONAL · USAGE HISTORY</p>
@@ -345,6 +343,58 @@ async function readCompletionStream(response, append) {
     if (!complete) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+function clientExamples(origin) {
+  const endpoint = `${origin}/v1`;
+  return [
+    { name: "curl (POSIX)", code: `curl ${endpoint}/chat/completions \\\n  -H 'Authorization: Bearer <LOCAL_APP_KEY>' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'` },
+    { name: "curl (PowerShell)", code: `curl.exe ${endpoint}/chat/completions \`\n  -H 'Authorization: Bearer <LOCAL_APP_KEY>' \`\n  -H 'Content-Type: application/json' \`\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'` },
+    { name: "Python", code: `from openai import OpenAI\n\nclient = OpenAI(base_url="${endpoint}", api_key="<LOCAL_APP_KEY>")\nresponse = client.chat.completions.create(\n    model="auto",\n    messages=[{"role": "user", "content": "Hello from Spillway"}],\n)\nprint(response.choices[0].message.content)` },
+    { name: "Node.js", code: `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${endpoint}", apiKey: "<LOCAL_APP_KEY>" });\nconst response = await client.chat.completions.create({\n  model: "auto",\n  messages: [{ role: "user", content: "Hello from Spillway" }],\n});\nconsole.log(response.choices[0].message.content);` },
+    { name: "Environment", code: `# Client requests use model auto.\nOPENAI_BASE_URL=${endpoint}\nOPENAI_API_KEY=<LOCAL_APP_KEY>` },
+  ];
+}
+
+function ClientExamples() {
+  const examples = clientExamples(window.location.origin);
+  const [selected, setSelected] = useState(0);
+  const [copyMessage, setCopyMessage] = useState("");
+  const current = examples[selected];
+
+  async function copyExample() {
+    try {
+      await navigator.clipboard.writeText(current.code);
+      setCopyMessage(`Copied ${current.name} example.`);
+    } catch {
+      setCopyMessage("Could not copy the example. Select and copy the text instead.");
+    }
+  }
+
+  function handleTabKey(event) {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const next = (selected + (event.key === "ArrowRight" ? 1 : examples.length - 1)) % examples.length;
+    setSelected(next);
+    event.currentTarget.parentElement.children[next].focus();
+  }
+
+  return (
+    <section class="card next-card client-examples" aria-labelledby="client-examples-title">
+      <h2 id="client-examples-title">Connect a client app</h2>
+      <p>Point an OpenAI-compatible client at this local endpoint with the <code>default</code> key from your config, not the dashboard key. Replace the placeholder when you run the example; requests to configured providers may incur cost.</p>
+      <div class="client-tabs" role="tablist" aria-label="Client examples">
+        {examples.map((example, index) => (
+          <button id={`client-tab-${index}`} class="client-tab" type="button" role="tab" aria-selected={selected === index} aria-controls="client-example-panel" tabIndex={selected === index ? 0 : -1} onClick={() => { setSelected(index); setCopyMessage(""); }} onKeyDown={handleTabKey} key={example.name}>{example.name}</button>
+        ))}
+      </div>
+      <div id="client-example-panel" role="tabpanel" aria-labelledby={`client-tab-${selected}`}>
+        <pre tabIndex="0"><code>{current.code}</code></pre>
+        <button class="secondary" type="button" onClick={copyExample}>Copy example</button>
+      </div>
+      <p class="copy-status" role="status" aria-live="polite">{copyMessage}</p>
+    </section>
+  );
 }
 
 function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt, maxTokens, setMaxTokens, streaming, setStreaming, response, route, message, busy, onSubmit, onCancel, error }) {

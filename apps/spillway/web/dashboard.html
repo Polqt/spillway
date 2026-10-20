@@ -34,6 +34,37 @@
     </section>
 
     <div id="dashboard-content" hidden="hidden">
+      <section class="section-block client-examples" aria-labelledby="client-examples-heading">
+        <div class="section-title"><div><h2 id="client-examples-heading">Connect a client app</h2></div></div>
+        <p class="provider-status-note">Point an OpenAI-compatible client at this local endpoint with the <code>default</code> key from your config, not the dashboard key. Replace the placeholder locally; requests to configured providers may incur cost.</p>
+        <details><summary>curl (POSIX)</summary><pre tabindex="0"><code>curl {{ORIGIN}}/v1/chat/completions \
+  -H 'Authorization: Bearer &lt;LOCAL_APP_KEY&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'</code></pre></details>
+        <details><summary>curl (PowerShell)</summary><pre tabindex="0"><code>curl.exe {{ORIGIN}}/v1/chat/completions `
+  -H 'Authorization: Bearer &lt;LOCAL_APP_KEY&gt;' `
+  -H 'Content-Type: application/json' `
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'</code></pre></details>
+        <details><summary>Python</summary><pre tabindex="0"><code>from openai import OpenAI
+
+client = OpenAI(base_url="{{ORIGIN}}/v1", api_key="&lt;LOCAL_APP_KEY&gt;")
+response = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Hello from Spillway"}],
+)
+print(response.choices[0].message.content)</code></pre></details>
+        <details><summary>Node.js</summary><pre tabindex="0"><code>import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{ORIGIN}}/v1", apiKey: "&lt;LOCAL_APP_KEY&gt;" });
+const response = await client.chat.completions.create({
+  model: "auto",
+  messages: [{ role: "user", content: "Hello from Spillway" }],
+});
+console.log(response.choices[0].message.content);</code></pre></details>
+        <details><summary>SDK environment variables</summary><pre tabindex="0"><code># Client requests use model auto.
+OPENAI_BASE_URL={{ORIGIN}}/v1
+OPENAI_API_KEY=&lt;LOCAL_APP_KEY&gt;</code></pre></details>
+      </section>
       <section class="section-block" aria-labelledby="provider-status-heading">
         <div class="section-title"><div><p class="eyebrow">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
         <p class="provider-status-note">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
