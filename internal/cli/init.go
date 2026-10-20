@@ -82,10 +82,27 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		}
 		return 1
 	}
-	for _, status := range statuses {
-		if _, err := fmt.Fprintln(stdout, status); err != nil {
-			report(stderr, "spillway: init: write status: %v\n", err)
+	if _, err := fmt.Fprintln(stdout, "Next steps:", "\n1. Provider environment variables:"); err != nil {
+		report(stderr, "spillway: init: write next steps: %v\n", err)
+		return 1
+	}
+	if len(statuses) == 0 {
+		if _, err := fmt.Fprintln(stdout, "   No provider key variables are required."); err != nil {
+			report(stderr, "spillway: init: write next steps: %v\n", err)
 			return 1
+		}
+	}
+	for _, status := range statuses {
+		if _, err := fmt.Fprintf(stdout, "   %s\n", status); err != nil {
+			report(stderr, "spillway: init: write next steps: %v\n", err)
+			return 1
+		}
+		if strings.HasSuffix(status, ": not set") {
+			variable := strings.TrimSuffix(status, ": not set")
+			if _, err := fmt.Fprintf(stdout, "      Set it in this shell: %s\n", environmentRecoveryCommand(variable)); err != nil {
+				report(stderr, "spillway: init: write next steps: %v\n", err)
+				return 1
+			}
 		}
 	}
 	if len(attested) < len(selected) {
@@ -100,7 +117,20 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		}
 	}
 	baseURL := "http:" + "/" + "/" + "127.0.0.1:8080"
-	if _, err := fmt.Fprintf(stdout, "Created %s. The generated local key is stored in that file; keep it private.\nRun `spillway check -config %s` to validate it, then `spillway serve -config %s` to start Spillway.\nThe API is available at %s/v1 and the dashboard at %s/dashboard.\n", *configPath, *configPath, *configPath, baseURL, baseURL); err != nil {
+	if _, err := fmt.Fprintf(stdout, "2. Client apps: use local key entry `default` from %s.\n   Set the OpenAI base URL to %s/v1 and request model `auto`.\n   Client examples: docs/clients.md. Dashboard page: %s/dashboard\n", *configPath, baseURL, baseURL); err != nil {
+		report(stderr, "spillway: init: write next steps: %v\n", err)
+		return 1
+	}
+	if storeEnabled {
+		if _, err := fmt.Fprintf(stdout, "3. Dashboard: use local key entry `dashboard` from %s at %s/dashboard.\n", *configPath, baseURL); err != nil {
+			report(stderr, "spillway: init: write next steps: %v\n", err)
+			return 1
+		}
+	} else if _, err := fmt.Fprintf(stdout, "Dashboard shell: %s/dashboard (enable `-store` for usage history and dashboard access).\n", baseURL); err != nil {
+		report(stderr, "spillway: init: write next steps: %v\n", err)
+		return 1
+	}
+	if _, err := fmt.Fprintf(stdout, "Created %s. Generated local keys are stored in that file; keep it private.\nRun `spillway check -config %s` to validate it, then `spillway serve -config %s` to start Spillway.\n", *configPath, *configPath, *configPath); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}

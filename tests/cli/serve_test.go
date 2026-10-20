@@ -897,8 +897,9 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 		_ = pw.Close()
 	}()
 
+	var addr string
 	select {
-	case <-logs.addr:
+	case addr = <-logs.addr:
 	case code := <-exit:
 		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
 	}
@@ -909,6 +910,12 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 	<-logs.done
 	if !strings.Contains(logs.String(), `msg="free-tier providers are user-attested" providers="[gemini groq]"`) {
 		t.Errorf("serve logs = %q, want sorted attested provider list", logs.String())
+	}
+	baseURL := "http://" + addr
+	for _, want := range []string{"dashboard_key_configured=false", "store_enabled=false", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("serve logs = %q, want %q", logs.String(), want)
+		}
 	}
 	if strings.Contains(logs.String(), "sk-test-GROQ_API_KEY") || strings.Contains(logs.String(), "sk-test-GEMINI_API_KEY") {
 		t.Errorf("serve logs contain provider key: %s", logs.String())
@@ -955,6 +962,12 @@ func TestServe_LogsVersionAndExecutable(t *testing.T) {
 		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
 	}
 	<-logs.done
+	baseURL := "http://" + addr
+	for _, want := range []string{"dashboard_key_configured=true", "store_enabled=false", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("serve logs = %q, want %q", logs.String(), want)
+		}
+	}
 
 	executable, err := os.Executable()
 	if err != nil {

@@ -162,6 +162,11 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	if initErr != nil {
 		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
 	}
+	for _, want := range []string{"1. Provider environment variables", "2. Client apps", "key entry `default`", "model `auto`", "docs/clients.md", "3. Dashboard", "key entry `dashboard`", "http://127.0.0.1:8080/dashboard"} {
+		if !strings.Contains(initOutput, want) {
+			t.Errorf("spillway init output = %q, want %q", initOutput, want)
+		}
+	}
 
 	config, err := os.ReadFile(configPath) //nolint:gosec // configPath is inside t.TempDir.
 	if err != nil {
@@ -201,10 +206,15 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	})
 	baseURL := "http://" + addr
 	waitForBinaryServer(t, baseURL, wait)
+	for _, want := range []string{"msg=\"next steps\"", "dashboard_key_configured=true", "store_enabled=true", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("serve startup output = %q, want %q", stderr.String(), want)
+		}
+	}
 
 	requestBinaryAPI(t, baseURL, http.MethodGet, "/v1/models", "", appKey, http.StatusOK, "")
-	requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"mock/echo","messages":[{"role":"user","content":"binary quickstart"}]}`, appKey, http.StatusOK, "binary quickstart")
-	stream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"binary stream"}]}`, appKey, http.StatusOK, "[DONE]")
+	requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","messages":[{"role":"user","content":"binary quickstart"}]}`, appKey, http.StatusOK, "binary quickstart")
+	stream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","stream":true,"messages":[{"role":"user","content":"binary stream"}]}`, appKey, http.StatusOK, "[DONE]")
 	if !strings.HasSuffix(strings.TrimSpace(stream), "data: [DONE]") {
 		t.Errorf("stream response ends with %q, want data: [DONE]", stream)
 	}
