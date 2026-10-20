@@ -1204,8 +1204,8 @@ func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
 	case code := <-exit:
 		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
 	}
-	if !strings.Contains(logs.String(), "msg=\"next steps\"") || !strings.Contains(logs.String(), "dashboard=http://") || !strings.Contains(logs.String(), "/v1/models") {
-		t.Errorf("startup guidance = %q, want API and dashboard next steps", logs.String())
+	if !strings.Contains(logs.String(), "msg=\"next steps\"") || !strings.Contains(logs.String(), "dashboard=http://") || !strings.Contains(logs.String(), "/v1/models") || !strings.Contains(logs.String(), "providers=\"[ollama openrouter]\"") {
+		t.Errorf("startup guidance = %q, want API, dashboard and loaded providers", logs.String())
 	}
 
 	modelsReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/models", nil)

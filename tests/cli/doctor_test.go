@@ -321,7 +321,7 @@ func writeDoctorConfig(t *testing.T, providerKey, localKey, baseURL string) stri
 	if baseURL != "" {
 		providerEntry += `    base_url: "` + baseURL + `"` + "\n"
 	}
-	content := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: \"" + localKey + "\"\nlogging:\n  level: info\nproviders:\n  groq:\n" + providerEntry + "    free_tier: true\ntiers:\n  free:\n    models:\n      - groq/llama-3.3-70b-versatile\nrouter:\n  auto:\n    - free\n"
+	content := "server:\n  listen: 127.0.0.1:0\n  api_keys:\n    - name: default\n      key: \"" + localKey + "\"\nlogging:\n  level: info\nproviders:\n  groq:\n" + providerEntry + "    free_tier: true\ntiers:\n  free:\n    models:\n      - groq/llama-3.3-70b-versatile\nrouter:\n  auto:\n    - free\n"
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)

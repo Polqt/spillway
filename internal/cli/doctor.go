@@ -19,12 +19,13 @@ import (
 
 func doctorCommand(options Options) *cobra.Command {
 	var configPath string
+	var noProbe bool
 	command := &cobra.Command{
 		Use:   "doctor",
 		Short: "check config, environment and installation (offline)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			failed, err := runDoctor(cmd.Context(), cmd.OutOrStdout(), configPath, cmd.Flags().Changed("config"), options)
+			failed, err := runDoctor(cmd.Context(), cmd.OutOrStdout(), configPath, cmd.Flags().Changed("config"), options, noProbe)
 			if err != nil {
 				return commandFailure{code: 1, err: err}
 			}
@@ -35,10 +36,11 @@ func doctorCommand(options Options) *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to the config file")
+	command.Flags().BoolVar(&noProbe, "no-probe", false, "skip checks against the configured listen address")
 	return command
 }
 
-func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit bool, options Options) (bool, error) {
+func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit bool, options Options, noProbe bool) (bool, error) {
 	failed := false
 	write := func(format string, args ...any) error {
 		_, err := fmt.Fprintf(out, format, args...)
@@ -138,6 +140,9 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 		return failed, err
 	}
 	if err := status("info", "providers in this config: %s", strings.Join(sortedProviderNames(cfg.Providers), ", ")); err != nil {
+		return failed, err
+	}
+	if err := reportListen(ctx, status, cfg.Server.Listen, options, noProbe); err != nil {
 		return failed, err
 	}
 	if err := reportVariablesAndKeys(status, configPath, cfg, options); err != nil {
