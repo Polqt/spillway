@@ -136,7 +136,7 @@ func TestCommit_FollowsSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	linkedDoc, err := config.OpenDocument(link)
+	linkedDoc, err := config.OpenDocument(t.Context(), link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func commitFixture(t *testing.T) (*config.Document, config.Change, []byte) {
 	if err := os.WriteFile(path, before, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}

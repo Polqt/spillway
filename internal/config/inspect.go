@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 
 	"go.yaml.in/yaml/v3"
@@ -16,8 +17,8 @@ type LocalKeySource struct {
 }
 
 // InspectLocalKeySources returns key names, variable references, access and source lines without key values.
-func InspectLocalKeySources(path string) ([]LocalKeySource, error) {
-	doc, err := OpenDocument(path)
+func InspectLocalKeySources(ctx context.Context, path string) ([]LocalKeySource, error) {
+	doc, err := OpenDocument(ctx, path)
 	if err != nil {
 		return nil, err
 	}

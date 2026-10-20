@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,11 +19,20 @@ func openEditFixture(t *testing.T, name string) (*config.Document, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatalf("OpenDocument(%s): %v", path, err)
 	}
 	return doc, data
+}
+
+func TestOpenDocument_StopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := config.OpenDocument(ctx, filepath.Join("testdata", "edit", "init-groq.yaml"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("OpenDocument error = %v, want context.Canceled", err)
+	}
 }
 
 func TestEdit_AddProviderToInitConfigInsertsOnlyTheProviderLines(t *testing.T) {
@@ -64,7 +74,7 @@ func TestEdit_AddProviderKeepsEveryOtherByte(t *testing.T) {
 		if !ok {
 			continue
 		}
-		doc, err := config.OpenDocument(path)
+		doc, err := config.OpenDocument(t.Context(), path)
 		if err != nil {
 			t.Fatalf("OpenDocument(%s): %v", path, err)
 		}
@@ -115,7 +125,7 @@ func TestEdit_PreservesCRLFAndBOM(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatalf("OpenDocument: %v", err)
 	}
@@ -250,7 +260,7 @@ func TestEdit_InvalidResultRejectedFileUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +340,7 @@ func writeDocument(t *testing.T, input string) *config.Document {
 	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatalf("OpenDocument: %v", err)
 	}
@@ -344,7 +354,7 @@ func editLayoutError(t *testing.T, input string, edit func(*config.Edit) error) 
 	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	doc, err := config.OpenDocument(path)
+	doc, err := config.OpenDocument(t.Context(), path)
 	if err != nil {
 		t.Fatalf("OpenDocument: %v", err)
 	}

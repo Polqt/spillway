@@ -145,7 +145,7 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 	if err := reportListen(ctx, status, cfg.Server.Listen, options, noProbe); err != nil {
 		return failed, err
 	}
-	if err := reportVariablesAndKeys(status, configPath, cfg, options); err != nil {
+	if err := reportVariablesAndKeys(ctx, status, configPath, cfg, options); err != nil {
 		return failed, err
 	}
 	if cfg.Store == nil {
@@ -169,7 +169,7 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 	return failed, nil
 }
 
-func reportVariablesAndKeys(status func(string, string, ...any) error, path string, cfg config.Config, options Options) error {
+func reportVariablesAndKeys(ctx context.Context, status func(string, string, ...any) error, path string, cfg config.Config, options Options) error {
 	type variableRole struct {
 		providers []string
 		local     []string
@@ -177,7 +177,7 @@ func reportVariablesAndKeys(status func(string, string, ...any) error, path stri
 	variables := make(map[string]*variableRole)
 	providerVariable := make(map[string]string)
 	for name := range cfg.Providers {
-		variable, err := config.ProviderKeyVariable(path, name)
+		variable, err := config.ProviderKeyVariable(ctx, path, name)
 		if err != nil {
 			return status("fail", "cannot inspect key variable for %s: %v", name, err)
 		}
@@ -194,7 +194,7 @@ func reportVariablesAndKeys(status func(string, string, ...any) error, path stri
 		}
 		variables[variable].providers = append(variables[variable].providers, name)
 	}
-	localSources, err := config.InspectLocalKeySources(path)
+	localSources, err := config.InspectLocalKeySources(ctx, path)
 	if err != nil {
 		return status("fail", "cannot inspect local keys: %v", err)
 	}

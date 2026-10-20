@@ -35,7 +35,9 @@ The command sends no requests unless it is run with a dataset and arms.
 
 ## Local doctor probe
 
-`spillway doctor` probes only the host and port from `server.listen`, mapping wildcard addresses to IPv4 and IPv6 loopback for the HTTP checks.
+`spillway doctor` sends HTTP probes only to loopback addresses, mapping wildcard addresses and `localhost` to loopback for the checks.
+For a non-loopback IP, it skips HTTP requests and only checks whether the local machine can bind that IP.
+For a hostname other than `localhost`, it skips both HTTP and bind probes so it does not send requests or perform DNS lookups.
 It sends unauthenticated GET requests to `/healthz` and `/v1/models`, plus an invalid-Host check for loopback listeners.
 The probe does not follow redirects, uses no HTTP proxy, limits each response body to 4 KiB and has a two-second request timeout.
 `spillway doctor --no-probe` skips the HTTP checks and bind test.

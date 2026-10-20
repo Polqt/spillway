@@ -44,8 +44,14 @@ func reportListen(ctx context.Context, status func(string, string, ...any) error
 			return err
 		}
 	} else {
+		targets := doctorProbeHosts(host)
+		if len(targets) == 0 {
+			if err := status("info", "HTTP probe skipped: configured listen host is not loopback"); err != nil {
+				return err
+			}
+		}
 		client := doctorHTTPClient(options.ProbeTransport)
-		for _, target := range doctorProbeHosts(host) {
+		for _, target := range targets {
 			if strings.Contains(target, ":") && !ipv6LoopbackAvailable(ctx) {
 				if err := status("info", "IPv6 loopback probe skipped: IPv6 loopback is unavailable"); err != nil {
 					return err
@@ -77,8 +83,17 @@ func reportListen(ctx context.Context, status func(string, string, ...any) error
 			}
 		}
 	}
+	bindAddress := address
+	if strings.EqualFold(host, "localhost") {
+		bindAddress = net.JoinHostPort("127.0.0.1", portText)
+	} else if net.ParseIP(strings.Trim(host, "[]")) == nil && host != "" && host != "0.0.0.0" && host != "::" {
+		if err := status("info", "bind probe skipped: configured listen host is a hostname"); err != nil {
+			return err
+		}
+		return nil
+	}
 	var listenConfig net.ListenConfig
-	ln, err := listenConfig.Listen(ctx, "tcp", address)
+	ln, err := listenConfig.Listen(ctx, "tcp", bindAddress)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) || addressInUse(err) {
 			return status("warn", "cannot bind %s: address already in use", address)
@@ -188,10 +203,13 @@ func doctorProbeHosts(host string) []string {
 	switch strings.Trim(host, "[]") {
 	case "", "0.0.0.0", "::":
 		return []string{"127.0.0.1", "::1"}
-	case "127.0.0.1", "localhost":
-		return []string{strings.Trim(host, "[]"), "::1"}
+	case "localhost":
+		return []string{"127.0.0.1", "::1"}
 	default:
-		return []string{strings.Trim(host, "[]")}
+		if isLoopbackHost(host) {
+			return []string{strings.Trim(host, "[]")}
+		}
+		return nil
 	}
 }
 

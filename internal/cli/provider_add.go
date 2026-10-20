@@ -66,7 +66,7 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				return commandFailure{code: 1, err: fmt.Errorf("%q is not a supported provider; choose one of %s", name, strings.Join(allProviderNames(), ", "))}
 			}
 			if _, exists := cfg.Providers[name]; exists {
-				line, _ := providerConfigLine(path, name)
+				line, _ := providerConfigLine(ctx, path, name)
 				return commandFailure{code: 1, err: duplicateProviderMessage(path, name, line)}
 			}
 			if preset.RequiresKey {
@@ -97,7 +97,7 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				}
 				prompted = true
 			}
-			doc, err := config.OpenDocument(path)
+			doc, err := config.OpenDocument(ctx, path)
 			if err != nil {
 				return commandFailure{code: 1, err: err}
 			}
@@ -237,8 +237,8 @@ func availableProviderNames(cfg config.Config) []string {
 	return names
 }
 
-func providerConfigLine(path, name string) (int, error) {
-	doc, err := config.OpenDocument(path)
+func providerConfigLine(ctx context.Context, path, name string) (int, error) {
+	doc, err := config.OpenDocument(ctx, path)
 	if err != nil {
 		return 0, err
 	}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -27,7 +28,10 @@ type Document struct {
 
 // OpenDocument reads path, following symlinks to the real file, and parses it
 // without expanding environment references.
-func OpenDocument(path string) (*Document, error) {
+func OpenDocument(ctx context.Context, path string) (*Document, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -44,6 +48,9 @@ func OpenDocument(path string) (*Document, error) {
 	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", resolved, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if len(data) > maxFileBytes {
 		return nil, fmt.Errorf("config: %s is larger than 1 MiB", resolved)
@@ -73,8 +80,8 @@ func (d *Document) Edit() *Edit {
 }
 
 // ProviderKeyVariable returns the environment-variable name used by one provider.
-func ProviderKeyVariable(path, provider string) (string, error) {
-	doc, err := OpenDocument(path)
+func ProviderKeyVariable(ctx context.Context, path, provider string) (string, error) {
+	doc, err := OpenDocument(ctx, path)
 	if err != nil {
 		return "", err
 	}

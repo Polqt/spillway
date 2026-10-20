@@ -58,7 +58,7 @@ func FuzzEdit_AddProvider(f *testing.F) {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		doc, err := config.OpenDocument(path)
+		doc, err := config.OpenDocument(t.Context(), path)
 		if err != nil {
 			t.Fatalf("OpenDocument rejected a valid config: %v", err)
 		}

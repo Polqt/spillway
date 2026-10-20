@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
@@ -12,21 +13,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func addProviderCommands(parent *cobra.Command, options Options) {
+func addProviderCommands(ctx context.Context, parent *cobra.Command, options Options) {
 	provider := &cobra.Command{Use: "provider", Aliases: []string{"providers"}, Short: "inspect and manage configured providers", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		_, _ = fmt.Fprint(cmd.OutOrStdout(), "usage: spillway provider <command>\n\ncommands:\n  list         list configured providers\n  show <name>  show a configured provider\n")
 		return commandError{code: 2}
 	}}
+	provider.SetContext(ctx)
+	//nolint:contextcheck // Cobra supplies the invocation context through cmd.Context().
 	provider.AddCommand(&cobra.Command{Use: "list", Short: "list configured providers", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx := cmd.Context()
 		path, _ := cmd.Flags().GetString("config")
-		if err := writeProviderList(cmd.OutOrStdout(), path, options.LookupEnv, options.PersistentEnv); err != nil {
+		if err := writeProviderList(ctx, cmd.OutOrStdout(), path, options.LookupEnv, options.PersistentEnv); err != nil {
 			return commandFailure{code: 1, err: err}
 		}
 		return nil
 	}})
+	//nolint:contextcheck // Cobra supplies the invocation context through cmd.Context().
 	show := &cobra.Command{Use: "show <name>", Short: "show a configured provider", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		path, _ := cmd.Flags().GetString("config")
-		if err := writeProviderShow(cmd.OutOrStdout(), path, args[0], options.LookupEnv, options.PersistentEnv, options.GOOS); err != nil {
+		if err := writeProviderShow(ctx, cmd.OutOrStdout(), path, args[0], options.LookupEnv, options.PersistentEnv, options.GOOS); err != nil {
 			return commandFailure{code: 1, err: err}
 		}
 		return nil
@@ -54,7 +60,7 @@ func loadProviderConfig(path string, lookupEnv func(string) (string, bool)) (con
 	return cfg, nil
 }
 
-func writeProviderList(out io.Writer, path string, lookupEnv, persistentEnv func(string) (string, bool)) error {
+func writeProviderList(ctx context.Context, out io.Writer, path string, lookupEnv, persistentEnv func(string) (string, bool)) error {
 	cfg, err := loadProviderConfig(path, lookupEnv)
 	if err != nil {
 		return err
@@ -66,7 +72,7 @@ func writeProviderList(out io.Writer, path string, lookupEnv, persistentEnv func
 	for _, name := range sortedProviderNames(cfg.Providers) {
 		preset, _ := providers.LookupPreset(name)
 		entry := cfg.Providers[name]
-		keyName, err := config.ProviderKeyVariable(path, name)
+		keyName, err := config.ProviderKeyVariable(ctx, path, name)
 		if err != nil {
 			return err
 		}
@@ -100,7 +106,7 @@ func writeProviderList(out io.Writer, path string, lookupEnv, persistentEnv func
 	return nil
 }
 
-func writeProviderShow(out io.Writer, path, name string, lookupEnv, persistentEnv func(string) (string, bool), goos string) error {
+func writeProviderShow(ctx context.Context, out io.Writer, path, name string, lookupEnv, persistentEnv func(string) (string, bool), goos string) error {
 	cfg, err := loadProviderConfig(path, lookupEnv)
 	if err != nil {
 		return err
@@ -114,7 +120,7 @@ func writeProviderShow(out io.Writer, path, name string, lookupEnv, persistentEn
 		return fmt.Errorf("provider %s is not configured; configured providers: %s", name, strings.Join(configured, ", "))
 	}
 	preset, _ := providers.LookupPreset(name)
-	keyName, err := config.ProviderKeyVariable(path, name)
+	keyName, err := config.ProviderKeyVariable(ctx, path, name)
 	if err != nil {
 		return err
 	}

@@ -111,16 +111,16 @@ func TestDoctor_ListenProbeReadsAtMostFourKiB(t *testing.T) {
 }
 
 func TestDoctor_ListenProbeIgnoresHTTPProxy(t *testing.T) {
-	host := nonLoopbackInterfaceHost(t)
-	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(t.Context(), "tcp", net.JoinHostPort(host, "0"))
-	if err != nil {
-		t.Skipf("cannot bind a non-loopback address: %v", err)
-	}
 	targetRequests := 0
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		targetRequests++
 		if r.URL.Path == "/healthz" {
+			if r.Host == "doctor.invalid" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":"host_not_allowed"}}`))
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = w.Write([]byte("ok"))
 			return
@@ -129,8 +129,6 @@ func TestDoctor_ListenProbeIgnoresHTTPProxy(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
 	}))
-	server.Listener = listener
-	server.Start()
 	defer server.Close()
 
 	proxyRequests := 0
@@ -150,8 +148,32 @@ func TestDoctor_ListenProbeIgnoresHTTPProxy(t *testing.T) {
 	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
 		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if proxyRequests != 0 || targetRequests != 2 || !strings.Contains(stdout.String(), "answers like Spillway") {
+	if proxyRequests != 0 || targetRequests < 2 || !strings.Contains(stdout.String(), "answers like Spillway") {
 		t.Fatalf("proxy requests=%d target requests=%d stdout=%q", proxyRequests, targetRequests, stdout.String())
+	}
+}
+
+func TestDoctor_DoesNotProbeNonLoopbackOrHostnameListeners(t *testing.T) {
+	for _, listen := range []string{"192.0.2.10:8787", "spillway.invalid:8787"} {
+		t.Run(listen, func(t *testing.T) {
+			requests := 0
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				requests++
+				return nil, io.ErrUnexpectedEOF
+			})
+			path := writeDoctorConfigWithListen(t, listen)
+			var stdout, stderr strings.Builder
+			options := cli.Options{LookupEnv: doctorHealthyEnv, ProbeTransport: transport}
+			if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, options); code != 0 {
+				t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if requests != 0 || !strings.Contains(stdout.String(), "HTTP probe skipped: configured listen host is not loopback") {
+				t.Fatalf("requests=%d stdout=%q", requests, stdout.String())
+			}
+			if strings.Contains(listen, ".invalid") && !strings.Contains(stdout.String(), "bind probe skipped: configured listen host is a hostname") {
+				t.Fatalf("hostname bind probe was not skipped: %q", stdout.String())
+			}
+		})
 	}
 }
 
@@ -192,31 +214,6 @@ func freeDoctorListenAddress(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return address
-}
-
-func nonLoopbackInterfaceHost(t *testing.T) string {
-	t.Helper()
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		t.Skipf("list network interfaces: %v", err)
-	}
-	for _, networkInterface := range interfaces {
-		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addresses, err := networkInterface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, address := range addresses {
-			ip, _, err := net.ParseCIDR(address.String())
-			if err == nil && !ip.IsLoopback() && !ip.IsUnspecified() && ip.To4() != nil {
-				return ip.String()
-			}
-		}
-	}
-	t.Skip("no up IPv4 non-loopback interface is available")
-	return ""
 }
 
 func TestDoctor_PortGuidanceIsLoopbackOnlyAndOSSpecific(t *testing.T) {
