@@ -123,11 +123,13 @@ func TestDoctor_PortGuidanceIsLoopbackOnlyAndOSSpecific(t *testing.T) {
 func writeDoctorConfigWithListen(t *testing.T, listen string) string {
 	t.Helper()
 	path := writeDoctorConfig(t, "", "sk-test-local-doctor-key-0123456789ABCDEF", "")
+	// #nosec G304 -- path is returned by writeDoctorConfig and remains inside t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data = []byte(strings.Replace(string(data), "127.0.0.1:0", listen, 1))
+	// #nosec G703 -- path comes from writeDoctorConfig and remains under t.TempDir.
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -100,6 +100,7 @@ func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) 
 }
 
 func writeBackup(path string, data []byte) error {
+	// #nosec G304 -- path is generated beside the already-opened config file.
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create backup: %w", err)

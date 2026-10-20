@@ -20,6 +20,8 @@ func TestStoreInspect_ReadOnlyNeverMigrates(t *testing.T) {
 	if err := opened.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// #nosec G304 -- path is created inside t.TempDir above.
+	// #nosec G304 -- path is created inside t.TempDir above.
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +33,8 @@ func TestStoreInspect_ReadOnlyNeverMigrates(t *testing.T) {
 	if inspection.Version != store.SchemaVersion || inspection.Newer {
 		t.Errorf("inspection = %+v", inspection)
 	}
+	// #nosec G304 -- path is created inside t.TempDir above.
+	// #nosec G304 -- path is created inside t.TempDir above.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,7 @@ func TestStoreInspect_NewerSchemaNeverSuggestsDeletion(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// #nosec G304 -- path is created inside t.TempDir above.
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +76,7 @@ func TestStoreInspect_NewerSchemaNeverSuggestsDeletion(t *testing.T) {
 	if !inspection.Newer || inspection.Version != 999 {
 		t.Errorf("inspection = %+v", inspection)
 	}
+	// #nosec G304 -- path is created inside t.TempDir above.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

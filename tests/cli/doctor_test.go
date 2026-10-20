@@ -173,7 +173,7 @@ func TestDoctor_ProviderKeyFormatHintPrintsNoCharacters(t *testing.T) {
 
 func TestDoctor_LocalKeysShowNoValuePrefixOrHash(t *testing.T) {
 	t.Parallel()
-	const secret = "sk-test-local-secret-canary-0123456789abcdef"
+	const secret = "sk-test-local-secret-canary-0123456789abcdef" //nolint:gosec // Deliberate fake credential canary used to assert output redaction.
 	path := writeDoctorConfig(t, "gsk_test-provider-key-long-enough-for-shape-check", secret, "")
 	var stdout, stderr strings.Builder
 	lookup := func(name string) (string, bool) {
@@ -292,11 +292,13 @@ func TestDoctor_NewerStoreSchemaNeverSuggestsDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := writeDoctorConfig(t, "gsk_test-provider-key-long-enough-for-shape-check", "sk-test-local-doctor-key-0123456789ABCDEF", "")
+	// #nosec G304 -- path is returned by writeDoctorConfig and remains inside t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data = append(data, []byte("store:\n  path: \""+filepath.ToSlash(databasePath)+"\"\n  retention: 30d\n")...)
+	// #nosec G703 -- path is constructed under t.TempDir in writeDoctorConfig.
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

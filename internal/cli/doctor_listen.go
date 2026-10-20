@@ -41,7 +41,7 @@ func reportListen(ctx context.Context, status func(string, string, ...any) error
 	}
 	client := doctorHTTPClient(options.ProbeTransport)
 	for _, target := range doctorProbeHosts(host) {
-		if strings.Contains(target, ":") && !ipv6LoopbackAvailable() {
+		if strings.Contains(target, ":") && !ipv6LoopbackAvailable(ctx) {
 			if err := status("info", "IPv6 loopback probe skipped: IPv6 loopback is unavailable"); err != nil {
 				return err
 			}
@@ -71,7 +71,8 @@ func reportListen(ctx context.Context, status func(string, string, ...any) error
 			}
 		}
 	}
-	ln, err := net.Listen("tcp", address)
+	var listenConfig net.ListenConfig
+	ln, err := listenConfig.Listen(ctx, "tcp", address)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) || addressInUse(err) {
 			return status("warn", "cannot bind %s: address already in use", address)
@@ -105,31 +106,31 @@ func probeSpillway(ctx context.Context, client *http.Client, address string, req
 	base := "http:" + "/" + "/" + address
 	checks := []func(context.Context) (bool, int, string, error){
 		func(ctx context.Context) (bool, int, string, error) {
-			response, body, err := doctorGet(ctx, client, base+"/healthz", "")
+			response, err := doctorGet(ctx, client, base+"/healthz", "")
 			if err != nil {
 				return false, 0, "", err
 			}
-			return response.StatusCode == http.StatusOK && response.Header.Get("Content-Type") == "text/plain; charset=utf-8" && string(body) == "ok", response.StatusCode, response.Header.Get("Content-Type"), nil
+			return response.statusCode == http.StatusOK && response.contentType == "text/plain; charset=utf-8" && string(response.body) == "ok", response.statusCode, response.contentType, nil
 		},
 		func(ctx context.Context) (bool, int, string, error) {
-			response, body, err := doctorGet(ctx, client, base+"/v1/models", "")
+			response, err := doctorGet(ctx, client, base+"/v1/models", "")
 			if err != nil {
 				return false, 0, "", err
 			}
 			var payload doctorErrorBody
-			valid := response.StatusCode == http.StatusUnauthorized && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "application/json") && json.Unmarshal(body, &payload) == nil && payload.Error.Type == "authentication_error" && payload.Error.Code == "invalid_api_key"
-			return valid, response.StatusCode, response.Header.Get("Content-Type"), nil
+			valid := response.statusCode == http.StatusUnauthorized && strings.Contains(strings.ToLower(response.contentType), "application/json") && json.Unmarshal(response.body, &payload) == nil && payload.Error.Type == "authentication_error" && payload.Error.Code == "invalid_api_key"
+			return valid, response.statusCode, response.contentType, nil
 		},
 	}
 	if requireHostCheck {
 		checks = append(checks, func(ctx context.Context) (bool, int, string, error) {
-			response, body, err := doctorGet(ctx, client, base+"/healthz", "doctor.invalid")
+			response, err := doctorGet(ctx, client, base+"/healthz", "doctor.invalid")
 			if err != nil {
 				return false, 0, "", err
 			}
 			var payload doctorErrorBody
-			valid := response.StatusCode == http.StatusForbidden && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "application/json") && json.Unmarshal(body, &payload) == nil && payload.Error.Code == "host_not_allowed"
-			return valid, response.StatusCode, response.Header.Get("Content-Type"), nil
+			valid := response.statusCode == http.StatusForbidden && strings.Contains(strings.ToLower(response.contentType), "application/json") && json.Unmarshal(response.body, &payload) == nil && payload.Error.Code == "host_not_allowed"
+			return valid, response.statusCode, response.contentType, nil
 		})
 	}
 	result := probeResult{spillway: true}
@@ -148,24 +149,33 @@ func probeSpillway(ctx context.Context, client *http.Client, address string, req
 	return result, nil
 }
 
-func doctorGet(ctx context.Context, client *http.Client, target, host string) (*http.Response, []byte, error) {
+type doctorResponse struct {
+	statusCode  int
+	contentType string
+	body        []byte
+}
+
+func doctorGet(ctx context.Context, client *http.Client, target, host string) (doctorResponse, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, nil, err
+		return doctorResponse{}, err
 	}
 	if host != "" {
 		request.Host = host
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, nil, err
+		return doctorResponse{}, err
 	}
-	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, doctorBodyLimit))
+	closeErr := response.Body.Close()
 	if err != nil {
-		return nil, nil, err
+		return doctorResponse{}, err
 	}
-	return response, body, nil
+	if closeErr != nil {
+		return doctorResponse{}, closeErr
+	}
+	return doctorResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: body}, nil
 }
 
 func doctorProbeHosts(host string) []string {
@@ -187,18 +197,14 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func ipv6LoopbackAvailable() bool {
-	listener, err := net.Listen("tcp6", "[::1]:0")
+func ipv6LoopbackAvailable(ctx context.Context) bool {
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(ctx, "tcp6", "[::1]:0")
 	if err != nil {
 		return false
 	}
 	_ = listener.Close()
 	return true
-}
-
-func mediaType(value string) string {
-	value, _, _ = strings.Cut(value, ";")
-	return strings.TrimSpace(value)
 }
 
 func safeContentType(value string) string {

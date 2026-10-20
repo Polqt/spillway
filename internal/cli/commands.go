@@ -190,15 +190,15 @@ flags:
 	return root
 }
 
-func addManagementCommands(root *cobra.Command, options Options) {
+func addManagementCommands(ctx context.Context, root *cobra.Command, options Options) {
 	addProviderCommands(root, options)
-	doctor := doctorCommand(options)
+	doctor := doctorCommand(ctx, options)
 	doctor.GroupID = "diagnose"
 	root.AddCommand(doctor)
 	for _, command := range root.Commands() {
 		if command.Name() == "provider" {
 			command.GroupID = "manage"
-			command.AddCommand(providerAddCommand(options))
+			command.AddCommand(providerAddCommand(ctx, options))
 		}
 	}
 }

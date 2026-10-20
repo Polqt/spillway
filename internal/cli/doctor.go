@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func doctorCommand(options Options) *cobra.Command {
+func doctorCommand(ctx context.Context, options Options) *cobra.Command {
 	var configPath string
 	var noProbe bool
 	command := &cobra.Command{
@@ -25,7 +25,7 @@ func doctorCommand(options Options) *cobra.Command {
 		Short: "check config, environment and installation (offline)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			failed, err := runDoctor(cmd.Context(), cmd.OutOrStdout(), configPath, cmd.Flags().Changed("config"), options, noProbe)
+			failed, err := runDoctor(ctx, cmd.OutOrStdout(), configPath, cmd.Flags().Changed("config"), options, noProbe)
 			if err != nil {
 				return commandFailure{code: 1, err: err}
 			}

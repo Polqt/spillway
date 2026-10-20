@@ -124,19 +124,8 @@ func writeProviderShow(out io.Writer, path, name string, lookupEnv, persistentEn
 	if _, err := fmt.Fprintf(out, "%s (preset)\n", name); err != nil {
 		return err
 	}
-	keyState := "not required"
 	if keyName != "" {
-		if _, ok := lookupEnv(keyName); ok {
-			keyState = "set in this terminal"
-		} else if scope, ok := persistentEnv(keyName); ok {
-			if goos == "windows" {
-				keyState = "not set in this terminal; set for your Windows " + scope
-			} else {
-				keyState = "not set in this terminal; configured persistently"
-			}
-		} else {
-			keyState = "not set anywhere"
-		}
+		keyState := providerKeyEnvironmentState(keyName, lookupEnv, persistentEnv, goos)
 		if _, err := fmt.Fprintf(out, "  key variable  ${%s}, %s\n", keyName, keyState); err != nil {
 			return err
 		}
@@ -163,6 +152,19 @@ func writeProviderShow(out io.Writer, path, name string, lookupEnv, persistentEn
 		_, err = fmt.Fprintf(out, "  tiers         %s\n", strings.Join(refs, ", "))
 	}
 	return err
+}
+
+func providerKeyEnvironmentState(keyName string, lookupEnv, persistentEnv func(string) (string, bool), goos string) string {
+	if _, ok := lookupEnv(keyName); ok {
+		return "set in this terminal"
+	}
+	if scope, ok := persistentEnv(keyName); ok {
+		if goos == "windows" {
+			return "not set in this terminal; set for your Windows " + scope
+		}
+		return "not set in this terminal; configured persistently"
+	}
+	return "not set anywhere"
 }
 
 func providerTiers(cfg config.Config) map[string][]string {

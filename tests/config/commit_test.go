@@ -170,6 +170,7 @@ func commitFixture(t *testing.T) (*config.Document, config.Change, []byte) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
+	//nolint:gosec // Path is generated in t.TempDir; mode 0644 is intentional for the permission-tightening test.
 	if err := os.WriteFile(path, before, 0o644); err != nil {
 		t.Fatal(err)
 	}

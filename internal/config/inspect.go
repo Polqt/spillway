@@ -34,9 +34,10 @@ func InspectLocalKeySources(path string) ([]LocalKeySource, error) {
 	for index, entry := range keys.Content {
 		source := LocalKeySource{Name: fmt.Sprintf("key-%d", index+1), Line: entry.Line, Literal: true}
 		var key *yaml.Node
-		if entry.Kind == yaml.ScalarNode {
+		switch entry.Kind {
+		case yaml.ScalarNode:
 			key = entry
-		} else if entry.Kind == yaml.MappingNode {
+		case yaml.MappingNode:
 			if name := mappingValue(entry, "name"); name != nil {
 				source.Name = name.Value
 			}

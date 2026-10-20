@@ -43,11 +43,12 @@ func replaceFileWindows(source, target string) error {
 	if err := dll.Load(); err != nil {
 		return fmt.Errorf("load ReplaceFileW: %w", err)
 	}
+	// #nosec G103 -- ReplaceFileW requires pointers to the UTF-16 paths and does not retain them.
 	result, _, callErr := proc.Call(uintptr(unsafe.Pointer(targetPtr)), uintptr(unsafe.Pointer(sourcePtr)), 0, 0, 0, 0)
 	if result != 0 {
 		return nil
 	}
-	if callErr == syscall.Errno(0) {
+	if errors.Is(callErr, syscall.Errno(0)) {
 		callErr = windows.GetLastError()
 	}
 	return fmt.Errorf("ReplaceFileW: %w", callErr)

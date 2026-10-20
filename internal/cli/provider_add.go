@@ -17,7 +17,7 @@ import (
 
 var environmentVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func providerAddCommand(options Options) *cobra.Command {
+func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 	var keyEnv, baseURL, tier string
 	var attest, noTier, dryRun, yes bool
 	command := &cobra.Command{
@@ -55,7 +55,7 @@ func providerAddCommand(options Options) *cobra.Command {
 				if !interactive {
 					return usageFailure(cmd, "provider name is required when prompts are unavailable; choose one of: "+strings.Join(availableProviderNames(cfg), ", "))
 				}
-				name, err = chooseProviderToAdd(cmd.Context(), options, cfg)
+				name, err = chooseProviderToAdd(ctx, options, cfg)
 				if err != nil {
 					return commandFailure{code: 1, err: err}
 				}
@@ -74,7 +74,7 @@ func providerAddCommand(options Options) *cobra.Command {
 					keyEnv = preset.KeyEnv
 				}
 				if interactive && !cmd.Flags().Changed("key-env") {
-					keyEnv, err = chooseKeyEnvironment(cmd.Context(), options, keyEnv)
+					keyEnv, err = chooseKeyEnvironment(ctx, options, keyEnv)
 					if err != nil {
 						return commandFailure{code: 1, err: err}
 					}
@@ -91,7 +91,7 @@ func providerAddCommand(options Options) *cobra.Command {
 				return commandFailure{code: 1, err: fmt.Errorf("--attest-free-tier is supported only for groq and gemini, not %s", name)}
 			}
 			if interactive && preset.FreeTierAttestable && !cmd.Flags().Changed("attest-free-tier") {
-				attest, err = chooseFreeTierAttestation(cmd.Context(), options, name)
+				attest, err = chooseFreeTierAttestation(ctx, options, name)
 				if err != nil {
 					return commandFailure{code: 1, err: err}
 				}
@@ -108,7 +108,7 @@ func providerAddCommand(options Options) *cobra.Command {
 			}
 			if tier == "" && !noTier && interactive {
 				if _, exists := cfg.Tiers["free"]; exists && preset.SuggestedModel != "" {
-					shouldAdd, promptErr := chooseTierPlacement(cmd.Context(), options, name)
+					shouldAdd, promptErr := chooseTierPlacement(ctx, options, name)
 					if promptErr != nil {
 						return commandFailure{code: 1, err: promptErr}
 					}
@@ -132,7 +132,7 @@ func providerAddCommand(options Options) *cobra.Command {
 				if parseErr != nil {
 					return commandFailure{code: 1, err: parseErr}
 				}
-				if !config.IsZeroSpendEligible(ref, cfg.Providers[name]) && !(name == "gemini" || name == "groq") {
+				if !config.IsZeroSpendEligible(ref, cfg.Providers[name]) && name != "gemini" && name != "groq" {
 					warning = fmt.Sprintf("Suggested model %s was not added to tier %q because it is not known to be zero-spend eligible (ADR 0005).\n", modelRef, tier)
 				} else if (name == "gemini" || name == "groq") && !attest {
 					warning = fmt.Sprintf("Suggested model %s was not added to tier %q because %s is not attested as having no paid plan.\n", modelRef, tier, name)
@@ -148,7 +148,7 @@ func providerAddCommand(options Options) *cobra.Command {
 				return commandFailure{code: 1, err: fmt.Errorf("write preview: %w", err)}
 			}
 			if prompted && !dryRun {
-				confirmed, promptErr := confirmProviderWrite(cmd.Context(), options)
+				confirmed, promptErr := confirmProviderWrite(ctx, options)
 				if promptErr != nil {
 					return commandFailure{code: 1, err: promptErr}
 				}
@@ -163,7 +163,7 @@ func providerAddCommand(options Options) *cobra.Command {
 				}
 				return nil
 			}
-			result, err := doc.Commit(cmd.Context(), change, config.CommitOptions{Now: options.Now})
+			result, err := doc.Commit(ctx, change, config.CommitOptions{Now: options.Now})
 			if err != nil {
 				return commandFailure{code: 1, err: err}
 			}

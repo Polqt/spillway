@@ -26,6 +26,9 @@ func TestProviderAdd_AddsGeminiToGroqConfig(t *testing.T) {
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, lookup); code != 0 {
 		t.Fatalf("exit = %d; stdout = %q; stderr = %q", code, stdout.String(), stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +70,7 @@ func TestProviderAdd_SecondInstanceRefusedWithGuidance(t *testing.T) {
 			t.Errorf("stderr %q lacks %q", stderr.String(), want)
 		}
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +90,7 @@ func TestProviderAdd_WritesOnlyEnvReference(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +115,7 @@ func TestProviderAdd_KeyLikeKeyEnvRefusedWithoutEcho(t *testing.T) {
 		if strings.Contains(stdout.String()+stderr.String(), value) {
 			t.Errorf("output echoed rejected value %q", value)
 		}
+		// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 		after, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -143,6 +149,7 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 			if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, lookup); code != 0 {
 				t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
 			}
+			// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -162,6 +169,7 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv); code != 0 {
 		t.Fatalf("mock exit = %d; stderr = %q", code, stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -187,10 +195,12 @@ func TestProviderAdd_InteractiveChoicesMatchFlags(t *testing.T) {
 	if code := cli.Run(t.Context(), args, nil, &flagsOut, &flagsErr, noEnv); code != 0 {
 		t.Fatalf("flags exit = %d; stderr = %q", code, flagsErr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	interactiveData, err := os.ReadFile(interactivePath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	flagsData, err := os.ReadFile(flagsPath)
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +218,7 @@ func TestProviderAdd_YesWithoutNameIsUsageError(t *testing.T) {
 	if code != 2 || !strings.Contains(stderr.String(), "--yes requires a provider name") {
 		t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -225,6 +236,7 @@ func TestProviderAdd_DryRunWritesNothing(t *testing.T) {
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv); code != 0 {
 		t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -256,6 +268,7 @@ func TestProviderAdd_FlowStyleConfigPrintsSnippet(t *testing.T) {
 	if !strings.Contains(stderr.String(), "add this by hand:") || !strings.Contains(stderr.String(), "gemini:") {
 		t.Errorf("stderr lacks paste-ready snippet: %q", stderr.String())
 	}
+	// #nosec G304 -- path is created under t.TempDir in this test.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -302,6 +315,7 @@ func TestInit_ExistingConfigSuggestsProviderAdd(t *testing.T) {
 	if !strings.Contains(stderr.String(), "spillway provider add") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -321,12 +335,14 @@ func providerAddFixture(t *testing.T, provider string) (string, []byte) {
 		data = []byte("server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: \"sk-test-provider-add-local\"\nlogging:\n  level: info\nproviders:\n  mock: {}\ntiers:\n  free:\n    models:\n      - mock/echo\nrouter:\n  auto:\n    - free\n")
 	} else {
 		var err error
+		// #nosec G304 -- fixture is selected from the fixed map above.
 		data, err = os.ReadFile(fixture)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
+	//nolint:gosec // Path is constructed under t.TempDir in providerAddFixture.
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -47,7 +47,11 @@ func TestCommit_FailedReplaceKeepsOriginalAndRemovesTemp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer windows.CloseHandle(handle)
+		defer func() {
+			if err := windows.CloseHandle(handle); err != nil {
+				t.Errorf("close config handle: %v", err)
+			}
+		}()
 		if _, err := doc.Commit(t.Context(), change, config.CommitOptions{}); err == nil {
 			t.Fatal("Commit succeeded while the target disallowed delete sharing")
 		}
