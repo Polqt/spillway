@@ -23,6 +23,7 @@ The Go module proxy caches every published version permanently, so a released ta
   - the `x-spillway-provider`, `x-spillway-model`, `x-spillway-route` and `x-spillway-cache` header names, and the route grammar of ADRs 0008 and 0014;
   - the store schema, which only moves forward through embedded migrations (ADR 0009).
 - `eval`, `eval-score` and `eval-report` are experimental: they are documented as such and may change in a minor release.
+- `provider add` is experimental for v1.1.x under ADR 0025 and may change in a minor release.
 - Log lines, `check` output layout, dashboard page layout and error message wording are not stable; error `type` and `code` values on `/v1/*` and `/api/*` are.
 - Every example config from the final commit of v0.1 through v0.5 must load unchanged; fixtures copied from those commits lock this in the test suite.
 - Minor releases may add config fields, subcommands, flags and response fields.

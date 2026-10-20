@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ var utf8BOM = []byte{0xef, 0xbb, 0xbf}
 type Document struct {
 	path    string
 	data    []byte
+	digest  [32]byte
+	mode    os.FileMode
 	newline string
 }
 
@@ -45,7 +48,11 @@ func OpenDocument(path string) (*Document, error) {
 	if len(data) > maxFileBytes {
 		return nil, fmt.Errorf("config: %s is larger than 1 MiB", resolved)
 	}
-	doc := &Document{path: resolved, data: data, newline: "\n"}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("config: stat %s: %w", resolved, err)
+	}
+	doc := &Document{path: resolved, data: data, digest: sha256.Sum256(data), mode: info.Mode().Perm(), newline: "\n"}
 	if bytes.Contains(data, []byte("\r\n")) {
 		doc.newline = "\r\n"
 	}
