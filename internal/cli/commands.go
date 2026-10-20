@@ -27,8 +27,15 @@ func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader,
 Quick start:
   spillway init
   spillway check -config config.yaml
-  spillway serve -config config.yaml`),
+  spillway serve -config config.yaml
+
+Offline mock path:
+  spillway init -yes -providers mock -store
+  spillway serve -config config.yaml
+
+Flags accept one or two dashes: -config or --config.`),
 		Example: `  spillway init
+  spillway init -yes -providers mock -store
   spillway check -config config.yaml
   spillway serve -config config.yaml`,
 		SilenceUsage:  true,
@@ -44,13 +51,21 @@ Quick start:
 {{.Long}}{{end}}
 {{if .HasAvailableSubCommands}}
 commands:
-{{range .Commands}}{{if (and (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
-{{end}}{{end}}{{end}}{{if .HasExample}}
+{{range .Groups}}{{$group := .}}{{.Title}}
+{{range $.Commands}}{{if (and (eq .GroupID $group.ID) (not .Hidden) (not .Deprecated))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}{{end}}{{end}}{{if .HasExample}}
 Examples:
 {{.Example}}{{end}}{{if .HasAvailableLocalFlags}}
 flags:
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}
 `)
+	root.AddGroup(
+		&cobra.Group{ID: "start", Title: "Get started"},
+		&cobra.Group{ID: "tools", Title: "Tools"},
+		&cobra.Group{ID: "experimental", Title: "Experimental"},
+	)
+	root.SetHelpCommandGroupID("tools")
+	root.SetCompletionCommandGroupID("tools")
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		out := cmd.OutOrStdout()
 		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Spillway")
@@ -126,13 +141,41 @@ flags:
 		flags.Int64("seed", 1, "paired bootstrap random seed")
 		flags.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
 	})
-	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version", func(cmd *cobra.Command, _ []string) int {
-		if _, err := fmt.Fprintln(stdout, versionLine()); err != nil {
+	addLegacyCommand(root, exitCode, "version", "print the version and exit", "  spillway version\n  spillway version -verbose", func(cmd *cobra.Command, _ []string) int {
+		lines := []string{versionLine()}
+		if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+			lines = append(lines, versionDetails()...)
+		}
+		if _, err := fmt.Fprintln(stdout, strings.Join(lines, "\n")); err != nil {
 			report(stderr, "spillway: write version: %v\n", err)
 			return 1
 		}
 		return 0
-	}, nil)
+	}, func(flags *pflag.FlagSet) {
+		flags.Bool("verbose", false, "also print the executable path, module, VCS settings and dashboard assets")
+	})
+	for _, command := range root.Commands() {
+		switch command.Name() {
+		case "init", "serve":
+			command.GroupID = "start"
+		case "eval", "eval-score", "eval-report":
+			command.GroupID = "experimental"
+		default:
+			command.GroupID = "tools"
+		}
+	}
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	if help := root.Commands(); len(help) > 0 {
+		for _, command := range help {
+			switch command.Name() {
+			case "help":
+				command.Short = "help about any command"
+			case "completion":
+				command.Short = "generate shell completion scripts"
+			}
+		}
+	}
 
 	return root
 }

@@ -14,6 +14,11 @@ import (
 //go:embed dist
 var files embed.FS
 
+// Assets reports "embedded": the built Preact assets are embedded.
+func Assets() string {
+	return "embedded"
+}
+
 // Handler serves the dashboard shell and its embedded assets.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

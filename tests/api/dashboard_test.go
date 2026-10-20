@@ -77,6 +77,7 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 			{Name: "groq", CredentialRequired: true, CredentialPresent: true},
 			{Name: "ollama"},
 		},
+		Gateway: api.Gateway{Version: "v9.9.9", DashboardAssets: "embedded"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,6 +212,64 @@ func dashboardRequest(t *testing.T, handler http.Handler, path, key, host string
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
 	return response
+}
+
+func TestGateway_RequiresDashboardKey(t *testing.T) {
+	handler, _, _ := dashboardEnv(t)
+	for _, test := range []struct {
+		name, key, code string
+		want            int
+	}{
+		{name: "missing key", want: http.StatusUnauthorized, code: "invalid_api_key"},
+		{name: "chat key", key: chatOnlyKey, want: http.StatusForbidden, code: "permission_denied"},
+		{name: "dashboard key", key: dashboardKey, want: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := dashboardRequest(t, handler, "/api/gateway", test.key, "127.0.0.1")
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body)
+			}
+			if test.code != "" && !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
+				t.Errorf("error body = %s, want OpenAI-shaped error with code %s", response.Body, test.code)
+			}
+		})
+	}
+}
+
+func TestGateway_ReturnsVersionWithoutSecrets(t *testing.T) {
+	handler, _, _ := dashboardEnv(t)
+	response := dashboardRequest(t, handler, "/api/gateway", dashboardKey, "127.0.0.1")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body)
+	}
+	if got, want := strings.TrimSpace(response.Body.String()), `{"version":"v9.9.9","dashboard_assets":"embedded"}`; got != want {
+		t.Errorf("body = %s, want %s", got, want)
+	}
+	for _, secret := range []string{dashboardKey, chatOnlyKey} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Errorf("gateway response contains a local key: %s", response.Body)
+		}
+	}
+}
+
+func TestGateway_NoStoreAndHostCheck(t *testing.T) {
+	handler, _, _ := dashboardEnv(t)
+	response := dashboardRequest(t, handler, "/api/gateway", dashboardKey, "127.0.0.1")
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	foreign := dashboardRequest(t, handler, "/api/gateway", dashboardKey, "attacker.example")
+	if foreign.Code != http.StatusForbidden || !strings.Contains(foreign.Body.String(), `"code":"host_not_allowed"`) {
+		t.Errorf("foreign Host status = %d body = %s, want 403 host_not_allowed", foreign.Code, foreign.Body)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/gateway", nil)
+	req.Header.Set("Authorization", "Bearer "+dashboardKey)
+	req.Host = "127.0.0.1"
+	post := httptest.NewRecorder()
+	handler.ServeHTTP(post, req)
+	if post.Code != http.StatusMethodNotAllowed || post.Header().Get("Allow") != "GET" {
+		t.Errorf("POST status = %d Allow = %q, want 405 with Allow: GET", post.Code, post.Header().Get("Allow"))
+	}
 }
 
 func TestDashboardAPI_AuthenticationAndHostCheck(t *testing.T) {

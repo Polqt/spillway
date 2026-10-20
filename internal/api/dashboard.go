@@ -194,6 +194,20 @@ func servePricing(w http.ResponseWriter, o Options) {
 	}{prices})
 }
 
+// Gateway identifies the running binary so a user can tell an older server
+// is still answering. It holds no config values or secrets.
+type Gateway struct {
+	Version         string
+	DashboardAssets string // "embedded" or "fallback"
+}
+
+func serveGateway(w http.ResponseWriter, o Options) {
+	writeJSON(w, http.StatusOK, struct {
+		Version         string `json:"version"`
+		DashboardAssets string `json:"dashboard_assets"`
+	}{o.Gateway.Version, o.Gateway.DashboardAssets})
+}
+
 func parseTimeParam(r *http.Request, name string, fallback time.Time) (time.Time, error) {
 	value := r.URL.Query().Get(name)
 	if value == "" {

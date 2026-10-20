@@ -11,6 +11,36 @@ import (
 	"github.com/Polqt/spillway/internal/config"
 )
 
+func TestDocs_ClientExamplesUseLocalEndpointAutoAndPlaceholder(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide, err := os.ReadFile(filepath.Join(root, "docs", "clients.md")) // #nosec G304 -- root is the repository root found from this test's source directory.
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(guide), "OPENAI_BASE_URL=http://127.0.0.1:8080/v1") || !strings.Contains(string(guide), "OPENAI_API_KEY=<LOCAL_APP_KEY>") || !strings.Contains(string(guide), "default") {
+		t.Fatalf("client guide lacks endpoint, key variables or default key guidance")
+	}
+	files := []string{"curl.sh", "curl.ps1", "python.py", "node.mjs", "env.sh"}
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(root, "examples", "clients", name)) // #nosec G304 -- name is drawn from a fixed test list.
+		if err != nil {
+			t.Fatalf("read client example %s: %v", name, err)
+		}
+		content := string(data)
+		for _, want := range []string{"127.0.0.1:8080/v1", "auto", "<LOCAL_APP_KEY>"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s missing %q", name, want)
+			}
+		}
+		if strings.Contains(content, "sk-spillway-") {
+			t.Errorf("%s contains a generated local-key literal", name)
+		}
+	}
+}
+
 func TestDocs_FullConfigExamplesValidate(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -52,6 +82,34 @@ func TestDocs_FullConfigExamplesValidate(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no fenced yaml spillway-config examples found in README.md or docs/")
+	}
+}
+
+func TestDocs_TroubleshootingCoversCLIRecoveryCases(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guide, err := os.ReadFile(filepath.Join(root, "docs", "troubleshooting.md")) // #nosec G304 -- path is fixed under the repository root.
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		want string
+	}{
+		{name: "init does not overwrite configs", want: "init never overwrites a config"},
+		{name: "missing environment variable", want: "environment variable"},
+		{name: "set a variable in the current shell", want: "set it in this shell"},
+		{name: "address already in use", want: "Another process (possibly an older Spillway)"},
+		{name: "newer store schema", want: "newer Spillway binary that wrote this database"},
+		{name: "start after config check", want: "spillway serve -config"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(string(guide), tt.want) {
+				t.Errorf("troubleshooting guide does not cover %q", tt.want)
+			}
+		})
 	}
 }
 

@@ -18,6 +18,9 @@
   const playgroundMessage = document.querySelector("#playground-message");
   const playgroundSubmit = document.querySelector("#playground-submit");
   const playgroundCancel = document.querySelector("#playground-cancel");
+  const playgroundCopyCurl = document.querySelector("#playground-copy-curl");
+  const playgroundCopyStatus = document.querySelector("#playground-copy-status");
+  const playgroundFailures = document.querySelector("#playground-failures");
   const keyName = "spillway-dashboard-key";
   let key = "";
   let refreshTimer = 0;
@@ -25,6 +28,7 @@
   let session = 0;
   let playgroundPrices = {};
   let playgroundController = null;
+  let gatewayVersion = "";
 
   function setText(selector, value) {
     const element = document.querySelector(selector);
@@ -33,7 +37,7 @@
 
   function setConnection(connected) {
     document.querySelector("#connection-dot").classList.toggle("online", connected);
-    setText("#connection-label", connected ? "Connected" : "Not connected");
+    setText("#connection-label", connected ? gatewayVersion ? `Connected to Spillway ${gatewayVersion}` : "Connected" : "Not connected");
   }
 
   function dollars(microUSD) {
@@ -47,6 +51,20 @@
 
   function dateRange(start, end) {
     return `since=${encodeURIComponent(start.toISOString())}&until=${encodeURIComponent(end.toISOString())}`;
+  }
+
+  function statusReason(reason) {
+    return ({ rate_limit: "Rate limit", "rate limited": "Rate limit", unavailable: "Unavailable", "upstream error": "Upstream error" })[reason] || reason;
+  }
+
+  function cooldownTime(value) {
+    const date = new Date(value);
+    const seconds = Math.ceil((date.getTime() - Date.now()) / 1000);
+    const minutes = seconds > 0 ? Math.ceil(seconds / 60) : Math.floor(-seconds / 60);
+    const relative = seconds > 0
+      ? seconds < 60 ? `in ${seconds} seconds` : `in ${minutes} minute${minutes === 1 ? "" : "s"}`
+      : seconds > -60 ? "ended less than a minute ago" : `ended ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+    return `Until ${date.toLocaleTimeString()} (${relative})`;
   }
 
   async function request(path, signal) {
@@ -169,8 +187,12 @@
     const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
     const selection = candidateMatch
       ? Number(candidateMatch[1]) > 1
-        ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
-        : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+        ? status < 400
+          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered. Earlier candidates were skipped or failed.`
+          : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
+        : status < 400
+          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered.`
+          : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
       : "";
     if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
     if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
@@ -215,7 +237,7 @@
       const until = document.createElement("time");
       until.className = "cooldown-until";
       until.dateTime = candidate.cooldown_until;
-      until.textContent = `Until ${new Date(candidate.cooldown_until).toLocaleTimeString()}`;
+      until.textContent = cooldownTime(candidate.cooldown_until);
       item.append(model, reason, until);
       list.append(item);
     }
@@ -224,6 +246,7 @@
   function renderProviderStatus(providers) {
     const list = document.querySelector("#provider-status");
     list.replaceChildren();
+    setText("#provider-status-refreshed", `Last refreshed: ${new Date().toLocaleTimeString()}`);
     if (!providers.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
@@ -258,9 +281,9 @@
           const detail = document.createElement("span");
           const failures = Number(signal.upstream_failures || 0);
           const failureText = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
-          const reasonText = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
-          const breakerText = signal.breaker_state === "open" ? "; circuit open" : "";
-          const untilText = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+          const reasonText = signal.reason ? statusReason(signal.reason) : "No active cooldown";
+          const breakerText = signal.breaker_state === "open" ? " · Circuit breaker open" : "";
+          const untilText = signal.cooldown_until ? ` · ${cooldownTime(signal.cooldown_until)}` : "";
           detail.textContent = `${failureText}${reasonText}${breakerText}${untilText}`;
           row.append(model, detail);
           signals.append(row);
@@ -285,8 +308,47 @@
       option.textContent = model.id;
       playgroundModel.append(option);
     }
-    if (models.some((model) => model.id === selected)) playgroundModel.value = selected;
+    if (models.some((model) => model.id === selected)) {
+      playgroundModel.value = selected;
+    } else {
+      playgroundModel.value = models.find((model) => model.id === "auto")?.id || models.find((model) => model.id.startsWith("spillway/"))?.id || models[0]?.id || "";
+    }
+    playgroundCopyCurl.disabled = !playgroundModel.value;
     updatePlaygroundEstimate();
+  }
+
+  function renderPlaygroundFailures(message) {
+    playgroundFailures.replaceChildren();
+    const marker = " can serve this request: ";
+    const start = message.indexOf(marker);
+    if (!message.startsWith("No candidate in tier ") || start === -1) {
+      playgroundFailures.hidden = true;
+      return;
+    }
+    for (const entry of message.slice(start + marker.length).split("; ")) {
+      const separator = entry.indexOf(" ");
+      if (separator <= 0) continue;
+      const item = document.createElement("li");
+      const model = document.createElement("strong");
+      model.textContent = entry.slice(0, separator);
+      item.append(model, document.createTextNode(`: ${entry.slice(separator + 1)}`));
+      playgroundFailures.append(item);
+    }
+    playgroundFailures.hidden = playgroundFailures.children.length === 0;
+  }
+
+  async function copyPlaygroundCurl() {
+    const body = JSON.stringify({ model: playgroundModel.value, messages: [{ role: "user", content: playgroundPrompt.value }], stream: playgroundStream.checked, max_tokens: Number(playgroundMaxTokens.value) });
+    const windows = /Win/i.test(navigator.userAgentData?.platform || navigator.platform);
+    const quote = windows ? (value) => `'${value.replaceAll("'", "''")}'` : (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    const curl = windows ? "curl.exe" : "curl";
+    const command = `${curl} -sS ${quote(`${window.location.origin}/v1/chat/completions`)} -H ${quote("Authorization: Bearer <LOCAL_APP_KEY>")} -H ${quote("Content-Type: application/json")} --data ${quote(body)}`;
+    try {
+      await navigator.clipboard.writeText(command);
+      playgroundCopyStatus.textContent = windows ? "Copied PowerShell curl command." : "Copied curl command.";
+    } catch {
+      playgroundCopyStatus.textContent = "Could not copy the curl command. Check clipboard permissions and try again.";
+    }
   }
 
   function renderPlaygroundRoute(metadata) {
@@ -318,6 +380,17 @@
     summaryText.textContent = explainRoute(metadata.route, metadata.cache, metadata.status);
     summary.append(summaryLabel, summaryText);
     playgroundRoute.insertBefore(summary, playgroundRoute.children[3]);
+    const terms = document.createElement("p");
+    terms.className = "route-terms";
+    terms.append("Definitions: ");
+    for (const [index, [label, id]] of [["Cooldown", "cooldown-definition"], ["Circuit breaker", "circuit-breaker-definition"], ["Exhaustion", "exhaustion-definition"]].entries()) {
+      if (index) terms.append(" · ");
+      const link = document.createElement("a");
+      link.href = `#${id}`;
+      link.textContent = label;
+      terms.append(link);
+    }
+    playgroundRoute.append(terms);
   }
 
   function updatePlaygroundEstimate() {
@@ -379,6 +452,7 @@
     playgroundController = controller;
     playgroundResponse.textContent = "";
     renderPlaygroundRoute(null);
+    renderPlaygroundFailures("");
     playgroundMessage.textContent = "Sending request…";
     playgroundMessage.setAttribute("role", "status");
     playgroundCancel.hidden = false;
@@ -416,6 +490,7 @@
       } else {
         playgroundMessage.textContent = error.message || "The request failed.";
         playgroundMessage.setAttribute("role", "alert");
+        renderPlaygroundFailures(error.message || "");
       }
     } finally {
       if (playgroundController === controller) playgroundController = null;
@@ -433,7 +508,8 @@
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     try {
       const signal = controller.signal;
-      const [budget, today, quotas, providerStatus, modelResponse, pricing] = await Promise.all([
+      const [gateway, budget, today, quotas, providerStatus, modelResponse, pricing] = await Promise.all([
+        request("/api/gateway", signal).catch(() => null),
         request("/api/budget", signal),
         request(`/api/usage?${dateRange(todayStart, now)}&group=day`, signal),
         request("/api/quotas", signal),
@@ -442,6 +518,11 @@
         request("/api/pricing", signal)
       ]);
       if (currentSession !== session) return;
+      gatewayVersion = gateway?.version || "";
+      setConnection(true);
+      document.querySelectorAll(".client-examples code").forEach((example) => {
+        example.textContent = example.textContent.replaceAll("{{ORIGIN}}", window.location.origin);
+      });
       renderProviderStatus(providerStatus.providers || []);
       playgroundPrices = pricing.prices || {};
       renderPlaygroundModels(modelResponse.data || []);
@@ -491,6 +572,7 @@
     refreshController = null;
     renderPlaygroundRoute(null);
     key = "";
+    gatewayVersion = "";
     try { sessionStorage.removeItem(keyName); } catch (_error) { /* Storage may be disabled. */ }
     content.hidden = true;
     accessPanel.hidden = false;
@@ -555,6 +637,7 @@
 
   playgroundForm.addEventListener("submit", submitPlayground);
   playgroundCancel.addEventListener("click", () => playgroundController?.abort());
+  playgroundCopyCurl.addEventListener("click", copyPlaygroundCurl);
   playgroundModel.addEventListener("change", updatePlaygroundEstimate);
   playgroundPrompt.addEventListener("input", updatePlaygroundEstimate);
   playgroundMaxTokens.addEventListener("input", updatePlaygroundEstimate);

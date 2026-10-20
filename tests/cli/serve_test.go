@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,12 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/cli"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/store"
@@ -77,7 +80,11 @@ func TestRun_ConfigRecoveryGuidance(t *testing.T) {
 	if code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, lookupEnv); code != 1 {
 		t.Fatalf("missing environment variable exit = %d; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Set the named environment variable") || strings.Contains(stderr.String(), localSecret) || strings.Contains(stderr.String(), providerSecret) {
+	shellCommand := "read -rs GROQ_API_KEY && export GROQ_API_KEY"
+	if runtime.GOOS == "windows" {
+		shellCommand = "$env:GROQ_API_KEY = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password"
+	}
+	if !strings.Contains(stderr.String(), "providers.groq.api_key") || !strings.Contains(stderr.String(), "GROQ_API_KEY") || !strings.Contains(stderr.String(), shellCommand) || strings.Contains(stderr.String(), localSecret) || strings.Contains(stderr.String(), providerSecret) {
 		t.Errorf("missing environment guidance = %q", stderr.String())
 	}
 	var invalidOut, invalidErr strings.Builder
@@ -87,6 +94,18 @@ func TestRun_ConfigRecoveryGuidance(t *testing.T) {
 	}
 	if !strings.Contains(invalidErr.String(), "Check the config syntax and values") {
 		t.Errorf("invalid config guidance = %q", invalidErr.String())
+	}
+	for _, invalidReference := range []string{"${GROQ_API_KEY", "${GROQ-API-KEY}"} {
+		t.Run("malformed environment reference", func(t *testing.T) {
+			malformedPath := writeConfig(t, "providers:\n  groq:\n    api_key: \""+invalidReference+"\"\n")
+			var malformedOut, malformedErr strings.Builder
+			if code := cli.Run(t.Context(), []string{"check", "-config", malformedPath}, nil, &malformedOut, &malformedErr, noEnv); code != 1 {
+				t.Fatalf("malformed config exit = %d; stderr = %q", code, malformedErr.String())
+			}
+			if !strings.Contains(malformedErr.String(), "Check the config syntax and values") || strings.Contains(malformedErr.String(), "read -rs") || strings.Contains(malformedErr.String(), "NetworkCredential") {
+				t.Errorf("malformed config guidance = %q", malformedErr.String())
+			}
+		})
 	}
 }
 
@@ -139,11 +158,74 @@ func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 	if !strings.Contains(stderr.String(), "level=WARN") || !strings.Contains(stderr.String(), "reachable from the network") {
 		t.Errorf("stderr = %q, want a WARN that the API is reachable from the network", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Choose an available address in server.listen") {
-		t.Errorf("stderr = %q, want listen recovery guidance", stderr.String())
+	if !strings.Contains(stderr.String(), "Check that server.listen is a valid address") {
+		t.Errorf("stderr = %q, want guidance for an unavailable local address", stderr.String())
 	}
 	if strings.Contains(stderr.String(), e2eKey) {
 		t.Errorf("stderr contains the local key: %q", stderr.String())
+	}
+}
+
+func TestRun_ServeListenConflictNamesAddressAndRecovery(t *testing.T) {
+	t.Parallel()
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	address := listener.Addr().String()
+	path := writeConfig(t, "server:\n  listen: \""+address+"\"\n  api_keys: [sk-test-listen-recovery]\nproviders:\n  mock: {}\n")
+	var stdout, stderr strings.Builder
+
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{address, "Another process", "possibly an older Spillway", `server.listen: "127.0.0.1:8787"`, "client apps to use the same port"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want %q", stderr.String(), want)
+		}
+	}
+	if strings.Contains(stderr.String(), "sk-test-listen-recovery") {
+		t.Errorf("stderr contains the local key: %q", stderr.String())
+	}
+}
+
+func TestRun_ServeNewerStoreSchemaSuggestsSafeRecovery(t *testing.T) {
+	t.Parallel()
+	storePath := filepath.Join(t.TempDir(), "newer.db")
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "PRAGMA user_version = 99"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-newer-schema]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
+	var versionOut, versionErr strings.Builder
+	if code := cli.Run(t.Context(), []string{"version"}, nil, &versionOut, &versionErr, noEnv); code != 0 {
+		t.Fatalf("version exit code = %d; stderr = %q", code, versionErr.String())
+	}
+	var stdout, stderr strings.Builder
+
+	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	for _, want := range []string{"schema version 99", "supported version 2", "binary " + strings.Fields(versionOut.String())[1], "newer Spillway binary", "store.path", "new file"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want %q", stderr.String(), want)
+		}
+	}
+	if !strings.Contains(stderr.String(), "Do not delete the existing database") || strings.Contains(stderr.String(), "sk-test-newer-schema") {
+		t.Errorf("stderr omits safe database guidance or contains a key: %q", stderr.String())
 	}
 }
 
@@ -815,8 +897,9 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 		_ = pw.Close()
 	}()
 
+	var addr string
 	select {
-	case <-logs.addr:
+	case addr = <-logs.addr:
 	case code := <-exit:
 		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
 	}
@@ -828,8 +911,91 @@ func TestRun_ServeLogsAttestedFreeTierProviders(t *testing.T) {
 	if !strings.Contains(logs.String(), `msg="free-tier providers are user-attested" providers="[gemini groq]"`) {
 		t.Errorf("serve logs = %q, want sorted attested provider list", logs.String())
 	}
+	baseURL := "http://" + addr
+	for _, want := range []string{"dashboard_key_configured=false", "store_enabled=false", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("serve logs = %q, want %q", logs.String(), want)
+		}
+	}
 	if strings.Contains(logs.String(), "sk-test-GROQ_API_KEY") || strings.Contains(logs.String(), "sk-test-GEMINI_API_KEY") {
 		t.Errorf("serve logs contain provider key: %s", logs.String())
+	}
+}
+
+func TestServe_LogsVersionAndExecutable(t *testing.T) {
+	t.Parallel()
+	const dashboardSecret = "sk-test-" + "local-identity-dashboard"
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: admin\n      key: "+dashboardSecret+"\n      dashboard: true\nproviders:\n  groq:\n    api_key: \"${GROQ_API_KEY}\"\n")
+	lookup := func(name string) (string, bool) { return "sk-test-provider-canary-" + strings.ToLower(name), true }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, io.Discard, pw, lookup)
+		_ = pw.Close()
+	}()
+	var addr string
+	select {
+	case addr = <-logs.addr:
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/gateway", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+dashboardSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("serve exit code = %d, want 0; logs:\n%s", code, logs)
+	}
+	<-logs.done
+	baseURL := "http://" + addr
+	for _, want := range []string{"dashboard_key_configured=true", "store_enabled=false", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("serve logs = %q, want %q", logs.String(), want)
+		}
+	}
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := regexp.MustCompile(`msg="spillway starting" version=(\S+) executable=(\S+) config=(\S+)`)
+	var identityLine, listenLine = -1, -1
+	for i, line := range strings.Split(logs.String(), "\n") {
+		if m := identity.FindStringSubmatch(line); m != nil && identityLine < 0 {
+			identityLine = i
+			if m[1] != "dev" || m[2] != executable || m[3] != path {
+				t.Errorf("identity fields = version %q executable %q config %q, want dev, %q, %q", m[1], m[2], m[3], executable, path)
+			}
+		}
+		if strings.Contains(line, "msg=listening") {
+			listenLine = i
+		}
+	}
+	if identityLine < 0 || identityLine > listenLine {
+		t.Errorf("identity line index %d, listening line index %d: want identity before listening:\n%s", identityLine, listenLine, logs)
+	}
+	if got, want := strings.TrimSpace(string(body)), `{"version":"dev","dashboard_assets":"`+web.Assets()+`"}`; resp.StatusCode != http.StatusOK || got != want {
+		t.Errorf("GET /api/gateway = %d %s, want 200 %s", resp.StatusCode, got, want)
+	}
+	for _, secret := range []string{dashboardSecret, "sk-test-provider-canary-groq_api_key"} {
+		if strings.Contains(logs.String(), secret) || strings.Contains(string(body), secret) {
+			t.Errorf("logs or gateway response contain a key")
+		}
 	}
 }
 

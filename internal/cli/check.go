@@ -38,5 +38,8 @@ func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (stri
 	if _, err := lipgloss.Fprintln(stderr, status); err != nil {
 		return 1
 	}
+	if _, err := lipgloss.Fprintf(stderr, "Run `spillway serve -config %s` to start Spillway.\n", *configPath); err != nil {
+		return 1
+	}
 	return 0
 }

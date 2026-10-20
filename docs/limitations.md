@@ -1,6 +1,6 @@
 # Known limitations
 
-- **Provider and API scope:** v1.0 supports chat completions, model listing and health checks. It does not implement embeddings. Built-in provider presets are Gemini, Groq, OpenRouter, Ollama and mock; other providers may be reachable through OpenRouter where available.
+- **Provider and API scope:** v1.0.0 supports chat completions, model listing and health checks. It does not implement embeddings. Built-in provider presets are Gemini, Groq, OpenRouter, Ollama and mock; other providers may be reachable through OpenRouter where available.
 - **No quota evasion:** Spillover is across configured providers only. Spillway does not rotate accounts or pool keys on one provider.
 - **Provider behavior:** rate limits, free tiers, prices, model names, service availability and provider data retention are controlled by each provider and can change. Review current terms before sending sensitive prompts.
 - **Free-tier attestation:** Spillway cannot verify whether a Groq account has a paid plan or a Gemini project has billing enabled. `free_tier: true` is the user's responsibility and must be kept accurate.
@@ -11,6 +11,7 @@
 - **Local key storage:** `spillway init` writes local keys to the config file. On Unix it creates the file with owner-only mode 0600. Windows does not enforce Unix file modes; use Windows ACLs to restrict the file to the account that runs Spillway.
 - **Untested target:** GoReleaser builds `windows/arm64`, but that binary has not been run-tested.
 - **Docker and Ollama:** Docker can reach host Ollama using `--network host` only on Linux under the documented setup. Host Ollama access from the Docker image is unsupported on macOS and Windows. Non-loopback plaintext Ollama URLs are rejected.
+- **Dashboard assets:** Release archives and Docker images use the embedded Preact dashboard. A binary installed with `go install` serves the supported fallback dashboard; it includes onboarding, provider status, the playground and route explanations, but uses a simpler static layout. See [install](install.md#install-with-go).
 - **No hosted service or telemetry:** Spillway is self-hosted and makes no telemetry calls. Outbound requests are limited to the providers configured by the user.
 - **Live-provider smoke checks:** The optional Groq, Gemini, OpenRouter, Ollama, spillover, Linux Docker/Ollama, and live catalog checks were not run for the v1.0 release audit. They require provider credentials, a local Ollama setup, or a Linux Docker host. See [the smoke-check record](v1.0-live-smoke.md). These checks remain unverified.
-- **Release candidate verification:** Downloaded `v1.0.0-rc.1` artifacts, provenance attestations, Docker image, and the final `v1.0.0` installation were not verified because no release candidate or final release has been approved and published. The ticket requires owner approval before tagging.
+- **Live-provider verification:** v1.0.0 release artifacts and the Docker image were published and verified. Optional live-provider and platform-specific smoke checks listed above remain unverified.

@@ -1,7 +1,9 @@
 # Configuration reference
 
 Spillway reads YAML from `config.yaml` by default. Unknown fields, duplicate fields and invalid values fail during `spillway check` and before serving starts.
-Provider and local API keys must be supplied through environment variables in production; config output redacts them.
+Provider keys use `${NAME}` environment references; `spillway init` generates local API keys in the private config file, and config output redacts secrets.
+After init, use the `default` key entry for client apps and the `dashboard` entry for dashboard data when init created one with `-store`.
+See [install](install.md) for the first-run sequence and [client examples](clients.md) for SDK setup.
 
 ## Complete example
 
@@ -70,7 +72,7 @@ Budgets estimate spend observed by this process, stop paid models after a soft c
 
 ## Environment variables
 
-Use `${NAME}` references for provider keys and local API keys. Every referenced variable must exist and be non-empty when loading the config. `spillway init` can write the config skeleton; put secrets in your shell environment or secret manager, not in the YAML file.
+Use `${NAME}` references for provider keys and optional local API keys. Every referenced variable must exist and be non-empty when loading the config. `spillway init` creates a complete config for the selected providers, including local keys; protect that file and keep provider secrets in your shell environment or secret manager.
 
 ## Validation errors
 

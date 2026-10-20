@@ -1,8 +1,36 @@
 # Troubleshooting
 
+## `spillway init` says the config already exists
+
+If `spillway init -config <path>` reports that the config already exists, remember that init never overwrites a config.
+Validate it with `spillway check -config <path>`, or create a separate config with `spillway init -config <new-path>`.
+
 ## `spillway check` reports a missing variable
 
-Every `${NAME}` reference must resolve to a non-empty environment variable before `check` or `serve` starts. Set provider and local keys in the same environment that launches Spillway, then rerun `spillway check`. For example, in PowerShell use `$env:GROQ_API_KEY = "..."`; in POSIX shells use `export GROQ_API_KEY="..."`. Do not paste provider key values into config files or share command output that contains credentials.
+Every `${NAME}` reference must resolve to a non-empty environment variable before `check` or `serve` starts.
+Use the shell-specific command printed by `spillway check` or `spillway init` to set it in this shell, then rerun the command.
+PowerShell prompts without putting the value in shell history: `$env:GROQ_API_KEY = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password`.
+In bash or zsh, type the key into the terminal and press Enter; input is hidden: `read -rs GROQ_API_KEY && export GROQ_API_KEY`.
+Do not paste provider key values into config files or share command output that contains credentials.
+
+## `spillway serve` cannot use the configured address
+
+If another process is already using the address, Spillway reports `Another process (possibly an older Spillway) is using this address` and suggests an available loopback example.
+Change `server.listen` in the config, for example to `127.0.0.1:8787`, then rerun `spillway serve`.
+Update client apps to use the same port.
+The process may be an older Spillway server that is still running; check its startup log and stop it cleanly if appropriate.
+
+## The store schema is newer than this Spillway binary
+
+The database schema is newer than this binary supports.
+The error reports the found schema version, the supported schema version and this binary's version.
+Run the newer Spillway binary that wrote this database, or point `store.path` at a new file in the config.
+Keep the existing database; do not delete it to work around the version mismatch.
+
+## `spillway check` succeeds
+
+After `config OK`, run the suggested command, `spillway serve -config <path>` (using the path printed by `check`), to start the gateway.
+Keep the server running while client apps use it.
 
 ## HTTP 401 versus 403
 

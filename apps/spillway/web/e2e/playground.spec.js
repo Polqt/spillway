@@ -1,15 +1,73 @@
 import { expect, test } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const fallbackHTML = await readFile(new URL("../dashboard.html", import.meta.url), "utf8");
 const fallbackCSS = await readFile(new URL("../dashboard.css", import.meta.url), "utf8");
 const fallbackJS = await readFile(new URL("../dashboard_fallback.js", import.meta.url), "utf8");
 
-async function connectDashboard(page, calls) {
+async function startMockSpillway() {
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const tempDir = await mkdtemp(join(tmpdir(), "spillway-playground-"));
+  const portListener = createServer();
+  await new Promise((resolve, reject) => {
+    portListener.once("error", reject);
+    portListener.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = portListener.address();
+  await new Promise((resolve, reject) => portListener.close((error) => error ? reject(error) : resolve()));
+
+  const example = await readFile(join(root, "examples", "config.mock.yaml"), "utf8");
+  const databasePath = join(tempDir, "usage.db").replaceAll("\\", "/");
+  const configPath = join(tempDir, "config.yaml");
+  await writeFile(configPath, example
+    .replace('listen: "127.0.0.1:8080"', `listen: "127.0.0.1:${port}"`)
+    .replace("path: ./spillway-mock.db", `path: ${databasePath}`), "utf8");
+
+  const binaryPath = join(tempDir, process.platform === "win32" ? "spillway.exe" : "spillway");
+  execFileSync("go", ["build", "-o", binaryPath, "./apps/spillway"], {
+    cwd: root,
+    env: { ...process.env, CGO_ENABLED: "0" },
+    stdio: "pipe",
+  });
+  const processHandle = spawn(binaryPath, ["serve", "-config", configPath], { cwd: tempDir, stdio: "ignore" });
+  const baseURL = `http://127.0.0.1:${port}`;
+  await expect.poll(async () => {
+    try {
+      return (await fetch(`${baseURL}/healthz`)).status;
+    } catch {
+      return 0;
+    }
+  }, { timeout: 30000 }).toBe(200);
+
+  return {
+    baseURL,
+    async close() {
+      if (processHandle.exitCode === null) {
+        await new Promise((resolve) => {
+          processHandle.once("exit", resolve);
+          processHandle.kill();
+        });
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function connectDashboard(page, calls, { build = "embedded", models = [{ id: "mock/paid" }, { id: "mock/echo" }], dashboardKey = "sk-test-dashboard" } = {}) {
+  if (build === "fallback") {
+    await page.route("**/dashboard", (route) => route.fulfill({ contentType: "text/html", body: fallbackHTML }));
+    await page.route("**/dashboard.css", (route) => route.fulfill({ contentType: "text/css", body: fallbackCSS }));
+    await page.route("**/dashboard.js", (route) => route.fulfill({ contentType: "text/javascript", body: fallbackJS }));
+  }
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     calls.push(request);
-    expect(request.headers().authorization).toBe("Bearer sk-test-dashboard");
+    expect(request.headers().authorization).toBe(`Bearer ${dashboardKey}`);
     expect(request.headers().cookie).toBeUndefined();
     const path = new URL(request.url()).pathname;
     if (path === "/api/budget") {
@@ -22,20 +80,89 @@ async function connectDashboard(page, calls) {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "store_disabled", message: "Usage storage is not configured." } }) });
     }
   });
-  await page.route("**/v1/models", async (route) => {
-    calls.push(route.request());
-    expect(route.request().headers().authorization).toBe("Bearer sk-test-dashboard");
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [{ id: "mock/paid" }, { id: "mock/echo" }] }) });
-  });
+  if (models) {
+    await page.route("**/v1/models", async (route) => {
+      calls.push(route.request());
+      expect(route.request().headers().authorization).toBe(`Bearer ${dashboardKey}`);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: models }) });
+    });
+  }
   await page.goto("/dashboard");
-  await page.getByRole("textbox", { name: "Dashboard key" }).fill("sk-test-dashboard");
+  await page.getByRole("textbox", { name: "Dashboard key" }).fill(dashboardKey);
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.getByRole("heading", { name: "Request playground" })).toBeVisible();
 }
 
-test("request playground sends an explicit non-streaming mock request and keeps its text private", async ({ page }) => {
+for (const build of ["embedded", "fallback"]) {
+  test(`${build} playground defaults to a virtual model and explains direct references`, async ({ page }) => {
+    await connectDashboard(page, [], {
+      build,
+      models: [{ id: "mock/echo" }, { id: "spillway/dead" }, { id: "auto" }],
+    });
+
+    await expect(page.getByLabel("Model")).toHaveValue("auto");
+    await expect(page.getByText("Direct model references skip spillover. Choose auto or spillway/<tier> to let Spillway try eligible candidates in order.")).toBeVisible();
+  });
+
+  test(`${build} copy as curl keeps the placeholder key and request fields`, async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__clipboardText = "";
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text) => { window.__clipboardText = text; } },
+      });
+    });
+    await connectDashboard(page, [], { build, models: [{ id: "auto" }, { id: "mock/echo" }] });
+    await page.getByLabel("Prompt").fill("say 'hello' with spillover");
+    await page.getByLabel("Stream response").uncheck();
+    await page.getByRole("button", { name: "Copy as curl" }).click();
+
+    const curl = await page.evaluate(() => window.__clipboardText);
+    expect(curl).toContain("http://127.0.0.1:4173/v1/chat/completions");
+    expect(curl).toContain("Authorization: Bearer <LOCAL_APP_KEY>");
+    expect(curl).toMatch(process.platform === "win32" ? /^curl\.exe -sS / : /^curl -sS /);
+    expect(curl).toContain('"model":"auto"');
+    expect(curl).toContain(process.platform === "win32" ? "say ''hello'' with spillover" : "say '\\''hello'\\'' with spillover");
+    expect(curl).toContain('"stream":false');
+    expect(curl).toContain('"max_tokens":512');
+    expect(curl).not.toContain("sk-test-dashboard");
+  });
+}
+
+test("mock dead tier exhaustion reaches both playground builds with candidate reasons", async ({ browser }) => {
+  const mock = await startMockSpillway();
+  try {
+    for (const build of ["embedded", "fallback"]) {
+      const page = await browser.newPage();
+      await page.route("**/v1/**", async (route) => {
+        const response = await route.fetch({
+          url: `${mock.baseURL}${new URL(route.request().url()).pathname}`,
+        });
+        await route.fulfill({ response });
+      });
+      await connectDashboard(page, [], {
+        build,
+        models: null,
+        dashboardKey: "sk-test-spillway-dashboard",
+      });
+      await page.getByLabel("Model").selectOption("spillway/dead");
+      await page.getByLabel("Prompt").fill("real mock dead tier exhaustion");
+      await page.getByRole("button", { name: "Send request" }).click();
+      await expect(page.getByRole("alert")).toContainText('No candidate in tier "dead" can serve this request');
+      const candidates = page.getByRole("list", { name: "Exhausted candidates" });
+      await expect(candidates.getByRole("listitem").filter({ hasText: "mock/rate-limited" })).toContainText("rate limited");
+      await expect(candidates.getByRole("listitem").filter({ hasText: "mock/unavailable" })).toContainText("unavailable");
+      await expect(page.getByLabel("Routing explanation")).toContainText("tier dead; exhausted (2 eligible)");
+      await page.close();
+    }
+  } finally {
+    await mock.close();
+  }
+});
+
+for (const build of ["embedded", "fallback"]) test(`${build} request playground sends an explicit non-streaming mock request and keeps its text private`, async ({ page }) => {
   const calls = [];
-  await connectDashboard(page, calls);
+  await connectDashboard(page, calls, { build });
   await expect(page.getByText(/Estimated cost: about/)).toBeVisible();
   await page.getByLabel("Model").selectOption("mock/echo");
   await expect(page.getByText(/Estimated cost: about/)).toHaveCount(0);
@@ -55,11 +182,13 @@ test("request playground sends an explicit non-streaming mock request and keeps 
       body: JSON.stringify({ choices: [{ message: { role: "assistant", content: "mock response text" } }] }),
     });
   });
-  await page.getByRole("button", { name: "Send request" }).click();
+  await page.getByRole("button", { name: "Send request" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByLabel("Assistant response")).toContainText("mock response text");
   await expect(page.getByLabel("Routing explanation")).toContainText("mock/paid");
   await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 2/3");
-  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Spillway spilled over to candidate 2 of 3 after earlier candidates were unavailable.");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Candidate 2 of 3 answered. Earlier candidates were skipped or failed.");
+  await expect(page.getByLabel("Routing explanation").getByRole("link", { name: "Cooldown" })).toHaveAttribute("href", "#cooldown-definition");
   await expect(page.getByLabel("Routing explanation")).toContainText("miss");
   expect(chatRequest.postDataJSON()).toEqual({
     model: "mock/paid",
@@ -71,6 +200,7 @@ test("request playground sends an explicit non-streaming mock request and keeps 
   expect(await page.evaluate(() => document.body.innerText)).not.toContain("playground-private-prompt-9c41");
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("playground-private-prompt-9c41");
   expect(await page.evaluate(() => JSON.stringify(sessionStorage))).not.toContain("playground-private-prompt-9c41");
+  expect(calls.map((request) => request.url()).join("\n")).not.toContain("playground-private-prompt-9c41");
   expect(calls.map((request) => new URL(request.url()).pathname)).toContain("/api/pricing");
 });
 
@@ -113,7 +243,8 @@ test("request playground renders streamed content, reports errors and cancels in
 
   mode = "pending";
   await page.getByRole("button", { name: "Send request" }).click();
-  await page.getByRole("button", { name: "Cancel request" }).click();
+  await page.getByRole("button", { name: "Cancel request" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByText("Request cancelled.")).toBeVisible();
   release?.();
 });
@@ -152,4 +283,25 @@ test("fallback playground reports a dropped stream as incomplete", async ({ page
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByLabel("Assistant response")).toContainText("partial fallback");
   await expect(page.getByRole("alert")).toHaveText("The response stream ended before completion.");
+});
+
+for (const build of ["embedded", "fallback"]) test(`${build} explains the final candidate and preserves unknown route reasons`, async ({ page }) => {
+  await connectDashboard(page, [], { build });
+  await page.getByLabel("Prompt").fill("explain this route");
+  let routeReason = "tier demo; candidate 3/3";
+  await page.route("**/v1/chat/completions", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    headers: { "x-spillway-provider": "mock", "x-spillway-model": "echo", "x-spillway-route": routeReason, "x-spillway-cache": "miss" },
+    body: JSON.stringify({ choices: [{ message: { content: "mock response" } }] }),
+  }));
+
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 3/3");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Candidate 3 of 3 answered. Earlier candidates were skipped or failed.");
+
+  routeReason = "provider supplied unknown marker";
+  await page.getByRole("button", { name: "Send request" }).click();
+  await expect(page.getByLabel("Routing explanation")).toContainText("provider supplied unknown marker");
+  await expect(page.getByLabel("Routing explanation")).toContainText("No plain-language explanation is available; the route reason above is shown verbatim.");
 });
