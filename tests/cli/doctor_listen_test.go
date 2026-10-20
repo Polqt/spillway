@@ -110,6 +110,51 @@ func TestDoctor_ListenProbeReadsAtMostFourKiB(t *testing.T) {
 	}
 }
 
+func TestDoctor_ListenProbeIgnoresHTTPProxy(t *testing.T) {
+	host := nonLoopbackInterfaceHost(t)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Skipf("cannot bind a non-loopback address: %v", err)
+	}
+	targetRequests := 0
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetRequests++
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"invalid_api_key"}}`))
+	}))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	proxyRequests := 0
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxyRequests++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("http_proxy", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	t.Setenv("REQUEST_METHOD", "")
+
+	path := writeDoctorConfigWithListen(t, strings.TrimPrefix(server.URL, "http://"))
+	var stdout, stderr strings.Builder
+	if code := cli.RunWithOptions(t.Context(), []string{"doctor", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: doctorHealthyEnv}); code != 0 {
+		t.Fatalf("exit = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if proxyRequests != 0 || targetRequests != 2 || !strings.Contains(stdout.String(), "answers like Spillway") {
+		t.Fatalf("proxy requests=%d target requests=%d stdout=%q", proxyRequests, targetRequests, stdout.String())
+	}
+}
+
 func TestDoctor_NoProbeMakesNoListenRequests(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
@@ -147,6 +192,31 @@ func freeDoctorListenAddress(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return address
+}
+
+func nonLoopbackInterfaceHost(t *testing.T) string {
+	t.Helper()
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("list network interfaces: %v", err)
+	}
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := networkInterface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err == nil && !ip.IsLoopback() && !ip.IsUnspecified() && ip.To4() != nil {
+				return ip.String()
+			}
+		}
+	}
+	t.Skip("no up IPv4 non-loopback interface is available")
+	return ""
 }
 
 func TestDoctor_PortGuidanceIsLoopbackOnlyAndOSSpecific(t *testing.T) {
