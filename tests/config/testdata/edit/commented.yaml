@@ -1,0 +1,24 @@
+# Hand-edited config; keep these comments.
+server:
+  listen: '127.0.0.1:8080'   # loopback only
+  api_keys:
+    - name: default
+      key: 'sk-test-local-commented-edit'
+
+providers:
+    # Groq first, it is fastest.
+    groq:
+        api_key: '${GROQ_API_KEY}'
+        free_tier: true   # attested 2026-10-19
+
+    # openrouter: disabled for now
+
+# Tiers below.
+tiers:
+  free:
+    models:
+      - groq/llama-3.3-70b-versatile   # suggested
+      # - groq/other
+
+router:
+  auto: [free]
