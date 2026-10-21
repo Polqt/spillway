@@ -16,6 +16,18 @@ import (
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var providerKeyReference = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
+// MissingEnvironmentError identifies an unset environment reference in a config file.
+type MissingEnvironmentError struct {
+	Field    string // Field is the config path containing the unset reference.
+	Line     int    // Line is the source line containing the unset reference.
+	Variable string // Variable is the name of the unset environment variable.
+}
+
+// Error describes the unset environment reference without exposing a value.
+func (e *MissingEnvironmentError) Error() string {
+	return fmt.Sprintf("%s (line %d): environment variable %s is not set", e.Field, e.Line, e.Variable)
+}
+
 func expandConfig(root *yaml.Node, lookupEnv func(string) (string, bool)) error {
 	var expansionErrors []error
 	expand := func(value *yaml.Node, path string) {
@@ -104,7 +116,7 @@ func expandValue(value, path string, line int, lookupEnv func(string) (string, b
 		}
 		replacement, ok := lookupEnv(name)
 		if !ok || replacement == "" {
-			missing = append(missing, fmt.Errorf("%s (line %d): environment variable %s is not set", path, line, name))
+			missing = append(missing, &MissingEnvironmentError{Field: path, Line: line, Variable: name})
 			i += end + 3
 			continue
 		}

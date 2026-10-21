@@ -8,6 +8,7 @@ function Dashboard() {
   const [key, setKey] = useState("");
   const [entry, setEntry] = useState("");
   const [connected, setConnected] = useState(false);
+  const [gateway, setGateway] = useState(null);
   const [historyAvailable, setHistoryAvailable] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
   const [providerStatus, setProviderStatus] = useState([]);
@@ -77,7 +78,8 @@ function Dashboard() {
     setMessage("");
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const [budget, providerResponse, modelResponse, pricingResponse] = await Promise.all([
+      const [gatewayResponse, budget, providerResponse, modelResponse, pricingResponse] = await Promise.all([
+        request("/api/gateway", token, controller.signal).catch(() => null),
         request("/api/budget", token, controller.signal),
         request("/api/providers", token, controller.signal),
         request("/v1/models", token, controller.signal),
@@ -106,13 +108,16 @@ function Dashboard() {
       } catch {
         setMessage("The key is active for this page, but this browser could not save it for the tab.");
       }
+      setGateway(gatewayResponse);
       setHistoryAvailable(history !== null);
       setDashboardData(historyData);
       setProviderStatus(providerResponse?.providers || []);
       const availableModels = modelResponse?.data || [];
       setModels(availableModels);
       setPrices(pricingResponse?.prices || {});
-      setSelectedModel((current) => availableModels.some((model) => model.id === current) ? current : availableModels[0]?.id || "");
+      setSelectedModel((current) => availableModels.some((model) => model.id === current)
+        ? current
+        : availableModels.find((model) => model.id === "auto")?.id || availableModels.find((model) => model.id.startsWith("spillway/"))?.id || availableModels[0]?.id || "");
       setKey(token);
       setConnected(true);
     } catch (error) {
@@ -128,6 +133,7 @@ function Dashboard() {
         setDashboardData(null);
         setHistoryAvailable(null);
         setProviderStatus([]);
+        setGateway(null);
       }
       setMessage(error.name === "AbortError" ? "The dashboard request timed out. Check that Spillway is running and try again." : error.message);
     } finally {
@@ -146,6 +152,7 @@ function Dashboard() {
     activeRequest.current = null;
     setKey("");
     setConnected(false);
+    setGateway(null);
     setBusy(false);
     setHistoryAvailable(null);
     setDashboardData(null);
@@ -229,7 +236,7 @@ function Dashboard() {
         </a>
         <span class="connection" role="status" aria-live="polite">
           <span class={`connection-dot${connected ? " online" : ""}`} aria-hidden="true" />
-          {connected ? "Connected" : "Not connected"}
+          {connected ? gateway?.version ? `Connected to Spillway ${gateway.version}` : "Connected" : "Not connected"}
         </span>
       </header>
 
@@ -269,14 +276,7 @@ function Dashboard() {
             </section>
 
             <section class="next-grid" aria-label="Next steps">
-              <article class="card next-card">
-                <p class="step-label">NEXT · TRY A REQUEST</p>
-                <h2>Use Spillway from your app</h2>
-                <p>Point an OpenAI-compatible client at <code>http://127.0.0.1:8080/v1</code>. Requests go to the configured provider and may incur cost.</p>
-                <pre><code>curl http://127.0.0.1:8080/v1/models \
-  -H 'Authorization: Bearer YOUR_LOCAL_KEY'</code></pre>
-                <p class="helper">Replace the placeholder in your terminal. Never paste a real key into a shared document.</p>
-              </article>
+              <ClientExamples />
 
               <article class="card next-card" aria-labelledby="history-title">
                 <p class="step-label">OPTIONAL · USAGE HISTORY</p>
@@ -348,10 +348,77 @@ async function readCompletionStream(response, append) {
   }
 }
 
+function clientExamples(origin) {
+  const endpoint = `${origin}/v1`;
+  return [
+    { name: "curl (POSIX)", code: `curl ${endpoint}/chat/completions \\\n  -H 'Authorization: Bearer <LOCAL_APP_KEY>' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'` },
+    { name: "curl (PowerShell)", code: `curl.exe ${endpoint}/chat/completions \`\n  -H 'Authorization: Bearer <LOCAL_APP_KEY>' \`\n  -H 'Content-Type: application/json' \`\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'` },
+    { name: "Python", code: `from openai import OpenAI\n\nclient = OpenAI(base_url="${endpoint}", api_key="<LOCAL_APP_KEY>")\nresponse = client.chat.completions.create(\n    model="auto",\n    messages=[{"role": "user", "content": "Hello from Spillway"}],\n)\nprint(response.choices[0].message.content)` },
+    { name: "Node.js", code: `import OpenAI from "openai";\n\nconst client = new OpenAI({ baseURL: "${endpoint}", apiKey: "<LOCAL_APP_KEY>" });\nconst response = await client.chat.completions.create({\n  model: "auto",\n  messages: [{ role: "user", content: "Hello from Spillway" }],\n});\nconsole.log(response.choices[0].message.content);` },
+    { name: "Environment", code: `# Client requests use model auto.\nOPENAI_BASE_URL=${endpoint}\nOPENAI_API_KEY=<LOCAL_APP_KEY>` },
+  ];
+}
+
+function ClientExamples() {
+  const examples = clientExamples(window.location.origin);
+  const [selected, setSelected] = useState(0);
+  const [copyMessage, setCopyMessage] = useState("");
+  const current = examples[selected];
+
+  async function copyExample() {
+    try {
+      await navigator.clipboard.writeText(current.code);
+      setCopyMessage(`Copied ${current.name} example.`);
+    } catch {
+      setCopyMessage("Could not copy the example. Select and copy the text instead.");
+    }
+  }
+
+  function handleTabKey(event) {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const next = (selected + (event.key === "ArrowRight" ? 1 : examples.length - 1)) % examples.length;
+    setSelected(next);
+    event.currentTarget.parentElement.children[next].focus();
+  }
+
+  return (
+    <section class="card next-card client-examples" aria-labelledby="client-examples-title">
+      <h2 id="client-examples-title">Connect a client app</h2>
+      <p>Point an OpenAI-compatible client at this local endpoint with the <code>default</code> key from your config, not the dashboard key. Replace the placeholder when you run the example; requests to configured providers may incur cost.</p>
+      <div class="client-tabs" role="tablist" aria-label="Client examples">
+        {examples.map((example, index) => (
+          <button id={`client-tab-${index}`} class="client-tab" type="button" role="tab" aria-selected={selected === index} aria-controls="client-example-panel" tabIndex={selected === index ? 0 : -1} onClick={() => { setSelected(index); setCopyMessage(""); }} onKeyDown={handleTabKey} key={example.name}>{example.name}</button>
+        ))}
+      </div>
+      <div id="client-example-panel" role="tabpanel" aria-labelledby={`client-tab-${selected}`}>
+        <pre tabIndex="0"><code>{current.code}</code></pre>
+        <button class="secondary" type="button" onClick={copyExample}>Copy example</button>
+      </div>
+      <p class="copy-status" role="status" aria-live="polite">{copyMessage}</p>
+    </section>
+  );
+}
+
 function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt, maxTokens, setMaxTokens, streaming, setStreaming, response, route, message, busy, onSubmit, onCancel, error }) {
+  const [copyMessage, setCopyMessage] = useState("");
   const price = prices[model];
   const estimatedTokens = Math.ceil(Array.from(prompt).length / 4);
   const estimateUSD = price ? (estimatedTokens * price.input_micro_usd_per_million + Number(maxTokens) * price.output_micro_usd_per_million) / 1_000_000_000_000 : null;
+  const failures = error ? exhaustionCandidates(message) : [];
+  async function copyCurl() {
+    const body = JSON.stringify({ model, messages: [{ role: "user", content: prompt }], stream: streaming, max_tokens: Number(maxTokens) });
+    const windows = /Win/i.test(navigator.userAgentData?.platform || navigator.platform);
+    const quote = windows ? (value) => `'${value.replaceAll("'", "''")}'` : (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    const curl = windows ? "curl.exe" : "curl";
+    const command = `${curl} -sS ${quote(`${window.location.origin}/v1/chat/completions`)} -H ${quote("Authorization: Bearer <LOCAL_APP_KEY>")} -H ${quote("Content-Type: application/json")} --data ${quote(body)}`;
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopyMessage(windows ? "Copied PowerShell curl command." : "Copied curl command.");
+    } catch {
+      setCopyMessage("Could not copy the curl command. Check clipboard permissions and try again.");
+    }
+  }
   return (
     <section class="request-playground" aria-labelledby="playground-heading">
       <div class="history-title"><div><p class="step-label">EXPLICIT PROVIDER REQUEST</p><h2 id="playground-heading">Request playground</h2></div></div>
@@ -361,6 +428,7 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         <select id="playground-model" value={model} onChange={(event) => setModel(event.currentTarget.value)} required disabled={busy || models.length === 0}>
           {models.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
         </select>
+        <p class="helper">Direct model references skip spillover. Choose auto or spillway/&lt;tier&gt; to let Spillway try eligible candidates in order.</p>
         <label for="playground-prompt">Prompt</label>
         <textarea id="playground-prompt" value={prompt} onInput={(event) => setPrompt(event.currentTarget.value)} rows="5" required disabled={busy} />
         <div class="playground-options">
@@ -371,11 +439,14 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         {estimateUSD !== null && <p class="estimate-note" aria-live="polite">Estimated cost: about ${estimateUSD.toFixed(6)}. Based on a rough prompt token estimate and the selected output limit; actual cost may differ.</p>}
         <div class="playground-actions">
           <button type="submit" disabled={busy || !models.length || !prompt.trim()}>{busy ? "Requesting…" : "Send request"}</button>
+          <button class="secondary" type="button" onClick={copyCurl} disabled={!model}>Copy as curl</button>
           {busy && <button class="secondary" type="button" onClick={onCancel}>Cancel request</button>}
         </div>
+        <p class="copy-status" role="status" aria-live="polite">{copyMessage}</p>
       </form>
       {!models.length && <p class="empty">No configured models are available.</p>}
       {message && <p class="playground-message" role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>{message}</p>}
+      {failures.length > 0 && <ul aria-label="Exhausted candidates">{failures.map((failure) => <li key={failure.model}><strong>{failure.model}</strong>: {failure.reason}</li>)}</ul>}
       {route && <div class="playground-route" aria-label="Routing explanation">
         <h3>Routing explanation</h3>
         <p><strong>Provider and model</strong><span>{[route.provider, route.model].filter(Boolean).join("/") || "Not reported"}</span></p>
@@ -383,17 +454,37 @@ function RequestPlayground({ models, prices, model, setModel, prompt, setPrompt,
         <p><strong>What happened</strong><span>{explainRoute(route.route, route.cache, route.status)}</span></p>
         <p><strong>Cache</strong><span>{route.cache || "Not reported"}</span></p>
         <p><strong>HTTP status</strong><span>{route.status}</span></p>
+        <p class="route-terms">Definitions: <a href="#cooldown-definition">Cooldown</a> · <a href="#circuit-breaker-definition">Circuit breaker</a> · <a href="#exhaustion-definition">Exhaustion</a></p>
       </div>}
+      <details class="route-glossary"><summary>Routing term definitions</summary><dl>
+        <dt id="cooldown-definition">Cooldown</dt><dd>A period during which a candidate is skipped after a rate limit or another temporary failure.</dd>
+        <dt id="circuit-breaker-definition">Circuit breaker</dt><dd>A temporary stop on a candidate after repeated upstream failures.</dd>
+        <dt id="exhaustion-definition">Exhaustion</dt><dd>The state where every candidate in a tier is unavailable or failed for a request.</dd>
+      </dl></details>
       <div class="response-panel" aria-labelledby="response-heading"><h3 id="response-heading">Response</h3><pre aria-label="Assistant response" aria-live="polite">{response || "The response will appear here."}</pre></div>
     </section>
   );
 }
 
+function exhaustionCandidates(message) {
+  const marker = " can serve this request: ";
+  const start = message.indexOf(marker);
+  if (!message.startsWith("No candidate in tier ") || start === -1) return [];
+  return message.slice(start + marker.length).split("; ").flatMap((entry) => {
+    const separator = entry.indexOf(" ");
+    return separator > 0 ? [{ model: entry.slice(0, separator), reason: entry.slice(separator + 1) }] : [];
+  });
+}
+
 function ProviderStatus({ providers }) {
+  const [refreshedAt, setRefreshedAt] = useState(new Date());
+  useEffect(() => setRefreshedAt(new Date()), [providers]);
   return (
     <section class="provider-status" aria-labelledby="provider-status-heading">
       <div class="history-title"><div><p class="step-label">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
-      <p class="helper">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+      <p class="helper"><strong>Configured:</strong> provider and credential state from local config.</p>
+      <p class="helper"><strong>Observed since this server started:</strong> request signals; these do not indicate current reachability. Spillway does not probe providers.</p>
+      <p class="provider-refresh">Last refreshed: {refreshedAt.toLocaleTimeString()}</p>
       {providers.length ? (
         <div class="provider-status-grid">{providers.map((provider) => (
           <article class="card provider-status-card" key={provider.name}>
@@ -403,9 +494,9 @@ function ProviderStatus({ providers }) {
               <ul class="provider-signals">{provider.signals.map((signal) => {
                 const failures = Number(signal.upstream_failures || 0);
                 const count = failures ? `${failures === 7 ? "At least " : ""}${failures} upstream failure${failures === 1 ? "" : "s"} observed. ` : "";
-                const reason = signal.reason ? `Observed ${signal.reason}` : "No active cooldown";
-                const breaker = signal.breaker_state === "open" ? "; circuit open" : "";
-                const until = signal.cooldown_until ? ` until ${new Date(signal.cooldown_until).toLocaleTimeString()}` : "";
+                const reason = signal.reason ? statusReason(signal.reason) : "No active cooldown";
+                const breaker = signal.breaker_state === "open" ? " · Circuit breaker open" : "";
+                const until = signal.cooldown_until ? ` · ${cooldownTime(signal.cooldown_until)}` : "";
                 return <li key={signal.model}><strong>{signal.model}</strong><span>{count}{reason}{breaker}{until}</span></li>;
               })}</ul>
             ) : <p class="empty">No active cooldown or failure signal observed.</p>}
@@ -483,8 +574,12 @@ function explainRoute(route, cache, status) {
   const tier = parts.find((part) => part.startsWith("tier "))?.slice(5);
   const selection = candidateMatch
     ? Number(candidateMatch[1]) > 1
-      ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
-      : `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
+      ? status < 400
+        ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered. Earlier candidates were skipped or failed.`
+        : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
+      : status < 400
+        ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered.`
+        : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
     : "";
   if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";
   if (parts.some((part) => part.startsWith("exhausted ("))) return "Spillway had no eligible candidate that could serve this request.";
@@ -503,6 +598,20 @@ function explainRoute(route, cache, status) {
   if (parts[0].startsWith("tier ")) return `Spillway used the requested ${parts[0].slice(5)} tier.${selection ? ` ${selection}` : ""}`;
   if (parts[0] === "auto") return `Spillway selected a candidate from the configured auto route${tier ? ` in the ${tier} tier` : ""}.${selection ? ` ${selection}` : ""}`;
   return "Spillway used the configured route shown above.";
+}
+
+function statusReason(reason) {
+  return ({ rate_limit: "Rate limit", "rate limited": "Rate limit", unavailable: "Unavailable", "upstream error": "Upstream error" })[reason] || reason;
+}
+
+function cooldownTime(value) {
+  const date = new Date(value);
+  const seconds = Math.ceil((date.getTime() - Date.now()) / 1000);
+  const minutes = seconds > 0 ? Math.ceil(seconds / 60) : Math.floor(-seconds / 60);
+  const relative = seconds > 0
+    ? seconds < 60 ? `in ${seconds} seconds` : `in ${minutes} minute${minutes === 1 ? "" : "s"}`
+    : seconds > -60 ? "ended less than a minute ago" : `ended ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  return `Until ${date.toLocaleTimeString()} (${relative})`;
 }
 
 function Metric({ label, value, detail }) {

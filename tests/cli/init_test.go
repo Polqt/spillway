@@ -160,8 +160,8 @@ func TestRun_InitNeverOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path) {
-		t.Errorf("init = %d, stderr %q, contents %q; want exit 1, path in error, unchanged bytes", code, stderr.String(), after)
+	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path+" already exists") || !strings.Contains(stderr.String(), "init never overwrites a config") || !strings.Contains(stderr.String(), "spillway check -config "+path) || !strings.Contains(stderr.String(), "new-path") {
+		t.Errorf("init = %d, stderr %q, contents %q; want exit 1, recovery guidance, unchanged bytes", code, stderr.String(), after)
 	}
 }
 
@@ -229,14 +229,18 @@ func TestRun_InitReportsVariableStatusWithoutValues(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "groq", "-config", path}, strings.NewReader(""), &stdout, &stderr, lookup)
-	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: set") || strings.Contains(stdout.String()+stderr.String(), secret) {
+	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: set") || !strings.Contains(stdout.String(), "1. Provider environment variables") || !strings.Contains(stdout.String(), "2. Client apps") || !strings.Contains(stdout.String(), "key entry `default`") || !strings.Contains(stdout.String(), "model `auto`") || !strings.Contains(stdout.String(), "docs/clients.md") || strings.Contains(stdout.String()+stderr.String(), secret) {
 		t.Errorf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
 	}
 	path = filepath.Join(t.TempDir(), "unset.yaml")
 	stdout.Reset()
 	stderr.Reset()
 	code = cli.Run(t.Context(), []string{"init", "-yes", "-providers", "groq", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
-	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: not set") {
+	recoveryCommand := "read -rs GROQ_API_KEY && export GROQ_API_KEY"
+	if runtime.GOOS == "windows" {
+		recoveryCommand = "$env:GROQ_API_KEY = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password"
+	}
+	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: not set") || !strings.Contains(stdout.String(), recoveryCommand) {
 		t.Errorf("unset variable output: init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
 	}
 }

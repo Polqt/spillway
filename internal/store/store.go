@@ -22,6 +22,17 @@ import (
 // SchemaVersion is the newest schema this binary can open.
 const SchemaVersion = 3
 
+// NewerSchemaError reports a database schema this binary cannot open.
+type NewerSchemaError struct {
+	Found     int // Found is the schema version stored in the database.
+	Supported int // Supported is the newest schema version this binary can open.
+}
+
+// Error describes the schema compatibility failure.
+func (e *NewerSchemaError) Error() string {
+	return fmt.Sprintf("store schema version %d is newer than supported version %d", e.Found, e.Supported)
+}
+
 const pruneInterval = time.Hour
 
 //go:embed migrations/*.sql
@@ -167,7 +178,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("read store schema version: %w", err)
 	}
 	if version > SchemaVersion {
-		return fmt.Errorf("store schema version %d is newer than supported version %d", version, SchemaVersion)
+		return &NewerSchemaError{Found: version, Supported: SchemaVersion}
 	}
 	for next := version + 1; next <= SchemaVersion; next++ {
 		name := fmt.Sprintf("migrations/%04d.sql", next)

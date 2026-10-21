@@ -76,6 +76,14 @@ textarea { resize: vertical; }
 .next-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
 .next-card { padding: 24px; }
 .next-card p { margin-bottom: 12px; }
+.client-examples { min-width: 0; }
+.client-tabs { display: flex; flex-wrap: wrap; gap: 3px; margin: 16px 0 0; border-bottom: 1px solid var(--line); }
+.client-tab { min-height: 40px; padding: 0 10px; border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font-size: 13px; }
+.client-tab[aria-selected="true"] { background: var(--green-soft); color: var(--green); }
+.client-tab:focus-visible { position: relative; z-index: 1; }
+.client-examples pre { min-height: 140px; max-height: 260px; overflow: auto; }
+.client-examples #client-example-panel button { min-height: 40px; }
+.copy-status { min-height: 1.5em; margin: 8px 0 0 !important; color: var(--muted); font-size: 13px; }
 pre { overflow-wrap: anywhere; white-space: pre-wrap; margin: 18px 0 10px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-muted); color: var(--text); font-size: 13px; }
 .helper { font-size: 13px; }
 .history { display: grid; gap: 14px; margin: 30px 0; }
@@ -102,6 +110,13 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; margin: 18px 0 10px; paddi
 .provider-signals li { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
 .provider-signals li strong { overflow-wrap: anywhere; }
 .provider-signals li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.provider-refresh { margin: -8px 0 14px; color: var(--muted); font-size: 12px; }
+.route-terms { display: flex; flex-wrap: wrap; gap: 6px; }
+.route-glossary { margin: 12px 0; color: var(--muted); font-size: 13px; }
+.route-glossary summary { cursor: pointer; font-weight: 700; }
+.route-glossary dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 12px 0; }
+.route-glossary dt { color: var(--text); font-weight: 700; }
+.route-glossary dd { margin: 0; }
 .history-title { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
 .history-title h2 { margin: 0; }
 .estimate-label { padding: 4px 9px; border-radius: 99px; background: var(--green-soft); color: var(--green); font-size: 12px; font-weight: 700; }

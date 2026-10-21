@@ -34,9 +34,42 @@
     </section>
 
     <div id="dashboard-content" hidden="hidden">
+      <section class="section-block client-examples" aria-labelledby="client-examples-heading">
+        <div class="section-title"><div><h2 id="client-examples-heading">Connect a client app</h2></div></div>
+        <p class="provider-status-note">Point an OpenAI-compatible client at this local endpoint with the <code>default</code> key from your config, not the dashboard key. Replace the placeholder locally; requests to configured providers may incur cost.</p>
+        <details><summary>curl (POSIX)</summary><pre tabindex="0"><code>curl {{ORIGIN}}/v1/chat/completions \
+  -H 'Authorization: Bearer &lt;LOCAL_APP_KEY&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'</code></pre></details>
+        <details><summary>curl (PowerShell)</summary><pre tabindex="0"><code>curl.exe {{ORIGIN}}/v1/chat/completions `
+  -H 'Authorization: Bearer &lt;LOCAL_APP_KEY&gt;' `
+  -H 'Content-Type: application/json' `
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'</code></pre></details>
+        <details><summary>Python</summary><pre tabindex="0"><code>from openai import OpenAI
+
+client = OpenAI(base_url="{{ORIGIN}}/v1", api_key="&lt;LOCAL_APP_KEY&gt;")
+response = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "Hello from Spillway"}],
+)
+print(response.choices[0].message.content)</code></pre></details>
+        <details><summary>Node.js</summary><pre tabindex="0"><code>import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "{{ORIGIN}}/v1", apiKey: "&lt;LOCAL_APP_KEY&gt;" });
+const response = await client.chat.completions.create({
+  model: "auto",
+  messages: [{ role: "user", content: "Hello from Spillway" }],
+});
+console.log(response.choices[0].message.content);</code></pre></details>
+        <details><summary>SDK environment variables</summary><pre tabindex="0"><code># Client requests use model auto.
+OPENAI_BASE_URL={{ORIGIN}}/v1
+OPENAI_API_KEY=&lt;LOCAL_APP_KEY&gt;</code></pre></details>
+      </section>
       <section class="section-block" aria-labelledby="provider-status-heading">
         <div class="section-title"><div><p class="eyebrow">LOCAL CONFIGURATION</p><h2 id="provider-status-heading">Provider status</h2></div></div>
-        <p class="provider-status-note">Configuration and observed signals only. Spillway does not probe providers; this does not indicate current reachability.</p>
+        <p class="provider-status-note"><strong>Configured:</strong> provider and credential state from local config.</p>
+        <p class="provider-status-note"><strong>Observed since this server started:</strong> request signals; these do not indicate current reachability. Spillway does not probe providers.</p>
+        <p id="provider-status-refreshed" class="provider-status-note">Last refreshed: Waiting</p>
         <div id="provider-status" class="provider-status-grid"><p class="empty">Loading configured providers…</p></div>
       </section>
 
@@ -46,6 +79,7 @@
         <form id="playground-form" class="playground-form">
           <label for="playground-model">Model</label>
           <select id="playground-model" required="required"></select>
+          <p class="provider-status-note">Direct model references skip spillover. Choose auto or spillway/&lt;tier&gt; to let Spillway try eligible candidates in order.</p>
           <label for="playground-prompt">Prompt</label>
           <textarea id="playground-prompt" rows="5" required="required"></textarea>
           <div class="playground-options">
@@ -54,10 +88,17 @@
             <input id="playground-max-tokens" type="number" min="1" max="32768" value="512" />
           </div>
           <p id="playground-estimate" class="provider-status-note" aria-live="polite" hidden="hidden"></p>
-          <div class="playground-actions"><button id="playground-submit" type="submit">Send request</button><button id="playground-cancel" class="secondary" type="button" hidden="hidden">Cancel request</button></div>
+          <div class="playground-actions"><button id="playground-submit" type="submit">Send request</button><button id="playground-copy-curl" class="secondary" type="button" disabled="disabled">Copy as curl</button><button id="playground-cancel" class="secondary" type="button" hidden="hidden">Cancel request</button></div>
+          <p id="playground-copy-status" class="copy-status" role="status" aria-live="polite"></p>
         </form>
         <p id="playground-message" class="provider-status-note" role="status" aria-live="polite"></p>
+        <ul id="playground-failures" aria-label="Exhausted candidates" hidden="hidden"></ul>
         <div id="playground-route" class="playground-route" aria-label="Routing explanation" hidden="hidden"></div>
+      <details class="route-glossary"><summary>Routing term definitions</summary><dl>
+        <dt id="cooldown-definition">Cooldown</dt><dd>A period during which a candidate is skipped after a rate limit or another temporary failure.</dd>
+        <dt id="circuit-breaker-definition">Circuit breaker</dt><dd>A temporary stop on a candidate after repeated upstream failures.</dd>
+        <dt id="exhaustion-definition">Exhaustion</dt><dd>The state where every candidate in a tier is unavailable or failed for a request.</dd>
+      </dl></details>
         <div class="playground-response" aria-labelledby="playground-response-heading"><h3 id="playground-response-heading">Response</h3><pre id="playground-response" aria-label="Assistant response" aria-live="polite">The response will appear here.</pre></div>
       </section>
 

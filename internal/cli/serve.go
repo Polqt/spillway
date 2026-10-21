@@ -9,9 +9,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Polqt/spillway/apps/spillway/web"
@@ -30,6 +34,7 @@ import (
 )
 
 const shutdownWait = 5 * time.Second
+const windowsWSAEADDRINUSE syscall.Errno = 10048
 
 // serve runs the API until ctx is cancelled. It refuses to listen when the
 // config is invalid, including when it has no local key (ADR 0003).
@@ -63,11 +68,26 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		return 1
 	}
 	logger := slog.New(redact.NewHandler(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel}), scrubber))
+	// Names the running copy and config so an older server or a different config is visible.
+	executable, err := os.Executable()
+	if err != nil {
+		executable = "unknown"
+	}
+	absoluteConfig, err := filepath.Abs(*configPath)
+	if err != nil {
+		absoluteConfig = *configPath
+	}
+	logger.InfoContext(ctx, "spillway starting", "version", currentVersion(), "executable", executable, "config", absoluteConfig)
 	var usageStore *store.Store
 	if cfg.Store != nil {
 		usageStore, err = store.Open(ctx, store.Options{Path: cfg.Store.Path, Retention: cfg.Store.Retention})
 		if err != nil {
-			report(stderr, "spillway: %v\n", err)
+			var newerSchema *store.NewerSchemaError
+			if errors.As(err, &newerSchema) {
+				report(stderr, "spillway: %v (binary %s)\nRun the newer Spillway binary that wrote this database, or point store.path at a new file. Do not delete the existing database.\n", err, currentVersion())
+			} else {
+				report(stderr, "spillway: %v\n", err)
+			}
 			return 1
 		}
 		defer func() {
@@ -97,16 +117,45 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Server.Listen)
 	if err != nil {
-		report(stderr, "spillway: listen on %s: %v\nChoose an available address in server.listen, then rerun `spillway serve`.\n", cfg.Server.Listen, err)
+		if addressInUse(err) {
+			report(stderr, "spillway: listen on %s: %v\nAnother process (possibly an older Spillway) is using this address. Choose an available loopback address, for example `server.listen: \"127.0.0.1:8787\"`, then update client apps to use the same port and rerun `spillway serve`.\n", cfg.Server.Listen, err)
+		} else {
+			report(stderr, "spillway: listen on %s: %v\nCheck that server.listen is a valid address available on this machine, then rerun `spillway serve`.\n", cfg.Server.Listen, err)
+		}
 		return 1
 	}
 	baseURL := "http:" + "/" + "/" + ln.Addr().String()
-	logger.InfoContext(ctx, "next steps", "api", baseURL+"/v1", "models", baseURL+"/v1/models", "dashboard", baseURL+"/dashboard")
+	dashboardKeyConfigured := false
+	for _, key := range cfg.Server.APIKeys {
+		if key.Dashboard {
+			dashboardKeyConfigured = true
+			break
+		}
+	}
+	logger.InfoContext(ctx, "next steps",
+		"dashboard_key_configured", dashboardKeyConfigured,
+		"store_enabled", cfg.Store != nil,
+		"providers", sortedProviderNames(cfg.Providers),
+		"api", baseURL+"/v1",
+		"models", baseURL+"/v1/models",
+		"dashboard", baseURL+"/dashboard",
+	)
 	if err := serveUntilDone(ctx, ln, handler, logger, cfg.Server.ShutdownTimeout); err != nil {
 		report(stderr, "spillway: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func addressInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var code syscall.Errno
+	return errors.As(err, &code) && code == windowsWSAEADDRINUSE
 }
 
 // newHandler wires the configured providers and local keys into the API.
@@ -271,6 +320,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		BudgetGate:       budgetGate,
 		ExactCache:       exactCache,
 		Now:              now,
+		Gateway:          api.Gateway{Version: currentVersion(), DashboardAssets: web.Assets()},
 	}
 	for name, provider := range cfg.Providers {
 		preset, _ := providers.LookupPreset(name)

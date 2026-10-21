@@ -1,0 +1,17 @@
+server:
+  listen: 127.0.0.1:8080
+  api_keys:
+    - name: default
+      key: "sk-test-local-default-edit"
+providers:
+  groq:
+    api_key: "${GROQ_API_KEY}"
+    free_tier: true
+# Suggested model IDs may be outdated; check current provider documentation.
+tiers:
+  free:
+    models:
+      - groq/llama-3.3-70b-versatile
+router:
+  auto:
+    - free

@@ -81,6 +81,11 @@ _Avoid_: Spillway key, server key, API key
 A program that sends requests to Spillway, identified by the name of the local key it uses.
 _Avoid_: project, consumer, caller
 
+**Client example**:
+A copyable snippet that configures a client app with the local endpoint and a local key placeholder.
+It never contains a real key.
+_Avoid_: SDK sample, integration
+
 ### Delivery
 
 **Spillover**:
@@ -150,6 +155,11 @@ A dashboard interface where a user explicitly submits a chat request through Spi
 It does not retain prompt or response text.
 _Avoid_: test chat, provider console
 
+**Fallback dashboard**:
+The checked-in dashboard served by a binary built without the embedded Preact assets, such as one from `go install`.
+It is a supported channel with the same content and security rules as the embedded dashboard (ADR 0021).
+_Avoid_: legacy dashboard
+
 **Catalog**:
 Provider-published model metadata printed by the explicit `spillway catalog` command as a suggestion for the user's config.
 It is advisory and never changes runtime routing or pricing by itself (ADR 0013).
@@ -176,3 +186,18 @@ _Avoid_: provider template
 **Known limitation**:
 A documented behavior or unsupported capability of the current release that users should account for, such as the absence of an embeddings endpoint or the lack of Windows/arm64 run testing.
 _Avoid_: bug (unless behavior is unintended)
+
+### v1.1 CLI management
+
+**Provider inspection**:
+The `spillway provider list` and `spillway provider show` views of configured presets and credential-variable presence; they do not reveal key values or contact providers.
+_Avoid_: provider test
+
+**Experimental provider add**:
+The v1.1.x `spillway provider add` command that previews, backs up and atomically adds a provider preset to an existing valid config.
+It accepts an environment-variable name, never a provider key value, and rejects duplicate provider instances.
+_Avoid_: provider setup wizard
+
+**Doctor probe**:
+The optional-by-flag, unauthenticated local HTTP and bind checks `spillway doctor` makes against the configured listen address; it never contacts configured providers or sends a key.
+_Avoid_: health check (too broad)

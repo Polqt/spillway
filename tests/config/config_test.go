@@ -1034,6 +1034,58 @@ func TestParse_HistoricalExampleConfigsStillLoad(t *testing.T) {
 	}
 }
 
+func TestParse_HistoricalConfigsWithEnvironmentStoreStillLoad(t *testing.T) {
+	t.Parallel()
+	paths, err := filepath.Glob(filepath.Join("testdata", "compat-store", "*", "*.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no compat-store fixtures found")
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path) // #nosec G304 -- fixtures are repository-owned testdata.
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Their store directory exists only where they run (the image, an evaluation run), so only store.path moves.
+		data = withStorePath(t, path, data, filepath.ToSlash(filepath.Join(t.TempDir(), "spillway.db")))
+		_, err = config.ParseWithEnv(data, func(name string) (string, bool) {
+			return "sk-test-" + strings.ToLower(name), true
+		})
+		if err != nil {
+			t.Errorf("parse %s: %v", path, err)
+		}
+	}
+}
+
+func withStorePath(t *testing.T, name string, data []byte, storePath string) []byte {
+	t.Helper()
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("decode %s: %v", name, err)
+	}
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "store" {
+			continue
+		}
+		store := root.Content[i+1]
+		for j := 0; j+1 < len(store.Content); j += 2 {
+			if store.Content[j].Value == "path" {
+				store.Content[j+1].Value = storePath
+				out, err := yaml.Marshal(&doc)
+				if err != nil {
+					t.Fatalf("encode %s: %v", name, err)
+				}
+				return out
+			}
+		}
+	}
+	t.Fatalf("%s has no store.path", name)
+	return nil
+}
+
 func TestParse_EnvironmentExpansionIsScalar(t *testing.T) {
 	t.Parallel()
 	input := []byte("server:\n  api_keys: [\"${KEY}\"]\nproviders:\n  mock: {}\n")

@@ -6,21 +6,24 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 ## Install
 
-The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
+The current stable release is `v1.1.0`. Download the archive for Linux, macOS or Windows from the [v1.1.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.1.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
-Install the current release with Go:
+Install the current release from its source tag with Go:
 
 ```sh
-go install github.com/Polqt/spillway/apps/spillway@v1.0.0
+git clone --branch v1.1.0 --depth 1 https://github.com/Polqt/spillway.git
+cd spillway
+go install ./apps/spillway
 ```
 
 Or pull the current Docker image:
 
 ```sh
-docker pull ghcr.io/polqt/spillway:1.0.0
+docker pull ghcr.io/polqt/spillway:1.1.0
 ```
 
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
+For config fields and validation, see the [configuration reference](docs/configuration.md).
 
 ## Five-minute offline quickstart
 
@@ -38,10 +41,29 @@ The generated config contains a local app key and, because `-store` was selected
 curl.exe http://127.0.0.1:8080/v1/chat/completions `
   -H 'Authorization: Bearer <LOCAL_APP_KEY>' `
   -H 'Content-Type: application/json' `
-  -d '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}'
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
 ```
 
 Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. The response contains `Hello from Spillway`.
+
+### See spillover offline
+
+The shipped mock config demonstrates spillover across three mock candidates without provider credentials. Start it in place of the generated config:
+
+```sh
+spillway serve -config examples/config.mock.yaml
+```
+
+In another terminal, send the same `auto` request using the mock config's fake `demo` local key, `sk-test-spillway-mock`:
+
+```sh
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Authorization: Bearer sk-test-spillway-mock' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
+```
+
+The first two candidates simulate rate limiting and unavailability; the third responds. Check the response header `x-spillway-route: auto; tier demo; candidate 3/3`. This fake key works only with the shipped mock config on loopback; never use it with another config or expose it on a network. For copyable client examples, see [Connect a client app](docs/clients.md).
 
 ### Set up the dashboard
 
@@ -88,6 +110,10 @@ See [configuration](docs/configuration.md) before enabling paid models, budgets 
 ## Operations and limitations
 
 Read [operations](docs/operations.md) for shutdown, store backup, retention and upgrade guidance. Known limits are listed in [limitations](docs/limitations.md); common failures are covered in [troubleshooting](docs/troubleshooting.md).
+
+For setup recovery, run `spillway doctor` to inspect the selected config, environment, local keys, store and listen address without contacting providers.
+Use `spillway provider list` or `spillway provider show <name>` to inspect configured presets.
+`spillway provider add <name>` is experimental in v1.1.x; see the [configuration guide](docs/configuration.md) before changing an existing config.
 
 ## License
 

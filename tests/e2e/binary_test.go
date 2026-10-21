@@ -13,11 +13,15 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 var spillwayBinary string
+
+// binaryVersion is stamped the way release builds stamp it, through -X.
+const binaryVersion = "v9.9.9"
 
 func TestMain(m *testing.M) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -35,7 +39,7 @@ func TestMain(m *testing.M) {
 		spillwayBinary += ".exe"
 	}
 	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 2*time.Minute)
-	build := exec.CommandContext(buildCtx, "go", "build", "-trimpath", "-o", spillwayBinary, "./apps/spillway") //nolint:gosec // The test invokes the Go tool with fixed build arguments.
+	build := exec.CommandContext(buildCtx, "go", "build", "-trimpath", "-ldflags", "-X github.com/Polqt/spillway/internal/cli.version="+binaryVersion, "-o", spillwayBinary, "./apps/spillway") //nolint:gosec // The test invokes the Go tool with fixed build arguments.
 	build.Dir = root
 	build.Env = setEnv(os.Environ(), "CGO_ENABLED", "0")
 	output, buildErr := build.CombinedOutput()
@@ -53,6 +57,65 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+func TestBinary_MockSpilloverMatchesDocs(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(root, "examples", "config.mock.yaml")) // #nosec G304 -- root is the repository root found from this test's source directory.
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	addr := freeLoopbackAddr(t)
+	config = bytes.Replace(config, []byte("127.0.0.1:8080"), []byte(addr), 1)
+	configPath := filepath.Join(workDir, "config.yaml")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
+	command.Dir = workDir
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal("start spillway serve:", err)
+	}
+	wait := make(chan error, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		<-waitDone
+	})
+	baseURL := "http://" + addr
+	waitForBinaryServer(t, baseURL, wait)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"spillover demo"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer sk-test-spillway-mock")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close mock response: %v", err)
+		}
+	}()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("x-spillway-route") != "auto; tier demo; candidate 3/3" || !bytes.Contains(body, []byte("spillover demo")) {
+		t.Fatalf("mock response = %d route %q body %s", response.StatusCode, response.Header.Get("x-spillway-route"), body)
+	}
 }
 
 func TestBinary_VersionShowsCommit(t *testing.T) {
@@ -85,12 +148,27 @@ func TestBinary_VersionShowsCommit(t *testing.T) {
 	}
 }
 
+func TestBinary_LdflagsVersionIsPrinted(t *testing.T) {
+	output, err := exec.CommandContext(t.Context(), spillwayBinary, "version").CombinedOutput() //nolint:gosec // TestMain built this executable from the current source tree.
+	if err != nil {
+		t.Fatalf("spillway version: %v\n%s", err, output)
+	}
+	if !strings.HasPrefix(string(output), "spillway "+binaryVersion+" ") {
+		t.Errorf("version output = %q, want prefix %q", output, "spillway "+binaryVersion+" ")
+	}
+}
+
 func TestBinary_InitServeQuickstart(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := filepath.Join(workDir, "config.yaml")
 	initOutput, initErr := runBinary(t, workDir, "init", "-yes", "-providers", "mock", "-store", "-config", configPath)
 	if initErr != nil {
 		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
+	}
+	for _, want := range []string{"1. Provider environment variables", "2. Client apps", "key entry `default`", "model `auto`", "docs/clients.md", "3. Dashboard", "key entry `dashboard`", "http://127.0.0.1:8080/dashboard"} {
+		if !strings.Contains(initOutput, want) {
+			t.Errorf("spillway init output = %q, want %q", initOutput, want)
+		}
 	}
 
 	config, err := os.ReadFile(configPath) //nolint:gosec // configPath is inside t.TempDir.
@@ -115,26 +193,33 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 
 	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
 	command.Dir = workDir
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr synchronizedBuffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
 		t.Fatal("start spillway serve:", err)
 	}
 	wait := make(chan error, 1)
-	go func() { wait <- command.Wait() }()
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
 	t.Cleanup(func() {
-		if command.ProcessState == nil {
-			_ = command.Process.Kill()
-			<-wait
-		}
+		_ = command.Process.Kill()
+		<-waitDone
 	})
 	baseURL := "http://" + addr
 	waitForBinaryServer(t, baseURL, wait)
+	for _, want := range []string{"msg=\"next steps\"", "dashboard_key_configured=true", "store_enabled=true", "api=" + baseURL + "/v1", "models=" + baseURL + "/v1/models", "dashboard=" + baseURL + "/dashboard"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("serve startup output = %q, want %q", stderr.String(), want)
+		}
+	}
 
 	requestBinaryAPI(t, baseURL, http.MethodGet, "/v1/models", "", appKey, http.StatusOK, "")
-	requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"mock/echo","messages":[{"role":"user","content":"binary quickstart"}]}`, appKey, http.StatusOK, "binary quickstart")
-	stream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"mock/echo","stream":true,"messages":[{"role":"user","content":"binary stream"}]}`, appKey, http.StatusOK, "[DONE]")
+	requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","messages":[{"role":"user","content":"binary quickstart"}]}`, appKey, http.StatusOK, "binary quickstart")
+	stream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","stream":true,"messages":[{"role":"user","content":"binary stream"}]}`, appKey, http.StatusOK, "[DONE]")
 	if !strings.HasSuffix(strings.TrimSpace(stream), "data: [DONE]") {
 		t.Errorf("stream response ends with %q, want data: [DONE]", stream)
 	}
@@ -158,10 +243,123 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	}
 }
 
+func TestBinary_ProviderAddDoctorJourney(t *testing.T) {
+	workDir := t.TempDir()
+	configPath := filepath.Join(workDir, "config.yaml")
+	providerKey := "gsk_test-provider-canary-do-not-print-0123456789"
+	environment := setEnv(os.Environ(), "GROQ_API_KEY", providerKey)
+	initOutput, initErr := runBinaryWithEnv(t, workDir, environment, "init", "-yes", "-providers", "groq", "-attest-free-tier", "groq", "-config", configPath)
+	if initErr != nil {
+		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
+	}
+	configData, err := os.ReadFile(configPath) //nolint:gosec // configPath is inside t.TempDir.
+	if err != nil {
+		t.Fatal(err)
+	}
+	localKeys := regexp.MustCompile(`key: "(sk-spillway-[A-Za-z0-9_-]+)"`).FindAllSubmatch(configData, -1)
+	if len(localKeys) != 1 {
+		t.Fatalf("generated config has %d local keys, want one", len(localKeys))
+	}
+	localKey := string(localKeys[0][1])
+
+	addr := freeLoopbackAddr(t)
+	configData = bytes.Replace(configData, []byte("127.0.0.1:8080"), []byte(addr), 1)
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil { //nolint:gosec // configPath is inside t.TempDir.
+		t.Fatal(err)
+	}
+	addOutput, addErr := runBinaryWithEnv(t, workDir, environment, "provider", "add", "mock", "--tier", "free", "--yes", "-config", configPath)
+	if addErr != nil {
+		t.Fatalf("spillway provider add: %v\n%s", addErr, addOutput)
+	}
+	if !strings.Contains(addOutput, "@@ providers @@") || !strings.Contains(addOutput, "backup at") {
+		t.Errorf("provider add output = %q, want preview and backup guidance", addOutput)
+	}
+	checkOutput, checkErr := runBinaryWithEnv(t, workDir, environment, "check", "-config", configPath)
+	if checkErr != nil {
+		t.Fatalf("spillway check: %v\n%s", checkErr, checkOutput)
+	}
+
+	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
+	command.Dir = workDir
+	command.Env = environment
+	var serverOutput synchronizedBuffer
+	command.Stdout, command.Stderr = &serverOutput, &serverOutput
+	if err := command.Start(); err != nil {
+		t.Fatal("start spillway serve:", err)
+	}
+	wait := make(chan error, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-waitDone:
+		default:
+			_ = command.Process.Kill()
+			<-waitDone
+		}
+	})
+	baseURL := "http://" + addr
+	waitForBinaryServer(t, baseURL, wait)
+	runningOutput, runningErr := runBinaryWithEnv(t, workDir, environment, "doctor", "-config", configPath)
+	if runningErr != nil || !strings.Contains(runningOutput, "answers like Spillway") {
+		t.Fatalf("doctor against running server: %v\n%s", runningErr, runningOutput)
+	}
+	if !strings.Contains(serverOutput.String(), `providers="[groq mock]"`) {
+		t.Errorf("serve startup summary = %q, want loaded providers", serverOutput.String())
+	}
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal("stop spillway serve:", err)
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("spillway serve did not stop within 5s")
+	}
+	stoppedOutput, stoppedErr := runBinaryWithEnv(t, workDir, environment, "doctor", "-config", configPath)
+	if stoppedErr != nil || !strings.Contains(stoppedOutput, "nothing listening") {
+		t.Fatalf("doctor after server stopped: %v\n%s", stoppedErr, stoppedOutput)
+	}
+	allOutput := strings.Join([]string{initOutput, addOutput, checkOutput, serverOutput.String(), runningOutput, stoppedOutput}, "\n")
+	for _, canary := range []string{providerKey, localKey} {
+		if strings.Contains(allOutput, canary) {
+			t.Errorf("credential canary appeared in a command stream")
+		}
+	}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 func runBinary(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	command := exec.CommandContext(t.Context(), spillwayBinary, args...) //nolint:gosec // TestMain built this executable; callers use fixed CLI arguments.
 	command.Dir = dir
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func runBinaryWithEnv(t *testing.T, dir string, environment []string, args ...string) (string, error) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), spillwayBinary, args...) //nolint:gosec // TestMain built this executable; callers use fixed CLI arguments.
+	command.Dir = dir
+	command.Env = environment
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
