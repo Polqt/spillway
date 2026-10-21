@@ -1,6 +1,6 @@
 module github.com/Polqt/spillway/tools/release
 
-go 1.27.2
+go 1.27.3
 
 tool github.com/goreleaser/goreleaser/v2
 
