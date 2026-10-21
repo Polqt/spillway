@@ -55,6 +55,21 @@ The current stable image is `ghcr.io/polqt/spillway:1.0.0`; use a versioned imag
 
 ## Upgrade and find older copies
 
+After extracting a release archive, run the binary's install command to replace the first Spillway executable found on `PATH`:
+
+```sh
+./spillway install
+```
+
+In PowerShell, run:
+
+```powershell
+.\spillway.exe install
+```
+Spillway shows the destination and asks before replacing it.
+The command does not edit `PATH`; if no executable is found, add the extracted folder to `PATH` using your operating system's settings.
+For Scoop or Homebrew installations, upgrade through that package manager.
+
 An older `spillway` earlier on your `PATH`, or a server you started before upgrading, can keep answering after you install a new version.
 List every copy your shell can find, in the order it searches them:
 
