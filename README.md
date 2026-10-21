@@ -6,12 +6,12 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 ## Install
 
-The current stable release is `v1.1.0`. Download the archive for Linux, macOS or Windows from the [v1.1.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.1.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
+The current stable release is `v1.1.1`. Download the archive for Linux, macOS or Windows from the [v1.1.1 release page](https://github.com/Polqt/spillway/releases/tag/v1.1.1), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
 Install the current release from its source tag with Go:
 
 ```sh
-git clone --branch v1.1.0 --depth 1 https://github.com/Polqt/spillway.git
+git clone --branch v1.1.1 --depth 1 https://github.com/Polqt/spillway.git
 cd spillway
 go install ./apps/spillway
 ```
@@ -19,7 +19,7 @@ go install ./apps/spillway
 Or pull the current Docker image:
 
 ```sh
-docker pull ghcr.io/polqt/spillway:1.1.0
+docker pull ghcr.io/polqt/spillway:1.1.1
 ```
 
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
