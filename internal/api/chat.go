@@ -25,6 +25,7 @@ type chatHandler struct {
 	providers          providerSet
 	logger             *slog.Logger
 	router             Planner
+	allowedModels      map[string]struct{}
 	tracker            candidateTracker
 	now                func() time.Time
 	bodyReadTimeout    time.Duration
@@ -741,6 +742,10 @@ func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.Mo
 	p, ok := h.providers.Lookup(ref.Provider)
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found: provider %q is not configured. Send a configured provider/model reference, or see GET /v1/models.", model, ref.Provider), typeInvalidRequest, "model_not_found")
+		return providers.ModelRef{}, nil, false
+	}
+	if _, ok := h.allowedModels[ref.String()]; h.allowedModels != nil && !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q is not configured in a tier. Use auto or a model from GET /v1/models.", model), typeInvalidRequest, "model_not_found")
 		return providers.ModelRef{}, nil, false
 	}
 	return ref, p, true

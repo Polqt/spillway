@@ -6,12 +6,12 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
 
 ## Install
 
-The current stable release is `v1.1.1`. Download the archive for Linux, macOS or Windows from the [v1.1.1 release page](https://github.com/Polqt/spillway/releases/tag/v1.1.1), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
+The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
 
 Install the current release from its source tag with Go:
 
 ```sh
-git clone --branch v1.1.1 --depth 1 https://github.com/Polqt/spillway.git
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
 cd spillway
 go install ./apps/spillway
 ```
@@ -19,7 +19,7 @@ go install ./apps/spillway
 Or pull the current Docker image:
 
 ```sh
-docker pull ghcr.io/polqt/spillway:1.1.1
+docker pull ghcr.io/polqt/spillway:1.0.0
 ```
 
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
@@ -35,7 +35,7 @@ spillway check
 spillway serve
 ```
 
-The generated config contains a local app key and, because `-store` was selected, a separate dashboard key. Keep `config.yaml` private and copy the generated app key from it into your client. The CLI never prints either key. In another terminal, replace `<LOCAL_APP_KEY>` with that value:
+The generated config contains a local app key and, because `-store` was selected, a separate dashboard key. Keep `config.yaml` private. Run `spillway key default` to print the client key, then replace `<LOCAL_APP_KEY>` below. Use `spillway key dashboard` to print the dashboard key.
 
 ```powershell
 curl.exe http://127.0.0.1:8080/v1/chat/completions `
@@ -69,7 +69,7 @@ The first two candidates simulate rate limiting and unavailability; the third re
 
 The `-store` option creates a separate dashboard key and enables local usage history.
 Start Spillway, then open `http://127.0.0.1:8080/dashboard` and enter that dashboard key from your private `config.yaml`.
-The CLI does not print keys.
+Run `spillway key dashboard` to print the dashboard key when prompted. The command prints only the requested key to your terminal.
 The dashboard sends the key only to this local Spillway instance; choose **Forget dashboard key** to clear it from the browser tab.
 To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
 
@@ -92,7 +92,7 @@ $env:GROQ_API_KEY = "your-provider-key"
 spillway init -yes -providers groq -attest-free-tier groq
 ```
 
-`init` generates a local key in `config.yaml`, but does not print it. Copy it from the private file for your client. Only use `-attest-free-tier groq` if the Groq account has no paid plan; otherwise omit the attestation and configure a spend-enabled tier and prices as described in the [Groq guide](docs/providers/groq.md). `GROQ_API_KEY` must be present before `spillway check` or `serve`.
+`init` generates a local key in `config.yaml`. Run `spillway key default` to print it for your client. Only use `-attest-free-tier groq` if the Groq account has no paid plan; otherwise omit the attestation and configure a spend-enabled tier and prices as described in the [Groq guide](docs/providers/groq.md). `GROQ_API_KEY` must be present before `spillway check` or `serve`.
 
 Then validate and start Spillway:
 
@@ -113,7 +113,7 @@ Read [operations](docs/operations.md) for shutdown, store backup, retention and 
 
 For setup recovery, run `spillway doctor` to inspect the selected config, environment, local keys, store and listen address without contacting providers.
 Use `spillway provider list` or `spillway provider show <name>` to inspect configured presets.
-`spillway provider add <name>` is experimental in v1.1.x; see the [configuration guide](docs/configuration.md) before changing an existing config.
+`spillway provider add <name>` is experimental; see the [configuration guide](docs/configuration.md) before changing an existing config.
 
 ## License
 

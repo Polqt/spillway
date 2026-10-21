@@ -1,7 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 
 	"go.yaml.in/yaml/v3"
@@ -19,6 +22,64 @@ type LocalKey struct {
 // LocalKeys is the server.api_keys list. Each entry is either a plain string,
 // named key-N by its 1-based list position, or a {name, key} mapping.
 type LocalKeys []LocalKey
+
+// LoadLocalKeys reads named local keys without resolving or validating providers.
+func LoadLocalKeys(path string) (LocalKeys, error) {
+	return LoadLocalKeysWithEnv(path, os.LookupEnv)
+}
+
+// LoadLocalKeysWithEnv reads local keys and expands their environment references.
+func LoadLocalKeysWithEnv(path string, lookupEnv func(string) (string, bool)) (LocalKeys, error) {
+	f, err := os.Open(path) // #nosec G304 -- the path is the operator's explicit -config flag.
+	if err != nil {
+		return nil, fmt.Errorf("config: open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	if len(data) > maxFileBytes {
+		return nil, fmt.Errorf("config: %s is larger than 1 MiB", path)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return nil, errors.New("config: invalid YAML")
+	}
+	server := mappingValue(doc.Content[0], "server")
+	keyNode := mappingValue(server, "api_keys")
+	if keyNode == nil {
+		return nil, errors.New("config: no local keys found in server.api_keys")
+	}
+	if lookupEnv == nil {
+		lookupEnv = func(string) (string, bool) { return "", false }
+	}
+	for i, entry := range keyNode.Content {
+		path := localKeyPath(i)
+		if entry.Kind == yaml.ScalarNode {
+			if err := expandScalar(entry, path, lookupEnv); err != nil {
+				return nil, fmt.Errorf("config: %w", err)
+			}
+			continue
+		}
+		for _, field := range []struct{ name, path string }{{"name", path + ".name"}, {"key", path + ".key"}} {
+			if value := mappingValue(entry, field.name); value != nil {
+				if err := expandScalar(value, field.path, lookupEnv); err != nil {
+					return nil, fmt.Errorf("config: %w", err)
+				}
+			}
+		}
+	}
+	var keys LocalKeys
+	if err := keyNode.Decode(&keys); err != nil {
+		return nil, errors.New("config: invalid server.api_keys")
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("config: no local keys found in server.api_keys")
+	}
+	return keys, nil
+}
 
 // UnmarshalYAML decodes both entry forms. It is defined on the slice because a
 // generated name needs the entry's position. Errors name the YAML path and

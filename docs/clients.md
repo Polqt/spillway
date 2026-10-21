@@ -1,11 +1,13 @@
 # Connect a client app
 
-Use the `default` local key from your private `config.yaml` for client apps. Do not use the `dashboard` key: it grants access to local usage data. Replace `<LOCAL_APP_KEY>` with the `default` key value when you run a command; never put a real key in source control or a shared example.
+Run `spillway key default` to print the client key. Use `spillway key dashboard` for the dashboard. Keep both private, and never put a real key in source control or a shared example.
+If the config is elsewhere, run `spillway key -config <path> default` or `spillway key -config <path> dashboard`.
 
 Spillway supports OpenAI Chat Completions at `/v1/chat/completions` and model listing at `/v1/models`.
 It does not implement the OpenAI Responses API at `/v1/responses`; use a client configured for Chat Completions.
 
 The local OpenAI-compatible endpoint is `http://127.0.0.1:8080/v1`. Examples request model `auto`, so Spillway can spill over across eligible configured providers.
+Only models configured in tiers are listed or accepted as direct model requests.
 
 ## curl (POSIX)
 

@@ -156,7 +156,7 @@ func TestRun_RootHelpShowsQuickPathAndCommandGroups(t *testing.T) {
 			t.Errorf("root help = %q, want %q", help, want)
 		}
 	}
-	for _, want := range []string{"Get started\n  init", "Tools\n  catalog", "Experimental\n  eval"} {
+	for _, want := range []string{"Get started\n  init", "Tools\n  catalog", "Experimental\n  eval", "  key         print one local key by name"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("root help = %q, want grouped commands at %q", help, want)
 		}

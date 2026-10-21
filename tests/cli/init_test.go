@@ -228,8 +228,8 @@ func TestRun_InitReportsVariableStatusWithoutValues(t *testing.T) {
 		return secret, name == "GROQ_API_KEY"
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "groq", "-config", path}, strings.NewReader(""), &stdout, &stderr, lookup)
-	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: set") || !strings.Contains(stdout.String(), "1. Provider environment variables") || !strings.Contains(stdout.String(), "2. Client apps") || !strings.Contains(stdout.String(), "key entry `default`") || !strings.Contains(stdout.String(), "model `auto`") || !strings.Contains(stdout.String(), "docs/clients.md") || strings.Contains(stdout.String()+stderr.String(), secret) {
+	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "groq", "-store", "-config", path}, strings.NewReader(""), &stdout, &stderr, lookup)
+	if code != 0 || !strings.Contains(stdout.String(), "GROQ_API_KEY: set") || !strings.Contains(stdout.String(), "spillway key -config") || !strings.Contains(stdout.String(), "model `auto`") || !strings.Contains(stdout.String(), "dashboard`.") || strings.Contains(stdout.String()+stderr.String(), secret) {
 		t.Errorf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
 	}
 	path = filepath.Join(t.TempDir(), "unset.yaml")

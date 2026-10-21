@@ -1168,6 +1168,74 @@ func TestModels_ListsConfiguredModelsInStableOrder(t *testing.T) {
 	}
 }
 
+func TestModels_HidesUnconfiguredProviderModels(t *testing.T) {
+	t.Parallel()
+	provider := &countingProvider{
+		name: "fake",
+		models: func(context.Context) ([]providers.Model, error) {
+			return []providers.Model{{ID: "free"}, {ID: "paid"}}, nil
+		},
+		chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+			return providers.ChatResponse{}, nil
+		},
+	}
+	set, err := providers.NewSet(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tiers: map[string][]providers.ModelRef{
+			"free": {{Provider: "fake", Model: "free"}},
+		},
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fake/free") || strings.Contains(rec.Body.String(), "fake/paid") {
+		t.Fatalf("models response = %d %s; want only configured model fake/free", rec.Code, rec.Body)
+	}
+}
+
+func TestChat_RejectsDirectModelOutsideConfiguredTiers(t *testing.T) {
+	t.Parallel()
+	provider := &countingProvider{
+		name: "fake",
+		chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+			return providers.ChatResponse{Body: json.RawMessage(`{"ok":true}`)}, nil
+		},
+	}
+	set, err := providers.NewSet(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.NewHandler(api.Options{
+		Providers: set,
+		Tiers: map[string][]providers.ModelRef{
+			"free": {{Provider: "fake", Model: "free"}},
+		},
+		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"fake/paid","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assertError(t, rec, http.StatusNotFound, "invalid_request_error", "model_not_found")
+	if got := provider.calls.Load(); got != 0 {
+		t.Errorf("provider calls = %d, want 0", got)
+	}
+}
+
 func TestModels_ListsSortedVirtualTiers(t *testing.T) {
 	t.Parallel()
 	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})

@@ -18,6 +18,7 @@ type modelsHandler struct {
 	logger        *slog.Logger
 	timeout       time.Duration
 	virtualModels []string
+	allowedModels map[string]struct{}
 }
 
 type modelList struct {
@@ -60,12 +61,16 @@ func (h *modelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, model := range results[i].models {
+			id := providers.ModelRef{Provider: provider.Name(), Model: model.ID}.String()
+			if _, ok := h.allowedModels[id]; h.allowedModels != nil && !ok {
+				continue
+			}
 			ownedBy := model.OwnedBy
 			if ownedBy == "" {
 				ownedBy = provider.Name()
 			}
 			data = append(data, modelItem{
-				ID:      providers.ModelRef{Provider: provider.Name(), Model: model.ID}.String(),
+				ID:      id,
 				Object:  "model",
 				Created: model.Created,
 				OwnedBy: ownedBy,
