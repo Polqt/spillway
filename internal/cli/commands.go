@@ -109,6 +109,12 @@ flags:
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
+	addLegacyCommand(root, exitCode, "key", "print one local key by name", `  spillway key default
+  spillway key dashboard`, func(cmd *cobra.Command, args []string) int {
+		return keyCommand(legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file")
+	})
 	addLegacyCommand(root, exitCode, "catalog", "suggest model declarations and pricing from configured providers", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
 		return catalogCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {

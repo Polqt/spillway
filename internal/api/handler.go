@@ -156,11 +156,24 @@ func NewHandler(o Options) (http.Handler, error) {
 			return nil, err
 		}
 	}
-	mux.Handle("GET /v1/models", &modelsHandler{providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout, virtualModels: planner.VirtualModels()})
+	allowedModels := make(map[string]struct{})
+	for _, refs := range o.Tiers {
+		for _, ref := range refs {
+			allowedModels[ref.String()] = struct{}{}
+		}
+	}
+	if len(allowedModels) == 0 {
+		allowedModels = nil
+	}
+	mux.Handle("GET /v1/models", &modelsHandler{
+		providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout,
+		virtualModels: planner.VirtualModels(), allowedModels: allowedModels,
+	})
 	mux.Handle("POST /v1/chat/completions", &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
-		tracker: o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator, gate: o.BudgetGate,
+		allowedModels: allowedModels,
+		tracker:       o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator, gate: o.BudgetGate,
 		exactCache: o.ExactCache,
 	})
 	// Patterns without a method catch the wrong-method case, because the

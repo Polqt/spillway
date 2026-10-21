@@ -165,7 +165,7 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	if initErr != nil {
 		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
 	}
-	for _, want := range []string{"1. Provider environment variables", "2. Client apps", "key entry `default`", "model `auto`", "docs/clients.md", "3. Dashboard", "key entry `dashboard`", "http://127.0.0.1:8080/dashboard"} {
+	for _, want := range []string{"Client: base URL http://127.0.0.1:8080/v1", "model `auto`", "spillway key -config", "Dashboard: page http://127.0.0.1:8080/dashboard"} {
 		if !strings.Contains(initOutput, want) {
 			t.Errorf("spillway init output = %q, want %q", initOutput, want)
 		}
