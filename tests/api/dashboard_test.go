@@ -122,6 +122,35 @@ func TestDashboardPricing_RequiresDashboardKeyAndReturnsDeclaredPrices(t *testin
 	}
 }
 
+func TestDashboardEvaluations_RequiresDashboardKeyAndReturnsOnlySafeAggregateData(t *testing.T) {
+	handler, db, _ := dashboardEnv(t)
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := db.RecordEvaluation(t.Context(), store.EvaluationRun{RunID: "eval-safe", CorpusSHA256: digest, Summary: json.RawMessage(`{"prompt_count":90,"results":[]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		key  string
+		want int
+	}{
+		{name: "dashboard key", key: dashboardKey, want: http.StatusOK},
+		{name: "chat key", key: chatOnlyKey, want: http.StatusForbidden},
+		{name: "missing key", want: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := dashboardRequest(t, handler, "/api/evaluations?limit=20", test.key, "127.0.0.1")
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body)
+			}
+			if test.want == http.StatusOK {
+				if !strings.Contains(response.Body.String(), "eval-safe") || strings.Contains(response.Body.String(), dashboardKey) || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("unsafe or malformed evaluation response: %s", response.Body)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestPlayground_UsesMockModelsAndDoesNotPersistPromptOrKey(t *testing.T) {
 	handler, db, _ := dashboardEnv(t)
 	models := dashboardRequest(t, handler, "/v1/models", dashboardKey, "127.0.0.1")

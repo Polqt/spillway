@@ -34,6 +34,7 @@ const (
 type GateResult struct {
 	Arm        string      `json:"arm"`
 	Difficulty string      `json:"difficulty"`
+	Category   string      `json:"category"`
 	Gate       string      `json:"gate"`
 	Available  bool        `json:"available"`
 	Estimate   float64     `json:"estimate"`
@@ -49,6 +50,7 @@ type GateResult struct {
 type ArmCostSummary struct {
 	Arm              string             `json:"arm"`
 	Difficulty       string             `json:"difficulty"`
+	Category         string             `json:"category"`
 	Requests         int                `json:"requests"`
 	KnownCostShare   float64            `json:"known_cost_share"`
 	CostSourceShares map[string]float64 `json:"cost_source_shares"`
@@ -65,12 +67,20 @@ type RaterAgreement struct {
 
 // GateReport is the reproducible, machine-readable output of eval-report.
 type GateReport struct {
-	Baseline   string           `json:"baseline"`
-	Seed       int64            `json:"seed"`
-	Replicates int              `json:"replicates"`
-	Results    []GateResult     `json:"results"`
-	Cost       []ArmCostSummary `json:"cost"`
-	Agreement  RaterAgreement   `json:"inter_rater_agreement"`
+	FormatVersion    int              `json:"format_version"`
+	PromptSetVersion int              `json:"prompt_set_version"`
+	PromptCount      int              `json:"prompt_count"`
+	CorpusSHA256     string           `json:"corpus_sha256"`
+	SettingsSHA256   string           `json:"settings_sha256"`
+	Candidates       []Arm            `json:"candidates"`
+	RunMetrics       []Metrics        `json:"run_metrics"`
+	BillingStatus    string           `json:"provider_account_billing_status"`
+	Baseline         string           `json:"baseline"`
+	Seed             int64            `json:"seed"`
+	Replicates       int              `json:"replicates"`
+	Results          []GateResult     `json:"results"`
+	Cost             []ArmCostSummary `json:"cost"`
+	Agreement        RaterAgreement   `json:"inter_rater_agreement"`
 }
 
 type promptCluster struct {
@@ -94,7 +104,36 @@ func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, 
 	if options.Replicates > maxBootstrapReplicates {
 		return GateReport{}, fmt.Errorf("bootstrap replicates must not exceed %d: %w", maxBootstrapReplicates, ErrReplicateLimit)
 	}
-	clusters, arms, err := makeClusters(run.Trials, assignments, scoreSheets)
+	if run.FormatVersion >= 2 && options.Replicates < 10_000 {
+		return GateReport{}, errors.New("version 2 reports require at least 10000 bootstrap replicates")
+	}
+	if run.FormatVersion >= 2 {
+		if len(scoreSheets) != 2 {
+			return GateReport{}, errors.New("version 2 reports require exactly two independent score sheets")
+		}
+		raterIDs := make(map[string]bool, 2)
+		for _, sheet := range scoreSheets {
+			if len(sheet) == 0 {
+				return GateReport{}, errors.New("score sheet is empty")
+			}
+			raterID := sheet[0].RaterID
+			if raterID == "" || raterIDs[raterID] {
+				return GateReport{}, errors.New("version 2 score sheets require distinct explicit rater IDs")
+			}
+			for _, score := range sheet {
+				if score.RaterID != raterID {
+					return GateReport{}, errors.New("each score sheet must identify exactly one rater")
+				}
+			}
+			raterIDs[raterID] = true
+		}
+		for _, trial := range run.Trials {
+			if trial.Outcome == "" {
+				return GateReport{}, fmt.Errorf("trial %q is missing its request outcome", trial.AnswerID)
+			}
+		}
+	}
+	clusters, arms, err := makeClusters(run.Trials, assignments, scoreSheets, run.FormatVersion >= 2, run.FormatVersion >= 3)
 	if err != nil {
 		return GateReport{}, err
 	}
@@ -103,41 +142,60 @@ func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, 
 	}
 	armNames := sortedKeys(arms)
 	difficulties := []string{"all"}
+	categories := []string{"all"}
 	seenDifficulty := map[string]bool{}
+	seenCategory := map[string]bool{}
 	for _, id := range sortedKeys(clusters) {
 		cluster := clusters[id]
 		if !seenDifficulty[cluster.difficulty] {
 			seenDifficulty[cluster.difficulty] = true
 			difficulties = append(difficulties, cluster.difficulty)
 		}
+		for _, trial := range cluster.trials {
+			for _, item := range trial {
+				if item.Category != "" && !seenCategory[item.Category] {
+					seenCategory[item.Category] = true
+					categories = append(categories, item.Category)
+				}
+			}
+		}
 	}
 	sort.Strings(difficulties[1:])
-	result := GateReport{Baseline: options.Baseline, Seed: options.Seed, Replicates: options.Replicates, Agreement: agreement(scoreSheets)}
+	sort.Strings(categories[1:])
+	result := GateReport{
+		FormatVersion: run.FormatVersion, PromptSetVersion: run.PromptSetVersion, PromptCount: run.PromptCount,
+		CorpusSHA256: run.Environment.PromptSetSHA256, SettingsSHA256: run.SettingsSHA256,
+		Candidates: run.CandidateSet, RunMetrics: run.Metrics,
+		BillingStatus: "external provider account evidence required; request-reported cost is not billing reconciliation",
+		Baseline:      options.Baseline, Seed: options.Seed, Replicates: options.Replicates, Agreement: agreement(scoreSheets),
+	}
 	gates := gateNames()
-	result.Cost = summarizeCost(clusters, armNames, difficulties)
+	result.Cost = summarizeCost(clusters, armNames, difficulties, categories)
 	for _, difficulty := range difficulties {
-		selected := selectClusters(clusters, difficulty)
-		for _, arm := range armNames {
-			if arm == options.Baseline {
-				continue
-			}
-			for gateIndex, gate := range gates {
-				gateResult, err := calculateGate(ctx, selected, difficulty, options, arm, gate, gateIndex)
-				if err != nil {
-					return GateReport{}, err
+		for _, category := range categories {
+			selected := selectClusters(clusters, difficulty, category)
+			for _, arm := range armNames {
+				if arm == options.Baseline {
+					continue
 				}
-				result.Results = append(result.Results, gateResult)
+				for gateIndex, gate := range gates {
+					gateResult, err := calculateGate(ctx, selected, difficulty, category, options, arm, gate, gateIndex)
+					if err != nil {
+						return GateReport{}, err
+					}
+					result.Results = append(result.Results, gateResult)
+				}
 			}
 		}
 	}
 	return result, nil
 }
 
-func gateNames() [5]string {
-	return [...]string{"cost_savings", "latency_p95_regression", "quality_difference", "severe_failure_difference", "known_cost_coverage"}
+func gateNames() [6]string {
+	return [...]string{"cost_savings", "latency_p95_regression", "quality_difference", "severe_failure_difference", "known_cost_coverage", "request_success_difference"}
 }
 
-func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (map[string]*promptCluster, map[string]bool, error) {
+func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score, requireCompleteRatings, requirePreselectedRatings bool) (map[string]*promptCluster, map[string]bool, error) {
 	clusters := make(map[string]*promptCluster)
 	arms := make(map[string]bool)
 	trialByAnswer := make(map[string]Trial, len(trials))
@@ -159,8 +217,11 @@ func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (m
 		} else if cluster.difficulty != trial.Difficulty {
 			return nil, nil, fmt.Errorf("prompt %q has conflicting difficulty labels", trial.PromptID)
 		}
-		if trial.CostSource != "reported" && trial.CostSource != "declared" && trial.CostSource != "estimated" && trial.CostSource != "unknown" && trial.CostSource != "free" {
+		if trial.CostSource != CostReported && trial.CostSource != CostDeclared && trial.CostSource != CostEstimated && trial.CostSource != CostUnknown && trial.CostSource != CostFree {
 			return nil, nil, fmt.Errorf("prompt %q has unsupported cost source %q", trial.PromptID, trial.CostSource)
+		}
+		if !validOutcome(trial.Outcome) {
+			return nil, nil, fmt.Errorf("trial %q has unsupported outcome %q", trial.AnswerID, trial.Outcome)
 		}
 		cluster.trials[trial.Arm] = append(cluster.trials[trial.Arm], trial)
 		arms[trial.Arm] = true
@@ -173,6 +234,17 @@ func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (m
 			if len(cluster.trials[arm]) == 0 {
 				return nil, nil, fmt.Errorf("prompt %q is missing arm %q", prompt, arm)
 			}
+			if requirePreselectedRatings {
+				selected := 0
+				for _, trial := range cluster.trials[arm] {
+					if trial.RatedForReview {
+						selected++
+					}
+				}
+				if selected != 1 {
+					return nil, nil, fmt.Errorf("prompt %q arm %q must have exactly one preselected rating repeat", prompt, arm)
+				}
+			}
 		}
 	}
 	assignmentByID := make(map[string]Assignment, len(assignments))
@@ -184,7 +256,7 @@ func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (m
 			return nil, nil, fmt.Errorf("assignment key repeats answer %q", assignment.AnswerID)
 		}
 		trial, exists := trialByAnswer[assignment.AnswerID]
-		if !exists || trial.PromptID != assignment.PromptID || trial.Arm != assignment.Arm || trial.Repeat != assignment.Repeat {
+		if !exists || trial.PromptID != assignment.PromptID || trial.Arm != assignment.Arm || trial.Repeat != assignment.Repeat || trial.RatedForReview != assignment.RatedForReview {
 			return nil, nil, fmt.Errorf("assignment for answer %q does not match the run", assignment.AnswerID)
 		}
 		assignmentByID[assignment.AnswerID] = assignment
@@ -215,29 +287,66 @@ func makeClusters(trials []Trial, assignments []Assignment, sheets [][]Score) (m
 			ratingsByAnswer[score.AnswerID] = append(ratingsByAnswer[score.AnswerID], score)
 		}
 	}
-	for answerID, ratings := range ratingsByAnswer {
+	for answerID, trial := range trialByAnswer {
+		ratings := ratingsByAnswer[answerID]
 		assignment := assignmentByID[answerID]
+		if requirePreselectedRatings {
+			if trial.Outcome == OutcomeSucceeded && assignment.RatedForReview && len(ratings) != 2 {
+				return nil, nil, fmt.Errorf("preselected successful trial %q requires two ratings", answerID)
+			}
+			if (!assignment.RatedForReview || trial.Outcome != OutcomeSucceeded) && len(ratings) != 0 {
+				return nil, nil, fmt.Errorf("trial %q was not selected for rating", answerID)
+			}
+		} else if requireCompleteRatings && trial.Outcome == OutcomeSucceeded && len(ratings) != 0 && len(ratings) != 2 {
+			return nil, nil, fmt.Errorf("rated successful trial %q requires two ratings", answerID)
+		} else if requireCompleteRatings && trial.Outcome != OutcomeSucceeded && len(ratings) != 0 {
+			return nil, nil, fmt.Errorf("unsuccessful trial %q must not be rated", answerID)
+		}
+		if len(ratings) == 0 {
+			continue
+		}
 		cluster := clusters[assignment.PromptID]
 		composite := make([]float64, 0, len(ratings))
 		severeOutcome := ratings[0].SevereCorrectnessFault
+		var adjudicatedOutcome *bool
 		for _, score := range ratings {
-			if score.SevereCorrectnessFault != severeOutcome {
-				return nil, nil, fmt.Errorf("answer %q has conflicting severe-failure ratings; adjudicate the outcome before reporting", answerID)
-			}
 			composite = append(composite, (float64(score.Correctness)+float64(score.Completeness)+float64(score.InstructionFollowing))/3)
+		}
+		conflict := false
+		for _, score := range ratings[1:] {
+			if score.SevereCorrectnessFault != ratings[0].SevereCorrectnessFault {
+				conflict = true
+			}
+		}
+		if conflict {
+			for _, score := range ratings {
+				if score.AdjudicatedSevereFault == nil || score.AdjudicationNote == "" {
+					return nil, nil, fmt.Errorf("answer %q has conflicting severe-failure ratings; blinded adjudication is required", answerID)
+				}
+				if adjudicatedOutcome != nil && *adjudicatedOutcome != *score.AdjudicatedSevereFault {
+					return nil, nil, fmt.Errorf("answer %q has conflicting adjudicated severe-failure ratings", answerID)
+				}
+				adjudicatedOutcome = score.AdjudicatedSevereFault
+			}
+			severeOutcome = *adjudicatedOutcome
 		}
 		cluster.scores[assignment.Arm] = append(cluster.scores[assignment.Arm], mean(composite))
 		cluster.severe[assignment.Arm] = append(cluster.severe[assignment.Arm], severeOutcome)
+		if requireCompleteRatings && len(cluster.scores[assignment.Arm]) > 1 {
+			return nil, nil, fmt.Errorf("prompt %q has ratings for more than one repeat of arm %q", assignment.PromptID, assignment.Arm)
+		}
 	}
 	return clusters, arms, nil
 }
 
-func calculateGate(ctx context.Context, clusters map[string]*promptCluster, difficulty string, options GateOptions, arm, gate string, gateIndex int) (GateResult, error) {
-	result := GateResult{Arm: arm, Difficulty: difficulty, Gate: gate, Unit: "%", Prompts: len(clusters), Verdict: VerdictInconclusive}
+func calculateGate(ctx context.Context, clusters map[string]*promptCluster, difficulty, category string, options GateOptions, arm, gate string, gateIndex int) (GateResult, error) {
+	result := GateResult{Arm: arm, Difficulty: difficulty, Category: category, Gate: gate, Unit: "%", Prompts: len(clusters), Verdict: VerdictInconclusive}
 	switch gate {
 	case "quality_difference":
 		result.Unit = "points"
 	case "severe_failure_difference":
+		result.Unit = "percentage points"
+	case "request_success_difference":
 		result.Unit = "percentage points"
 	}
 	if len(clusters) == 0 {
@@ -367,6 +476,13 @@ func gateEstimate(clusters map[string]*promptCluster, baseline, arm string, gate
 			return 0, false
 		}
 		return math.Min(float64(baseCostKnown)/float64(baseCostN), float64(modeCostKnown)/float64(modeCostN)) * 100, true
+	case 5:
+		baseSuccess, baseN := successCount(baseTrials)
+		modeSuccess, modeN := successCount(modeTrials)
+		if baseN == 0 || modeN == 0 {
+			return 0, false
+		}
+		return (float64(modeSuccess)/float64(modeN) - float64(baseSuccess)/float64(baseN)) * 100, true
 	default:
 		return 0, false
 	}
@@ -414,47 +530,57 @@ func verdictFor(gate string, estimate, lower, upper float64) (GateVerdict, strin
 			return VerdictPass, "both arms have at least 95% known cost coverage"
 		}
 		return VerdictFail, "one or both arms have less than 95% known cost coverage"
+	case "request_success_difference":
+		if lower >= -2 {
+			return VerdictPass, "lower interval bound is at least -2 percentage points"
+		}
+		if upper < -2 {
+			return VerdictFail, "upper interval bound is below -2 percentage points"
+		}
+		return VerdictInconclusive, "request-success interval crosses the -2 percentage-point limit"
 	default:
 		return VerdictInconclusive, "unknown gate"
 	}
 }
 
-func summarizeCost(clusters map[string]*promptCluster, arms []string, difficulties []string) []ArmCostSummary {
+func summarizeCost(clusters map[string]*promptCluster, arms []string, difficulties, categories []string) []ArmCostSummary {
 	var result []ArmCostSummary
 	for _, difficulty := range difficulties {
-		selected := selectClusters(clusters, difficulty)
-		for _, arm := range arms {
-			shares := map[string]float64{"reported": 0, "declared-price": 0, "estimated-token": 0, "free": 0, "unknown": 0}
-			known, total := 0, 0
-			for _, cluster := range selected {
-				for _, trial := range cluster.trials[arm] {
-					total++
-					switch trial.CostSource {
-					case "reported":
-						shares["reported"]++
-					case "declared":
-						shares["declared-price"]++
-						known++
-					case "free":
-						shares["free"]++
-						known++
-					case "estimated":
-						shares["estimated-token"]++
-						known++
-					case "unknown":
-						shares["unknown"]++
-					}
-					if trial.CostSource == "reported" {
-						known++
+		for _, category := range categories {
+			selected := selectClusters(clusters, difficulty, category)
+			for _, arm := range arms {
+				shares := map[string]float64{"reported": 0, "declared-price": 0, "estimated-token": 0, "free": 0, "unknown": 0}
+				known, total := 0, 0
+				for _, cluster := range selected {
+					for _, trial := range cluster.trials[arm] {
+						total++
+						switch trial.CostSource {
+						case "reported":
+							shares["reported"]++
+						case "declared":
+							shares["declared-price"]++
+							known++
+						case "free":
+							shares["free"]++
+							known++
+						case "estimated":
+							shares["estimated-token"]++
+							known++
+						case "unknown":
+							shares["unknown"]++
+						}
+						if trial.CostSource == "reported" {
+							known++
+						}
 					}
 				}
-			}
-			if total > 0 {
-				for key := range shares {
-					shares[key] /= float64(total)
+				if total > 0 {
+					for key := range shares {
+						shares[key] /= float64(total)
+					}
 				}
+				result = append(result, ArmCostSummary{Arm: arm, Difficulty: difficulty, Category: category, Requests: total, KnownCostShare: ratio(known, total), CostSourceShares: shares})
 			}
-			result = append(result, ArmCostSummary{Arm: arm, Difficulty: difficulty, Requests: total, KnownCostShare: ratio(known, total), CostSourceShares: shares})
 		}
 	}
 	return result
@@ -541,6 +667,25 @@ func meanKnownCost(trials []Trial) (float64, bool) {
 	}
 	return total / float64(n), true
 }
+
+func successCount(trials []Trial) (int, int) {
+	successful := 0
+	for _, trial := range trials {
+		if trial.Outcome == OutcomeSucceeded || trial.Outcome == "" {
+			successful++
+		}
+	}
+	return successful, len(trials)
+}
+
+func validOutcome(outcome Outcome) bool {
+	switch outcome {
+	case "", OutcomeSucceeded, OutcomeFailed, OutcomeCancelled, OutcomeTimeout, OutcomeTransportFailure, OutcomeProviderError, OutcomeExhausted, OutcomeIncompleteStream:
+		return true
+	default:
+		return false
+	}
+}
 func trialLatencies(trials []Trial) []int64 {
 	out := make([]int64, 0, len(trials))
 	for _, trial := range trials {
@@ -569,9 +714,26 @@ func sortedKeys[V any](values map[string]V) []string {
 	sort.Strings(keys)
 	return keys
 }
-func selectClusters(clusters map[string]*promptCluster, difficulty string) map[string]*promptCluster {
+func selectClusters(clusters map[string]*promptCluster, difficulty, category string) map[string]*promptCluster {
 	selected := make(map[string]*promptCluster)
 	for id, cluster := range clusters {
+		if difficulty != "all" && cluster.difficulty != difficulty {
+			continue
+		}
+		if category != "all" {
+			match := false
+			for _, trials := range cluster.trials {
+				for _, trial := range trials {
+					if trial.Category == category {
+						match = true
+						break
+					}
+				}
+			}
+			if !match {
+				continue
+			}
+		}
 		if difficulty == "all" || cluster.difficulty == difficulty {
 			selected[id] = cluster
 		}

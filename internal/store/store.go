@@ -20,7 +20,7 @@ import (
 )
 
 // SchemaVersion is the newest schema this binary can open.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // NewerSchemaError reports a database schema this binary cannot open.
 type NewerSchemaError struct {
@@ -307,6 +307,9 @@ func (s *Store) SpendSince(ctx context.Context, since time.Time) (int64, error) 
 func (s *Store) prune(ctx context.Context) error {
 	cutoff := s.now().Add(-s.retention).UTC().UnixNano()
 	if _, err := s.db.ExecContext(ctx, "DELETE FROM requests WHERE at_ns < ?", cutoff); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM evaluation_runs WHERE created_ns < ?", cutoff); err != nil {
 		return err
 	}
 	return nil

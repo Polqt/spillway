@@ -17,6 +17,8 @@ type Score struct {
 	Completeness           int
 	InstructionFollowing   int
 	SevereCorrectnessFault bool
+	AdjudicationNote       string
+	AdjudicatedSevereFault *bool
 }
 
 // QualityMetrics summarizes blinded scores by arm and prompt difficulty.
@@ -42,8 +44,11 @@ func LoadScores(r io.Reader) ([]Score, error) {
 		return nil, fmt.Errorf("read score sheet header: %w", err)
 	}
 	want := []string{"answer_id", "correctness_1_to_5", "completeness_1_to_5", "instruction_following_1_to_5", "severe_correctness_failure", "adjudication_note"}
+	if len(header) > 0 && header[0] == "trial_id" {
+		want[0] = "trial_id"
+	}
 	raterIndex := -1
-	if len(header) == len(want)+1 {
+	if len(header) == len(want)+1 || len(header) == len(want)+2 {
 		for index, field := range header {
 			if field == "rater_id" {
 				if raterIndex >= 0 {
@@ -57,6 +62,10 @@ func LoadScores(r io.Reader) ([]Score, error) {
 		}
 		withoutRater := append([]string(nil), header[:raterIndex]...)
 		header = append(withoutRater, header[raterIndex+1:]...)
+	}
+	hasAdjudicated := len(header) == len(want)+1 && header[len(header)-1] == "adjudicated_severe_correctness_failure"
+	if hasAdjudicated {
+		want = append(want, "adjudicated_severe_correctness_failure")
 	}
 	if len(header) != len(want) {
 		return nil, errors.New("score sheet has an invalid header")
@@ -77,7 +86,11 @@ func LoadScores(r io.Reader) ([]Score, error) {
 			return nil, fmt.Errorf("read score row %d: %w", row, err)
 		}
 		raterID := ""
-		if len(record) != len(want)+boolInt(raterIndex >= 0) {
+		wantFields := len(want)
+		if hasAdjudicated {
+			wantFields--
+		}
+		if len(record) != wantFields+boolInt(raterIndex >= 0) {
 			return nil, fmt.Errorf("score row %d has an invalid number of fields", row)
 		}
 		if raterIndex >= 0 {
@@ -108,7 +121,21 @@ func LoadScores(r io.Reader) ([]Score, error) {
 		default:
 			return nil, fmt.Errorf("score row %d severe correctness failure must be true or false", row)
 		}
-		scores = append(scores, Score{RaterID: raterID, AnswerID: record[0], Correctness: values[0], Completeness: values[1], InstructionFollowing: values[2], SevereCorrectnessFault: severe})
+		score := Score{RaterID: raterID, AnswerID: record[0], Correctness: values[0], Completeness: values[1], InstructionFollowing: values[2], SevereCorrectnessFault: severe, AdjudicationNote: record[5]}
+		if hasAdjudicated {
+			switch record[6] {
+			case "true":
+				value := true
+				score.AdjudicatedSevereFault = &value
+			case "false":
+				value := false
+				score.AdjudicatedSevereFault = &value
+			case "":
+			default:
+				return nil, fmt.Errorf("score row %d adjudicated severe failure must be true or false", row)
+			}
+		}
+		scores = append(scores, score)
 	}
 	if len(scores) == 0 {
 		return nil, errors.New("score sheet has no scored answers")

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/evaluation"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
@@ -30,6 +31,9 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 	timeout := fs.Duration("timeout", 2*time.Hour, "whole-run deadline")
 	pricePath := fs.String("prices", "", "optional JSON map of model references to declared prices")
 	output := fs.String("out", "", "directory for evaluation artifacts")
+	reviewExport := fs.String("review-export-dir", "", "explicit temporary directory for blinded prompt and response review material")
+	resume := fs.Bool("resume", false, "resume an existing run after verifying its corpus and settings fingerprint")
+	retryFailed := fs.String("retry-failed", "", "comma-separated exact failed trial IDs to retry; duplicate provider charges may occur")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -83,7 +87,18 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 		}
 	}
 	client := &http.Client{}
-	err = evaluation.Run(ctx, client, set, evaluation.Options{Endpoint: *endpoint, APIKey: key, Arms: arms, Repeats: *repeats, Seed: *seed, Timeout: *timeout, Prices: prices, Output: *output})
+	if *reviewExport != "" && pathsOverlap(*output, *reviewExport) {
+		report(stderr, "spillway: eval: review export directory must be separate from the durable output directory\n")
+		return 2
+	}
+	var retryIDs []string
+	if *retryFailed != "" {
+		retryIDs = strings.Split(*retryFailed, ",")
+		for i := range retryIDs {
+			retryIDs[i] = strings.TrimSpace(retryIDs[i])
+		}
+	}
+	err = evaluation.Run(ctx, client, set, evaluation.Options{Endpoint: *endpoint, APIKey: key, Arms: arms, Repeats: *repeats, Seed: *seed, Timeout: *timeout, Prices: prices, Output: *output, ReviewExportDir: *reviewExport, Resume: *resume, RetryFailedIDs: retryIDs})
 	if err != nil {
 		report(stderr, "spillway: eval: %v\n", err)
 		return 1
@@ -100,6 +115,8 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	fs := flag.NewFlagSet("eval-score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
+	reviewDir := fs.String("review-dir", "", "temporary review export directory containing the blind key")
+	reviewer := fs.Int("reviewer", 1, "review export view to summarize (1 or 2)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -107,13 +124,20 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		report(stderr, "spillway: eval-score requires -run\n")
 		return 2
 	}
+	if *reviewDir == "" {
+		*reviewDir = *runDir
+	}
+	if *reviewer < 1 || *reviewer > 2 {
+		report(stderr, "spillway: eval-score: reviewer must be 1 or 2\n")
+		return 2
+	}
 	var answers []evaluation.Answer
-	if err := readJSONLines(ctx, filepath.Join(*runDir, "answers.jsonl"), &answers); err != nil {
+	if err := readJSONLines(ctx, filepath.Join(*reviewDir, fmt.Sprintf("rater-%d.jsonl", *reviewer)), &answers); err != nil {
 		report(stderr, "spillway: eval-score: read blinded answers: %v\n", err)
 		return 1
 	}
 	var assignments []evaluation.Assignment
-	if err := readJSON(ctx, filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
+	if err := readJSON(ctx, filepath.Join(*reviewDir, "blind-key.json"), &assignments); err != nil {
 		report(stderr, "spillway: eval-score: read assignment key: %v\n", err)
 		return 1
 	}
@@ -164,6 +188,23 @@ func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 	return 0
 }
 
+func pathsOverlap(first, second string) bool {
+	firstAbs, firstErr := filepath.Abs(first)
+	secondAbs, secondErr := filepath.Abs(second)
+	if firstErr != nil || secondErr != nil {
+		return true
+	}
+	return pathContains(firstAbs, secondAbs) || pathContains(secondAbs, firstAbs)
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(child))
+	if err != nil {
+		return true
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
 func writeQualitySummary(ctx context.Context, directory, path string, metrics []evaluation.QualityMetrics) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -203,10 +244,13 @@ func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	fs := flag.NewFlagSet("eval-report", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
+	reviewDir := fs.String("review-dir", "", "temporary review export directory containing the blind key")
 	scorePaths := fs.String("scores", "", "comma-separated completed rater CSV sheets")
 	baseline := fs.String("baseline", "", "baseline arm name")
 	seed := fs.Int64("seed", 1, "paired bootstrap random seed")
 	replicates := fs.Int("replicates", 10000, "paired prompt-cluster bootstrap replicates")
+	jsonOutput := fs.Bool("json", false, "write the safe aggregate report as JSON")
+	storePath := fs.String("store", "", "optional SQLite store path for retaining the aggregate report")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -219,8 +263,11 @@ func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		report(stderr, "spillway: eval-report: read metrics: %v\n", err)
 		return 1
 	}
+	if *reviewDir == "" {
+		*reviewDir = *runDir
+	}
 	var assignments []evaluation.Assignment
-	if err := readJSON(ctx, filepath.Join(*runDir, "blind-key.json"), &assignments); err != nil {
+	if err := readJSON(ctx, filepath.Join(*reviewDir, "blind-key.json"), &assignments); err != nil {
 		report(stderr, "spillway: eval-report: read assignment key: %v\n", err)
 		return 1
 	}
@@ -263,15 +310,48 @@ func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		report(stderr, "spillway: eval-report: %v\n", err)
 		return 1
 	}
-	if err := printGateReport(stdout, gateReport); err != nil {
-		report(stderr, "spillway: eval-report: write report: %v\n", err)
+	if *storePath != "" {
+		summary, marshalErr := json.Marshal(gateReport)
+		if marshalErr != nil {
+			report(stderr, "spillway: eval-report: encode aggregate report: %v\n", marshalErr)
+			return 1
+		}
+		database, openErr := store.Open(ctx, store.Options{Path: *storePath, Retention: 90 * 24 * time.Hour})
+		if openErr != nil {
+			report(stderr, "spillway: eval-report: open aggregate store: %v\n", openErr)
+			return 1
+		}
+		record := store.EvaluationRun{RunID: fmt.Sprintf("eval-%d", time.Now().UTC().UnixNano()), CreatedAt: time.Now().UTC(), CorpusSHA256: gateReport.CorpusSHA256, Summary: summary}
+		storeErr := database.RecordEvaluation(ctx, record)
+		closeErr := database.Close()
+		if storeErr != nil || closeErr != nil {
+			report(stderr, "spillway: eval-report: save aggregate report: %v\n", errors.Join(storeErr, closeErr))
+			return 1
+		}
+	}
+	var printErr error
+	if *jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		printErr = encoder.Encode(gateReport)
+	} else {
+		printErr = printGateReport(stdout, gateReport)
+	}
+	if printErr != nil {
+		report(stderr, "spillway: eval-report: write report: %v\n", printErr)
 		return 1
 	}
 	return 0
 }
 
 func printGateReport(w io.Writer, result evaluation.GateReport) error {
+	if _, err := fmt.Fprintf(w, "run format_version=%d prompt_set_version=%d prompt_count=%d corpus_sha256=%s settings_sha256=%s\n", result.FormatVersion, result.PromptSetVersion, result.PromptCount, result.CorpusSHA256, result.SettingsSHA256); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "baseline=%s seed=%d replicates=%d\n", result.Baseline, result.Seed, result.Replicates); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "provider_account_billing=%s\n", result.BillingStatus); err != nil {
 		return err
 	}
 	for _, gate := range result.Results {
@@ -284,7 +364,7 @@ func printGateReport(w io.Writer, result evaluation.GateReport) error {
 			estimate = fmt.Sprintf("%.4f", gate.Estimate)
 			interval = fmt.Sprintf("[%.4f, %.4f]", gate.Lower, gate.Upper)
 		}
-		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s gate=%s estimate=%s %s interval=%s %s verdict=%s", gate.Arm, gate.Difficulty, gate.Gate, estimate, unit, interval, unit, gate.Verdict); err != nil {
+		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s category=%s gate=%s estimate=%s %s interval=%s %s verdict=%s", gate.Arm, gate.Difficulty, gate.Category, gate.Gate, estimate, unit, interval, unit, gate.Verdict); err != nil {
 			return err
 		}
 		if gate.Reason != "" {
@@ -297,7 +377,7 @@ func printGateReport(w io.Writer, result evaluation.GateReport) error {
 		}
 	}
 	for _, cost := range result.Cost {
-		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s known_cost=%.1f%%", cost.Arm, cost.Difficulty, cost.KnownCostShare*100); err != nil {
+		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s category=%s known_cost=%.1f%%", cost.Arm, cost.Difficulty, cost.Category, cost.KnownCostShare*100); err != nil {
 			return err
 		}
 		keys := make([]string, 0, len(cost.CostSourceShares))
@@ -314,6 +394,11 @@ func printGateReport(w io.Writer, result evaluation.GateReport) error {
 			return err
 		}
 	}
+	for _, metrics := range result.RunMetrics {
+		if _, err := fmt.Fprintf(w, "arm=%s difficulty=%s category=%s requests=%d succeeded=%d failed=%d timed_out=%d cancelled=%d incomplete_streams=%d exhausted=%d zero_cost=%d status_classes=%s spillover_selected=%d spillover_succeeded=%d latency_p50_ms=%d latency_p95_ms=%d first_token_p50_ms=%d first_token_p95_ms=%d\n", metrics.Arm, metrics.Difficulty, metrics.Category, metrics.Requests, metrics.Successful, metrics.Failed, metrics.TimedOut, metrics.Cancelled, metrics.IncompleteStreams, metrics.Exhausted, metrics.ZeroCostRequests, formatStatusClasses(metrics.StatusClassShare), metrics.SpilloverPicked, metrics.SpilloverOK, metrics.LatencyP50MS, metrics.LatencyP95MS, metrics.FirstTokenP50MS, metrics.FirstTokenP95MS); err != nil {
+			return err
+		}
+	}
 	agreement := result.Agreement
 	if !agreement.Available {
 		_, err := fmt.Fprintln(w, "inter_rater_agreement=INCONCLUSIVE (fewer than two raters with overlapping answers)")
@@ -321,6 +406,19 @@ func printGateReport(w io.Writer, result evaluation.GateReport) error {
 	}
 	_, err := fmt.Fprintf(w, "inter_rater_agreement raters=%s paired_ratings=%d exact=%.4f quadratic_weighted_kappa=%.4f\n", strings.Join(agreement.Raters, ","), agreement.PairedRatings, agreement.ExactAgreement, agreement.QuadraticWeightedKappa)
 	return err
+}
+
+func formatStatusClasses(shares map[string]float64) string {
+	keys := make([]string, 0, len(shares))
+	for key := range shares {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, fmt.Sprintf("%s=%.4f", key, shares[key]))
+	}
+	return strings.Join(values, ",")
 }
 
 func readJSON(ctx context.Context, path string, value any) error {

@@ -219,7 +219,7 @@ func TestRun_ServeNewerStoreSchemaSuggestsSafeRecovery(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
 	}
-	for _, want := range []string{"schema version 99", "supported version 2", "binary " + strings.Fields(versionOut.String())[1], "newer Spillway binary", "store.path", "new file"} {
+	for _, want := range []string{"schema version 99", "supported version 3", "binary " + strings.Fields(versionOut.String())[1], "newer Spillway binary", "store.path", "new file"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr = %q, want %q", stderr.String(), want)
 		}

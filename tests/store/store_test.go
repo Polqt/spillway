@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,34 @@ import (
 	"github.com/Polqt/spillway/internal/store"
 	_ "modernc.org/sqlite"
 )
+
+func TestStore_EvaluationRunsAreBoundedAndRejectContent(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	db, err := store.Open(t.Context(), store.Options{Path: filepath.Join(t.TempDir(), "usage.db"), Retention: 90 * 24 * time.Hour, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, runID := range []string{"eval-1", "eval-2", "eval-3"} {
+		run := store.EvaluationRun{RunID: runID, CreatedAt: now, CorpusSHA256: strings.Repeat("a", 64), Summary: json.RawMessage(`{"prompt_count":90,"results":[]}`)}
+		if err := db.RecordEvaluation(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := db.EvaluationRuns(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "eval-3" {
+		t.Fatalf("evaluation runs = %#v, want newest two", runs)
+	}
+	if err := db.RecordEvaluation(t.Context(), store.EvaluationRun{RunID: "eval-unsafe", CorpusSHA256: strings.Repeat("b", 64), Summary: json.RawMessage(`{"prompt":"private"}`)}); err == nil {
+		t.Fatal("RecordEvaluation accepted prompt content")
+	}
+	if _, err := db.EvaluationRuns(t.Context(), 101); err == nil {
+		t.Fatal("EvaluationRuns accepted an unbounded limit")
+	}
+}
 
 func TestOpen_CreatesCurrentSchemaWithPrivateFile(t *testing.T) {
 	t.Parallel()
