@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -112,6 +113,20 @@ func (e *Edit) AppendTierModel(tier, modelRef string) error {
 		return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-2.5-flash", modelRef)
 	}
 	e.ops = append(e.ops, appendTierModelOp{tier: tier, model: modelRef})
+	return nil
+}
+
+// ReplaceModelReference replaces one exact model reference wherever config accepts one.
+func (e *Edit) ReplaceModelReference(oldRef, newRef string) error {
+	for _, ref := range []string{oldRef, newRef} {
+		if !modelReferencePattern.MatchString(ref) || !strings.Contains(ref, "/") {
+			return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-2.5-flash", ref)
+		}
+	}
+	if oldRef == newRef {
+		return errors.New("config: old and new model references are the same")
+	}
+	e.ops = append(e.ops, replaceModelReferenceOp{old: oldRef, new: newRef})
 	return nil
 }
 
@@ -288,6 +303,129 @@ func (op addProviderOp) intend(tree map[string]any) error {
 
 type appendTierModelOp struct {
 	tier, model string
+}
+
+type replaceModelReferenceOp struct{ old, new string }
+
+func (op replaceModelReferenceOp) apply(root *yaml.Node, lines []string, newline string) ([]string, hunk, error) {
+	var matches []*yaml.Node
+	add := func(node *yaml.Node) {
+		if node != nil && node.Kind == yaml.ScalarNode && node.Value == op.old {
+			matches = append(matches, node)
+		}
+	}
+	top := root
+	if tiers := mappingValue(top, "tiers"); tiers != nil && tiers.Kind == yaml.MappingNode {
+		for i := 1; i < len(tiers.Content); i += 2 {
+			if models := mappingValue(tiers.Content[i], "models"); models != nil && models.Kind == yaml.SequenceNode {
+				foundOld, foundNew := false, false
+				for _, item := range models.Content {
+					foundOld = foundOld || item.Value == op.old
+					foundNew = foundNew || item.Value == op.new
+					add(item)
+				}
+				if foundOld && foundNew {
+					return nil, hunk{}, fmt.Errorf("config: tier already contains %s", op.new)
+				}
+			}
+		}
+	}
+	for _, sectionName := range []string{"models", "pricing"} {
+		if section := mappingValue(top, sectionName); section != nil && section.Kind == yaml.MappingNode {
+			foundOld, foundNew := false, false
+			for i := 0; i < len(section.Content); i += 2 {
+				foundOld = foundOld || section.Content[i].Value == op.old
+				foundNew = foundNew || section.Content[i].Value == op.new
+				add(section.Content[i])
+			}
+			if foundOld && foundNew {
+				return nil, hunk{}, fmt.Errorf("config: %s already contains %s", sectionName, op.new)
+			}
+		}
+	}
+	if router := mappingValue(top, "router"); router != nil {
+		if classifier := mappingValue(router, "classifier"); classifier != nil {
+			add(mappingValue(classifier, "model"))
+		}
+	}
+	if len(matches) == 0 {
+		return nil, hunk{}, fmt.Errorf("config: model reference %s was not found", op.old)
+	}
+	// Apply from bottom to top so line columns remain valid when several references share a line.
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Line > matches[j].Line || matches[i].Line == matches[j].Line && matches[i].Column > matches[j].Column
+	})
+	var before, after []string
+	for _, node := range matches {
+		lineIndex := node.Line - 1
+		if lineIndex < 0 || lineIndex >= len(lines) {
+			return nil, hunk{}, errors.New("config: invalid model reference location")
+		}
+		line := lineText(lines[lineIndex])
+		start := node.Column - 1
+		end := start + len(node.Value)
+		if node.Style&yaml.SingleQuotedStyle != 0 {
+			end += 2
+		}
+		if node.Style&yaml.DoubleQuotedStyle != 0 {
+			end += 2
+		}
+		if start < 0 || end > len(line) {
+			return nil, hunk{}, op.layout(node.Line, "model reference quoting cannot be safely edited")
+		}
+		replacement := op.new
+		if node.Style&yaml.SingleQuotedStyle != 0 {
+			replacement = "'" + strings.ReplaceAll(op.new, "'", "''") + "'"
+		}
+		if node.Style&yaml.DoubleQuotedStyle != 0 {
+			replacement = `"` + op.new + `"`
+		}
+		ending := strings.TrimPrefix(lines[lineIndex], line)
+		before = append(before, line)
+		line = line[:start] + replacement + line[end:]
+		lines[lineIndex] = line + ending
+		after = append(after, line)
+	}
+	return lines, hunk{path: "model references", context: before, added: after}, nil
+}
+
+func (op replaceModelReferenceOp) layout(line int, reason string) *LayoutError {
+	return &LayoutError{Path: "model references", Line: line, Reason: reason, Snippet: "replace the model reference manually and run `spillway check`"}
+}
+
+func (op replaceModelReferenceOp) intend(tree map[string]any) error {
+	if tiers, ok := tree["tiers"].(map[string]any); ok {
+		for _, value := range tiers {
+			if tier, ok := value.(map[string]any); ok {
+				if models, ok := tier["models"].([]any); ok {
+					for i, model := range models {
+						if model == op.old {
+							models[i] = op.new
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, sectionName := range []string{"models", "pricing"} {
+		if section, ok := tree[sectionName].(map[string]any); ok {
+			_, hasOld := section[op.old]
+			_, hasNew := section[op.new]
+			if hasOld && hasNew {
+				return fmt.Errorf("config: %s already contains %s", sectionName, op.new)
+			}
+			if value, exists := section[op.old]; exists {
+				delete(section, op.old)
+				section[op.new] = value
+			}
+		}
+	}
+	if router, ok := tree["router"].(map[string]any); ok {
+		if classifier, ok := router["classifier"].(map[string]any); ok && classifier["model"] == op.old {
+			classifier["model"] = op.new
+		}
+	}
+	return nil
 }
 
 var sequenceItemPrefix = regexp.MustCompile(`^\s*-\s+`)

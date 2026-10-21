@@ -31,6 +31,7 @@ gh attestation verify spillway_1.0.0_linux_amd64.tar.gz -R Polqt/spillway
 Use the actual archive filename for your platform. Verification requires a supported GitHub CLI version and network access. Release provenance attestations cover release archives and the image; v1.0 does not produce cosign signatures or SBOMs.
 
 Extract the archive, place `spillway` on your `PATH`, and run `spillway version`.
+In PowerShell before adding it to `PATH`, run the binary from the extracted folder, for example `.\spillway.exe version`.
 
 ## Install with Go
 

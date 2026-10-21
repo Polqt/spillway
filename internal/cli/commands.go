@@ -198,6 +198,8 @@ flags:
 
 func addManagementCommands(ctx context.Context, root *cobra.Command, options Options) {
 	addProviderCommands(ctx, root, options)
+	addModelCommands(ctx, root, options)
+	addTierCommands(root, options)
 	doctor := doctorCommand(ctx, options)
 	doctor.GroupID = "diagnose"
 	root.AddCommand(doctor)
