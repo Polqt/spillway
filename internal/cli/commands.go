@@ -200,6 +200,9 @@ func addManagementCommands(ctx context.Context, root *cobra.Command, options Opt
 	addProviderCommands(ctx, root, options)
 	addModelCommands(ctx, root, options)
 	addTierCommands(root, options)
+	install := installCommand(ctx, options)
+	install.GroupID = "manage"
+	root.AddCommand(install)
 	doctor := doctorCommand(ctx, options)
 	doctor.GroupID = "diagnose"
 	root.AddCommand(doctor)
