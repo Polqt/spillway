@@ -183,6 +183,90 @@ func TestEdit_AppendTierModelBlockSequence(t *testing.T) {
 	}
 }
 
+func TestEdit_ReplaceModelReferenceUpdatesAllConfiguredReferences(t *testing.T) {
+	t.Parallel()
+	before := `server:
+  listen: 127.0.0.1:8080
+  api_keys:
+    - name: default
+      key: sk-test-local-model-replace
+providers:
+  ollama:
+    base_url: http://localhost:11434
+tiers:
+  free:
+    models:
+      - 'ollama/old-model:v1'
+models:
+  'ollama/old-model:v1':
+    capabilities: [vision]
+pricing:
+  'ollama/old-model:v1':
+    input_usd_per_mtok: 0
+    output_usd_per_mtok: 0
+router:
+  mode: rules
+  auto: [free]
+  difficulty:
+    simple: [free]
+    moderate: [free]
+    hard: [free]
+  classifier:
+    model: ollama/old-model:v1
+`
+	doc := writeDocument(t, before)
+	edit := doc.Edit()
+	if err := edit.ReplaceModelReference("ollama/old-model:v1", "ollama/new-model:v1"); err != nil {
+		t.Fatalf("ReplaceModelReference: %v", err)
+	}
+	change, err := edit.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	want := strings.ReplaceAll(before, "ollama/old-model:v1", "ollama/new-model:v1")
+	if got := string(change.Content()); got != want {
+		t.Errorf("Content() =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestEdit_ReplaceModelReferenceRejectsMissingAndCollidingReferences(t *testing.T) {
+	t.Parallel()
+	base := `server:
+  listen: 127.0.0.1:8080
+  api_keys:
+    - name: default
+      key: sk-test-local-model-replace
+providers:
+  ollama:
+    base_url: http://localhost:11434
+tiers:
+  free:
+    models:
+      - ollama/old-model
+      - ollama/new-model
+`
+	tests := []struct {
+		name, oldRef, newRef, wantError string
+	}{
+		{name: "missing", oldRef: "ollama/missing", newRef: "ollama/target", wantError: "was not found"},
+		{name: "collision", oldRef: "ollama/old-model", newRef: "ollama/new-model", wantError: "tier already contains"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			doc := writeDocument(t, base)
+			edit := doc.Edit()
+			if err := edit.ReplaceModelReference(tc.oldRef, tc.newRef); err != nil {
+				t.Fatalf("ReplaceModelReference: %v", err)
+			}
+			_, err := edit.Result()
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("Result error = %v, want containing %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
 func TestEdit_FlowStyleTargetReturnsLayoutErrorWithSnippet(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

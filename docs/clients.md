@@ -1,7 +1,20 @@
 # Connect a client app
 
 Run `spillway key default` to print the client key. Use `spillway key dashboard` for the dashboard. Keep both private, and never put a real key in source control or a shared example.
-If the config is elsewhere, run `spillway key -config <path> default` or `spillway key -config <path> dashboard`.
+If you are using the downloaded Windows archive from its extracted folder, run `.\spillway.exe key default` or `.\spillway.exe key dashboard`.
+If the config is elsewhere, add `-config <path>` before the key name, for example `spillway key -config config.yaml default`.
+
+Useful config commands:
+
+```text
+spillway model list
+spillway model list -provider groq
+spillway tier list
+spillway model replace gemini/old-model gemini/new-model -config config.yaml -dry-run
+```
+
+`model replace` shows a preview and saves a backup before writing. Restart the server after a change.
+`model list` reports zero-spend eligibility from your config; Gemini model quotas must be checked against Google's current pricing and rate limits.
 
 Spillway supports OpenAI Chat Completions at `/v1/chat/completions` and model listing at `/v1/models`.
 It does not implement the OpenAI Responses API at `/v1/responses`; use a client configured for Chat Completions.
