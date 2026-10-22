@@ -81,6 +81,38 @@ func TestProviderShow_ShowsReferencesWithoutValues(t *testing.T) {
 	}
 }
 
+func TestProviderShow_NamedInstanceHidesSensitiveLabelsAndEndpointDetails(t *testing.T) {
+	t.Parallel()
+	base := `server: {api_keys: [sk-test-local-key-canary]}
+providers:
+  groq-staging:
+    type: groq
+    api_key: "${GROQ_STAGING_API_KEY}"
+    base_url: "https://upstream.example.invalid/tenant/private-path-canary"
+    quota_domains:
+      organization: team-internal-canary
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.RunWithOptions(t.Context(), []string{"provider", "show", "groq-staging", "-config", path}, nil, &stdout, &stderr, cli.Options{LookupEnv: func(name string) (string, bool) { return "sk-test-hidden", name == "GROQ_STAGING_API_KEY" }})
+	if code != 0 {
+		t.Fatalf("exit = %d; stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"groq-staging (instance; type groq)", "${GROQ_STAGING_API_KEY}", "custom endpoint configured", "organization (labels hidden)"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("output %q lacks %q", stdout.String(), want)
+		}
+	}
+	for _, hidden := range []string{"private-path-canary", "team-internal-canary", "sk-test-hidden", "sk-test-local-key-canary"} {
+		if strings.Contains(stdout.String()+stderr.String(), hidden) {
+			t.Errorf("output leaked %q", hidden)
+		}
+	}
+}
+
 func TestProviderShow_UnknownProviderExits1WithConfiguredNames(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
@@ -146,7 +178,7 @@ func TestManage_ProviderWithoutSubcommandIsUsageError(t *testing.T) {
 	if code := cli.Run(t.Context(), []string{"provider"}, nil, &stdout, &stderr, noEnv); code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "usage: spillway provider") || !strings.Contains(stdout.String(), "show <name>") {
+	if !strings.Contains(stdout.String(), "usage: spillway provider") || !strings.Contains(stdout.String(), "show <instance>") {
 		t.Errorf("stdout = %q", stdout.String())
 	}
 }

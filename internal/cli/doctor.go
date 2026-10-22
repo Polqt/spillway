@@ -176,14 +176,21 @@ func reportVariablesAndKeys(ctx context.Context, status func(string, string, ...
 	}
 	variables := make(map[string]*variableRole)
 	providerVariable := make(map[string]string)
-	for name := range cfg.Providers {
+	for _, name := range sortedProviderNames(cfg.Providers) {
 		variable, err := config.ProviderKeyVariable(ctx, path, name)
 		if err != nil {
 			return status("fail", "cannot inspect key variable for %s: %v", name, err)
 		}
-		preset, _ := providers.LookupPreset(name)
+		serviceType := cfg.Providers[name].Type
+		if serviceType == "" {
+			serviceType = name
+		}
+		preset, _ := providers.LookupPreset(serviceType)
 		if variable == "" && preset.RequiresKey {
 			variable = preset.KeyEnv
+			if serviceType != name {
+				variable = strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEY"
+			}
 		}
 		if variable == "" {
 			continue
