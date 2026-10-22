@@ -216,11 +216,19 @@ func listenEndpoint(listen string) (*url.URL, error) {
 	if err != nil || port == "" || port == "0" {
 		return nil, fmt.Errorf("cannot derive the gateway address from server.listen %q; pass -endpoint", listen)
 	}
-	switch strings.Trim(host, "[]") {
-	case "", "0.0.0.0", "::", "localhost":
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	switch {
+	case ip != nil && ip.IsUnspecified() && ip.To4() == nil:
+		// An IPv6 wildcard always includes ::1, even on IPv6-only platforms.
+		host = "::1"
+	case host == "" || ip != nil && ip.IsUnspecified():
+		host = "127.0.0.1"
+	case strings.EqualFold(host, "localhost"):
+		// net.Listen binds a host name to its first IPv4 address when it has one.
 		host = "127.0.0.1"
 	}
-	return &url.URL{Scheme: "http", Host: net.JoinHostPort(strings.Trim(host, "[]"), port)}, nil
+	return &url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}, nil
 }
 
 type dashboardAPIError struct {

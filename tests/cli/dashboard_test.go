@@ -2,10 +2,14 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Polqt/spillway/internal/cli"
 )
@@ -162,9 +166,11 @@ func TestRun_DashboardDefaultsToConfiguredListenAddress(t *testing.T) {
 	t.Parallel()
 	server := fakeDashboardAPI(t, "")
 	listen := strings.TrimPrefix(server.URL, "http://")
+	port := listen[strings.LastIndex(listen, ":")+1:]
 	for name, address := range map[string]string{
 		"loopback":       listen,
-		"all interfaces": "0.0.0.0:" + listen[strings.LastIndex(listen, ":")+1:],
+		"all interfaces": "0.0.0.0:" + port,
+		"localhost":      "localhost:" + port,
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := strings.Replace(dashboardConfig, "server:\n", "server:\n  listen: \""+address+"\"\n", 1)
@@ -225,5 +231,62 @@ func TestRun_DashboardNeutralizesControlCharacters(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("snapshot missing neutralized %q:\n%s", want, stdout.String())
 		}
+	}
+}
+
+func TestRun_DashboardMapsIPv6WildcardToIPv6Loopback(t *testing.T) {
+	t.Parallel()
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(t.Context(), "tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	ipv6 := httptest.NewUnstartedServer(fakeDashboardAPI(t, "").Config.Handler)
+	ipv6.Listener = listener
+	ipv6.Start()
+	t.Cleanup(ipv6.Close)
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	config := strings.Replace(dashboardConfig, "server:\n", "server:\n  listen: \"[::]:"+port+"\"\n", 1)
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"dashboard", "-config", writeConfig(t, config)}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 || !strings.Contains(stdout.String(), "v9.9.9") {
+		t.Fatalf("exit code = %d, stdout = %q, stderr = %q; want data from [::1]", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRun_DashboardRefusesNonLoopbackListenAddress(t *testing.T) {
+	t.Parallel()
+	config := strings.Replace(dashboardConfig, "server:\n", "server:\n  listen: \"192.0.2.10:8080\"\n", 1)
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"dashboard", "-config", writeConfig(t, config)}, nil, &stdout, &stderr, noEnv)
+
+	if code != 2 || !strings.Contains(stderr.String(), "refusing to send the dashboard key over plain http") {
+		t.Errorf("exit code = %d, stderr = %q; want plain http refusal", code, stderr.String())
+	}
+}
+
+// Security property: proxy environment variables never receive the dashboard key.
+// Not parallel: it sets process-wide proxy variables.
+func TestRun_DashboardIgnoresProxyEnvironment(t *testing.T) {
+	var proxied atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	t.Setenv("HTTPS_PROXY", proxy.URL)
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+
+	_ = cli.Run(ctx, []string{"dashboard", "-config", writeConfig(t, dashboardConfig), "-endpoint", "https://192.0.2.10"}, nil, &stdout, &stderr, noEnv)
+
+	if proxied.Load() != 0 {
+		t.Errorf("proxy received %d requests, want 0", proxied.Load())
 	}
 }
