@@ -20,6 +20,7 @@ import (
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	glowui "github.com/charmbracelet/glow/v2/ui"
+	glowLog "github.com/charmbracelet/log"
 	"golang.org/x/term"
 )
 
@@ -189,7 +190,7 @@ func interactiveTerminal(stdin io.Reader, stdout io.Writer) bool {
 	return inputOK && outputOK && in == os.Stdin && out == os.Stdout && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(out.Fd()))
 }
 
-func writeInitSummary(stdout io.Writer, configPath string, statuses []string, attested map[string]bool, selected []string, storeEnabled bool, baseURL, keyCommand string) error {
+func writeInitSummary(stdout io.Writer, configPath string, statuses []string, attested map[string]bool, selected []string, storeEnabled bool, baseURL, keyCommand string) (err error) {
 	var markdown strings.Builder
 	markdown.WriteString("# Spillway is ready\n\n")
 	markdown.WriteString("Your local gateway is set up. Here's everything you need to get connected.\n\n")
@@ -233,8 +234,28 @@ func writeInitSummary(stdout io.Writer, configPath string, statuses []string, at
 		markdown.WriteString("## Local dashboard\n\nOpen `" + baseURL + "/dashboard`. Get its key with `" + keyCommand + " dashboard`.\n\n")
 	}
 	markdown.WriteString("## Start the gateway\n\n```sh\nspillway check -config " + configPath + "\nspillway serve -config " + configPath + "\n```")
-	program := glowui.NewProgram(glowui.Config{GlamourEnabled: true, GlamourMaxWidth: 88}, markdown.String())
-	_, err := program.Run()
+	summaryFile, err := os.CreateTemp(".", "spillway-init-summary-*.md")
+	if err != nil {
+		return fmt.Errorf("create Glow summary: %w", err)
+	}
+	summaryPath := summaryFile.Name()
+	defer func() {
+		if removeErr := os.Remove(summaryPath); err == nil && removeErr != nil {
+			err = fmt.Errorf("remove temporary Glow summary: %w", removeErr)
+		}
+	}()
+	if _, err := io.WriteString(summaryFile, markdown.String()); err != nil {
+		closeErr := summaryFile.Close()
+		return fmt.Errorf("write Glow summary: %w", errors.Join(err, closeErr))
+	}
+	if err := summaryFile.Close(); err != nil {
+		return fmt.Errorf("close Glow summary: %w", err)
+	}
+	program := glowui.NewProgram(glowui.Config{Path: summaryPath, GlamourEnabled: true, GlamourMaxWidth: 88, GlamourStyle: "dark"}, "")
+	previousLogLevel := glowLog.GetLevel()
+	glowLog.SetLevel(glowLog.ErrorLevel)
+	defer glowLog.SetLevel(previousLogLevel)
+	_, err = program.Run()
 	return err
 }
 
