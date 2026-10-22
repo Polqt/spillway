@@ -161,47 +161,54 @@ func addressInUse(err error) bool {
 // newHandler wires the configured providers and local keys into the API.
 func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usageStore *store.Store) (http.Handler, error) {
 	var ps []providers.Provider
-	for name := range cfg.Providers {
-		switch name {
+	serviceTypes := make(map[string]string, len(cfg.Providers))
+	for _, name := range sortedProviderNames(cfg.Providers) {
+		providerConfig := cfg.Providers[name]
+		serviceType := providerConfig.Type
+		if serviceType == "" {
+			serviceType = name
+		}
+		serviceTypes[name] = serviceType
+		switch serviceType {
 		case "mock":
-			p, err := mock.New(mock.Options{Now: time.Now})
+			p, err := mock.New(mock.Options{Name: name, Now: time.Now})
 			if err != nil {
 				return nil, fmt.Errorf("build provider mock: %w", err)
 			}
 			ps = append(ps, p)
 		case "gemini":
-			baseURL := cfg.Providers[name].BaseURL
+			baseURL := providerConfig.BaseURL
 			if baseURL == "" {
-				preset, _ := providers.LookupPreset(name)
+				preset, _ := providers.LookupPreset(serviceType)
 				baseURL = preset.DefaultBaseURL
 			}
 			p, err := gemini.New(gemini.Options{
-				APIKey: cfg.Providers[name].APIKey, BaseURL: baseURL, Timeout: cfg.Providers[name].Timeout,
+				Name: name, APIKey: providerConfig.APIKey, BaseURL: baseURL, Timeout: providerConfig.Timeout,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("build provider gemini: %w", err)
 			}
 			ps = append(ps, p)
 		case "groq", "openrouter", "ollama":
-			baseURL := cfg.Providers[name].BaseURL
+			baseURL := providerConfig.BaseURL
 			if baseURL == "" {
-				preset, _ := providers.LookupPreset(name)
+				preset, _ := providers.LookupPreset(serviceType)
 				baseURL = preset.DefaultBaseURL
-				if name == "ollama" {
+				if serviceType == "ollama" {
 					baseURL += "/v1"
 				}
-			} else if name == "ollama" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
+			} else if serviceType == "ollama" && !strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1") {
 				baseURL = strings.TrimRight(baseURL, "/") + "/v1"
 			}
 			p, err := openaicompat.New(openaicompat.Options{
-				Name: name, BaseURL: baseURL, APIKey: cfg.Providers[name].APIKey, Timeout: cfg.Providers[name].Timeout,
+				Name: name, BaseURL: baseURL, APIKey: providerConfig.APIKey, Timeout: providerConfig.Timeout,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("build provider %s: %w", name, err)
 			}
 			ps = append(ps, p)
 		default:
-			return nil, fmt.Errorf("provider %q has no adapter", name)
+			return nil, fmt.Errorf("provider instance %q has no adapter for service type %q", name, serviceType)
 		}
 	}
 	set, err := providers.NewSet(ps...)
@@ -276,14 +283,28 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		for _, refs := range tiers {
 			candidates = append(candidates, refs...)
 		}
-		tracker, err = quota.New(quota.Options{Now: now, Candidates: candidates})
+		quotaDomains := make(map[string]map[string]string, len(cfg.Providers))
+		for name, provider := range cfg.Providers {
+			quotaDomains[name] = provider.QuotaDomains
+		}
+		tracker, err = quota.New(quota.Options{
+			Now: now, Candidates: candidates, ServiceTypes: serviceTypes, QuotaDomains: quotaDomains,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("build quota tracker: %w", err)
 		}
 	}
 	var budgetGate *budget.Gate
-	if cfg.Budgets != nil {
-		budgetGate, err = budget.NewGate(ctx, budget.GateOptions{Limits: *cfg.Budgets, Providers: cfg.Providers, Store: usageStore, Now: now})
+	hasInstanceBudget := false
+	for _, provider := range cfg.Providers {
+		hasInstanceBudget = hasInstanceBudget || provider.Budget != nil
+	}
+	if cfg.Budgets != nil || hasInstanceBudget {
+		var limits config.Budgets
+		if cfg.Budgets != nil {
+			limits = *cfg.Budgets
+		}
+		budgetGate, err = budget.NewGate(ctx, budget.GateOptions{Limits: limits, Providers: cfg.Providers, Store: usageStore, Now: now})
 		if err != nil {
 			return nil, fmt.Errorf("build budget gate: %w", err)
 		}
@@ -323,7 +344,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		Gateway:          api.Gateway{Version: currentVersion(), DashboardAssets: web.Assets()},
 	}
 	for name, provider := range cfg.Providers {
-		preset, _ := providers.LookupPreset(name)
+		preset, _ := providers.LookupPreset(serviceTypes[name])
 		options.DashboardProviders = append(options.DashboardProviders, api.DashboardProvider{
 			Name: name, CredentialRequired: preset.RequiresKey, CredentialPresent: !provider.APIKey.IsZero(),
 		})

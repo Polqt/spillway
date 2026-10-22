@@ -47,17 +47,25 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 	}
 	refs := configuredRefs(cfg)
 	found := make(map[string]suggestion)
-	names := []string{"openrouter", "ollama", "groq"}
+	names := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 	for _, name := range names {
 		provider, enabled := cfg.Providers[name]
 		if !enabled {
 			continue
 		}
+		serviceType := providerServiceType(name, provider)
+		if serviceType != "openrouter" && serviceType != "ollama" && serviceType != "groq" {
+			continue
+		}
 		base := provider.BaseURL
 		if base == "" {
-			base = defaultURL(name)
+			base = defaultURL(serviceType)
 		}
-		if name == "ollama" {
+		if serviceType == "ollama" {
 			base = strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")
 			for _, ref := range refs {
 				if ref.Provider != name {
@@ -82,7 +90,7 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 		if err != nil {
 			return fmt.Errorf("fetch %s catalog: %w", name, err)
 		}
-		items, err := parseOpenAIList(data, name)
+		items, err := parseOpenAIList(data, serviceType)
 		if err != nil {
 			return fmt.Errorf("decode %s catalog: %w", name, err)
 		}
@@ -373,11 +381,12 @@ func writeOutput(out io.Writer, cfg config.Config, refs map[string]providers.Mod
 		if !ok {
 			continue
 		}
-		if refs[key].Provider == "openrouter" && strings.HasSuffix(refs[key].Model, ":free") &&
+		serviceType := providerServiceType(refs[key].Provider, cfg.Providers[refs[key].Provider])
+		if serviceType == "openrouter" && strings.HasSuffix(refs[key].Model, ":free") &&
 			((item.inputPrice != "" && item.inputPrice != "0") || (item.outputPrice != "" && item.outputPrice != "0")) {
 			fmt.Fprintf(&b, "# WARNING: %s has non-zero catalog price despite the :free suffix\n", key)
 		}
-		if item.inputPrice == "" || item.outputPrice == "" || (refs[key].Provider != "openrouter" && refs[key].Provider != "ollama") {
+		if item.inputPrice == "" || item.outputPrice == "" || (serviceType != "openrouter" && serviceType != "ollama") {
 			continue
 		}
 		quoted, _ := yaml.Marshal(key)
@@ -386,13 +395,38 @@ func writeOutput(out io.Writer, cfg config.Config, refs map[string]providers.Mod
 			fmt.Fprintf(&b, "    # declared input_usd_per_mtok: %s, output_usd_per_mtok: %s\n", formatMicro(declared.InputMicroUSDPerMillion), formatMicro(declared.OutputMicroUSDPerMillion))
 		}
 	}
-	for _, name := range []string{"gemini", "mock"} {
-		if _, ok := cfg.Providers[name]; ok {
-			fmt.Fprintf(&b, "# %s skipped: no usable catalog fields\n", map[string]string{"gemini": "Gemini", "mock": "mock"}[name])
+	for _, name := range providerNames(cfg.Providers) {
+		serviceType := providerServiceType(name, cfg.Providers[name])
+		if serviceType == "gemini" || serviceType == "mock" {
+			label := serviceType
+			if serviceType == "gemini" {
+				label = "Gemini"
+			}
+			if name == serviceType {
+				fmt.Fprintf(&b, "# %s skipped: no usable catalog fields\n", label)
+			} else {
+				fmt.Fprintf(&b, "# %s skipped for instance %s: no usable catalog fields\n", label, name)
+			}
 		}
 	}
 	_, err := io.WriteString(out, b.String())
 	return err
+}
+
+func providerServiceType(name string, provider config.Provider) string {
+	if provider.Type != "" {
+		return provider.Type
+	}
+	return name
+}
+
+func providerNames(configured map[string]config.Provider) []string {
+	names := make([]string, 0, len(configured))
+	for name := range configured {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func formatMicro(micro int64) string {

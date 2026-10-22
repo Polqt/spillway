@@ -372,7 +372,7 @@ func TestDashboardAPI_ProviderStatusIsSafeAndBounded(t *testing.T) {
 		t.Fatalf("provider status = %+v, want configured mock with one observed cooldown", result.Providers[1])
 	}
 	provider := result.Providers[1]
-	if provider.Signals[0].Model != "echo" || provider.Signals[0].Reason != "rate limited" || provider.Signals[0].UpstreamFailures != 1 {
+	if provider.Signals[0].Model != "echo" || provider.Signals[0].Reason != "rate limited; quota scope unknown, conservatively shared" || provider.Signals[0].UpstreamFailures != 1 {
 		t.Errorf("observed signal = %+v, want the fixed rate limit reason for echo", provider.Signals[0])
 	}
 	if result.Providers[2].Name != "ollama" || result.Providers[2].CredentialRequired || result.Providers[2].CredentialPresent {

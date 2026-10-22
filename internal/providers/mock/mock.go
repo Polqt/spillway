@@ -18,13 +18,15 @@ import (
 
 // Options configures the mock provider.
 type Options struct {
+	Name string
 	// Now supplies the created timestamp of every response.
 	Now func() time.Time
 }
 
 // Provider is the deterministic mock provider used by tests and demos.
 type Provider struct {
-	now func() time.Time
+	name string
+	now  func() time.Time
 }
 
 // New returns the mock provider.
@@ -32,13 +34,14 @@ func New(o Options) (*Provider, error) {
 	if o.Now == nil {
 		return nil, errors.New("mock: Options.Now is required")
 	}
-	return &Provider{now: o.Now}, nil
+	if o.Name == "" {
+		o.Name = "mock"
+	}
+	return &Provider{name: o.Name, now: o.Now}, nil
 }
 
 // Name returns "mock".
-func (p *Provider) Name() string {
-	return "mock"
-}
+func (p *Provider) Name() string { return p.name }
 
 // Models lists the mock provider's supported models.
 func (p *Provider) Models(ctx context.Context) ([]providers.Model, error) {
@@ -178,7 +181,7 @@ func checkModel(model string) error {
 func simulatedError(model string) error {
 	switch model {
 	case modelRateLimited:
-		return fmt.Errorf("mock: upstream model %q: %w", model, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited})
+		return fmt.Errorf("mock: upstream model %q: %w", model, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited, Scope: "model"})
 	case modelUnauthorized:
 		return modelError(model, providers.ErrUnauthorized)
 	case modelUnavailable:
