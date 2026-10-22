@@ -371,5 +371,6 @@ func confirmProviderWrite(ctx context.Context, options Options) (bool, error) {
 
 func runProviderForm(ctx context.Context, options Options, form *huh.Form) error {
 	inputCloser, _ := options.Stdin.(io.Closer)
-	return runInitForm(ctx, inputCloser, options.Stdin, options.Stdout, form)
+	prompt := &initPrompt{ctx: ctx, stdin: options.Stdin, closeInput: inputCloser, stdout: options.Stdout, tty: interactiveTerminal(options.Stdin, options.Stdout)}
+	return prompt.run(form)
 }

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -78,8 +77,7 @@ flags:
 	root.SetCompletionCommandGroupID("tools")
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 		out := cmd.OutOrStdout()
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Spillway")
-		if _, err := lipgloss.Fprint(out, title+"\n\n"+cmd.UsageString()); err != nil {
+		if _, err := fmt.Fprint(styledWriter(out), "\n  "+brandHeader(version)+"\n\n"+cmd.UsageString()); err != nil {
 			report(cmd.ErrOrStderr(), "spillway: write help: %v\n", err)
 			*exitCode = 1
 		}
@@ -114,6 +112,14 @@ flags:
 		return keyCommand(legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
+	})
+	addLegacyCommand(root, exitCode, "dashboard", "watch a running gateway in a live terminal dashboard", `  spillway dashboard
+  spillway dashboard -config config.yaml -interval 5s`, func(cmd *cobra.Command, args []string) int {
+		return dashboardCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file holding the dashboard key")
+		flags.String("endpoint", "http://127.0.0.1:8080", "running Spillway base URL")
+		flags.Duration("interval", 2*time.Second, "refresh interval (1s-1m)")
 	})
 	addLegacyCommand(root, exitCode, "catalog", "suggest model declarations and pricing from configured providers", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
 		return catalogCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)

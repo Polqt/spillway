@@ -45,8 +45,10 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	inputCloser, _ := stdin.(io.Closer)
 	provided := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	tty := interactiveTerminal(stdin, stdout)
+	prompt := &initPrompt{ctx: ctx, stdin: stdin, closeInput: inputCloser, stdout: stdout, tty: tty}
 	if !*yes {
-		if err := writeInitBanner(stdout); err != nil {
+		if err := prompt.redraw(); err != nil {
 			report(stderr, "spillway: init: write setup heading: %v\n", err)
 			return 1
 		}
@@ -63,7 +65,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return 1
 		}
 	} else {
-		targetConfigPath, err = chooseConfigPathInteractive(ctx, stdin, inputCloser, stdout)
+		targetConfigPath, err = chooseConfigPathInteractive(prompt)
 		if err != nil {
 			return initChoiceError(stderr, err)
 		}
@@ -73,7 +75,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if provided["providers"] || *yes {
 		selected, err = chooseProviders(ctx, *providerFlag, provided["providers"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
 	} else {
-		selected, err = chooseProvidersInteractive(ctx, stdin, inputCloser, stdout)
+		selected, err = chooseProvidersInteractive(prompt)
 	}
 	if err != nil {
 		return initChoiceError(stderr, err)
@@ -82,14 +84,14 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if provided["attest-free-tier"] || *yes {
 		attested, err = chooseAttestations(ctx, selected, *attestFlag, provided["attest-free-tier"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
 	} else {
-		attested, err = chooseAttestationsInteractive(ctx, selected, stdin, inputCloser, stdout)
+		attested, err = chooseAttestationsInteractive(prompt, selected)
 	}
 	if err != nil {
 		return initChoiceError(stderr, err)
 	}
 	models := eligibleModels(selected, attested)
 	if !*yes && len(models) > 0 {
-		models, err = chooseModelsInteractive(ctx, models, stdin, inputCloser, stdout)
+		models, err = chooseModelsInteractive(prompt, models)
 		if err != nil {
 			return initChoiceError(stderr, err)
 		}
@@ -98,7 +100,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if provided["store"] || *yes {
 		storeEnabled, err = chooseStore(ctx, *storeFlag, provided["store"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
 	} else {
-		storeEnabled, err = chooseStoreInteractive(ctx, stdin, inputCloser, stdout)
+		storeEnabled, err = chooseStoreInteractive(prompt)
 	}
 	if err != nil {
 		return initChoiceError(stderr, err)
@@ -124,7 +126,10 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if targetConfigPath != defaultConfigPath {
 		keyCommand += " -config \"" + targetConfigPath + "\""
 	}
-	if interactiveTerminal(stdin, stdout) {
+	if tty {
+		if !*yes {
+			_ = prompt.redraw()
+		}
 		if err := writeInitSummary(stdout, targetConfigPath, statuses, attested, selected, storeEnabled, baseURL, keyCommand); err == nil {
 			return 0
 		}
@@ -260,21 +265,17 @@ func writeInitSummary(stdout io.Writer, configPath string, statuses []string, at
 }
 
 func writeInitBanner(stdout io.Writer) error {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Render("SPILLWAY / setup")
-	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("Your local AI gateway, ready in a few steps")
-	banner := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("57")).Padding(0, 1).Render(title + "\n" + subtitle)
-	_, err := lipgloss.Fprintln(stdout, banner+"\n")
-	return err
+	return writeBrandHeader(stdout, "setup", "Your local AI gateway, ready in a few steps.")
 }
 
-func chooseConfigPathInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (string, error) {
+func chooseConfigPathInteractive(prompt *initPrompt) (string, error) {
 	path := defaultConfigPath
 	field := huh.NewInput().
 		Title("Config file").
 		Description("Choose where Spillway creates the new config.").
 		Value(&path).
 		Validate(validateNewConfigPath)
-	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+	if err := prompt.ask(field, "Config file", func() string { return path }); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -294,16 +295,21 @@ func validateNewConfigPath(path string) error {
 	return nil
 }
 
-func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
+func chooseProvidersInteractive(prompt *initPrompt) ([]string, error) {
 	selected := []string{"mock"}
 	options := make([]huh.Option[string], 0, len(providers.Presets()))
 	for _, preset := range providers.Presets() {
-		options = append(options, huh.NewOption(preset.Name, preset.Name))
+		label := preset.Name
+		if prompt.tty {
+			label = fmt.Sprintf("%-11s %s", preset.Name, mutedStyle.Render(providerHint(preset)))
+		}
+		options = append(options, huh.NewOption(label, preset.Name))
 	}
 	field := huh.NewMultiSelect[string]().
 		Title("Choose providers").
 		Description("Select the providers Spillway may use.").
 		Options(options...).
+		Height(multiSelectHeight(len(options))).
 		Value(&selected).
 		Validate(func(values []string) error {
 			if len(values) == 0 {
@@ -311,13 +317,30 @@ func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput
 			}
 			return nil
 		})
-	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+	if err := prompt.ask(field, "Choose providers", func() string { return strings.Join(selected, ", ") }); err != nil {
 		return nil, err
 	}
 	return parseProviderList(strings.Join(selected, ","))
 }
 
-func chooseModelsInteractive(ctx context.Context, suggestions []string, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
+// multiSelectHeight fits every option. huh otherwise sizes the list to the
+// options and then subtracts the title and description, hiding the last rows.
+func multiSelectHeight(options int) int {
+	return options + 2
+}
+
+func providerHint(preset providers.Preset) string {
+	switch {
+	case preset.KeyEnv != "":
+		return "needs " + preset.KeyEnv
+	case preset.DefaultBaseURL == "":
+		return "offline echo, no key"
+	default:
+		return "local, no key"
+	}
+}
+
+func chooseModelsInteractive(prompt *initPrompt, suggestions []string) ([]string, error) {
 	selected := slices.Clone(suggestions)
 	options := make([]huh.Option[string], 0, len(suggestions))
 	for _, model := range suggestions {
@@ -327,6 +350,7 @@ func chooseModelsInteractive(ctx context.Context, suggestions []string, stdin io
 		Title("Choose models for auto").
 		Description("Select the suggested models to include in the free tier.").
 		Options(options...).
+		Height(multiSelectHeight(len(options))).
 		Value(&selected).
 		Validate(func(values []string) error {
 			if len(values) == 0 {
@@ -334,52 +358,53 @@ func chooseModelsInteractive(ctx context.Context, suggestions []string, stdin io
 			}
 			return nil
 		})
-	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+	if err := prompt.ask(field, "Choose models for auto", func() string { return strings.Join(selected, ", ") }); err != nil {
 		return nil, err
 	}
 	return selected, nil
 }
 
-func chooseAttestationsInteractive(ctx context.Context, selected []string, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (map[string]bool, error) {
+func chooseAttestationsInteractive(prompt *initPrompt, selected []string) (map[string]bool, error) {
 	attested := make(map[string]bool)
-	fields := make([]huh.Field, 0, len(selected))
-	accepted := make(map[string]*bool, len(selected))
 	for _, name := range selected {
 		preset, _ := providers.LookupPreset(name)
 		if !preset.FreeTierAttestable {
 			continue
 		}
-		value := new(bool)
-		accepted[name] = value
-		fields = append(fields, huh.NewConfirm().
-			Title("Attest that "+name+" has no paid plan?").
+		accepted := false
+		title := "Attest that " + name + " has no paid plan?"
+		field := huh.NewConfirm().
+			Title(title).
 			Description("Only attest if this provider account or project has no paid plan.").
-			Affirmative("Yes").Negative("No").Value(value))
-	}
-	if len(fields) == 0 {
-		return attested, nil
-	}
-	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(fields...))); err != nil {
-		return nil, err
-	}
-	for name, value := range accepted {
-		if *value {
+			Affirmative("Yes").Negative("No").Value(&accepted)
+		if err := prompt.ask(field, title, func() string { return yesNo(accepted) }); err != nil {
+			return nil, err
+		}
+		if accepted {
 			attested[name] = true
 		}
 	}
 	return attested, nil
 }
 
-func chooseStoreInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (bool, error) {
+func chooseStoreInteractive(prompt *initPrompt) (bool, error) {
 	enabled := false
+	title := "Enable local usage history and dashboard access?"
 	field := huh.NewConfirm().
-		Title("Enable local usage history and dashboard access?").
+		Title(title).
 		Description("Usage metadata stays in the local SQLite database.").
 		Affirmative("Yes").Negative("No").Value(&enabled)
-	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+	if err := prompt.ask(field, title, func() string { return yesNo(enabled) }); err != nil {
 		return false, err
 	}
 	return enabled, nil
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "Yes"
+	}
+	return "No"
 }
 
 type singleByteReader struct {
@@ -399,26 +424,87 @@ func (r *singleByteReader) Read(buffer []byte) (int, error) {
 	return n, err
 }
 
-func runInitForm(ctx context.Context, closeInput io.Closer, stdin io.Reader, stdout io.Writer, form *huh.Form) error {
-	if err := ctx.Err(); err != nil {
+// initPrompt runs setup questions as an inline TUI on a terminal,
+// and in huh's line-based accessible mode for pipes and scripts.
+type initPrompt struct {
+	ctx        context.Context
+	stdin      io.Reader
+	closeInput io.Closer
+	stdout     io.Writer
+	tty        bool
+	receipts   []string
+}
+
+// redraw shows the banner and answered questions. On a terminal it starts from
+// a clear screen, so finished forms never leave partial frames behind.
+func (p *initPrompt) redraw() error {
+	if p.tty {
+		if _, err := io.WriteString(p.stdout, clearScreenSequence); err != nil {
+			return err
+		}
+	}
+	if err := writeInitBanner(p.stdout); err != nil {
 		return err
 	}
-	input := &singleByteReader{reader: stdin}
-	form.WithAccessible(true).WithInput(input).WithOutput(stdout)
+	for _, line := range p.receipts {
+		if _, err := fmt.Fprintln(styledWriter(p.stdout), line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ask runs one field. On a terminal the finished field collapses into a receipt line.
+func (p *initPrompt) ask(field huh.Field, title string, answer func() string) error {
+	if p.tty {
+		if err := p.redraw(); err != nil {
+			return err
+		}
+	}
+	if err := p.run(huh.NewForm(huh.NewGroup(field))); err != nil {
+		return err
+	}
+	if p.tty {
+		p.receipts = append(p.receipts, receipt(title, answer()))
+	}
+	return nil
+}
+
+// run runs one form: themed on a terminal, line-based accessible mode otherwise.
+func (p *initPrompt) run(form *huh.Form) error {
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	if p.tty {
+		err := form.WithTheme(spillwayFormTheme()).WithShowHelp(true).WithInput(p.stdin).WithOutput(p.stdout).RunWithContext(p.ctx)
+		if p.ctx.Err() != nil {
+			return p.ctx.Err()
+		}
+		if errors.Is(err, huh.ErrUserAborted) {
+			return context.Canceled
+		}
+		if err != nil {
+			return fmt.Errorf("run interactive setup: %w", err)
+		}
+		return nil
+	}
+
+	input := &singleByteReader{reader: p.stdin}
+	form.WithAccessible(true).WithInput(input).WithOutput(p.stdout)
 	done := make(chan struct{})
-	if closeInput != nil {
+	if p.closeInput != nil {
 		go func() {
 			select {
-			case <-ctx.Done():
-				_ = closeInput.Close()
+			case <-p.ctx.Done():
+				_ = p.closeInput.Close()
 			case <-done:
 			}
 		}()
 	}
-	err := form.RunWithContext(ctx)
+	err := form.RunWithContext(p.ctx)
 	close(done)
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if p.ctx.Err() != nil {
+		return p.ctx.Err()
 	}
 	if input.sawEOF {
 		return errors.New("unexpected end of input")
