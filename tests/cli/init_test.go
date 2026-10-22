@@ -27,12 +27,17 @@ func writeInitFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-type promptWriter struct{ wrote chan struct{} }
+type promptWriter struct {
+	wrote chan struct{}
+	want  string
+}
 
 func (w promptWriter) Write(data []byte) (int, error) {
-	select {
-	case w.wrote <- struct{}{}:
-	default:
+	if bytes.Contains(data, []byte(w.want)) {
+		select {
+		case w.wrote <- struct{}{}:
+		default:
+		}
 	}
 	return len(data), nil
 }
@@ -87,7 +92,7 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("0\nn\n"), &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("0\n0\nn\n"), &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("init exit = %d; stderr: %s", code, stderr.String())
 	}
@@ -106,6 +111,56 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	}
 }
 
+func TestRun_InitPromptsForConfigAndSelectableModels(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "wizard.yaml")
+	input := strings.Join([]string{path, "1", "2", "0", "y", "y", "2", "0", "n", ""}, "\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init"}, strings.NewReader(input), &stdout, &stderr, noEnv)
+	if code != 0 {
+		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
+	}
+	data, err := readInitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(stdout.String(), "Config file") || !strings.Contains(stdout.String(), "Choose models for auto") {
+		t.Errorf("init output = %q; want config path and model selection prompts", stdout.String())
+	}
+	if !strings.Contains(content, "gemini/gemini-2.5-flash") || !strings.Contains(content, "mock/echo") || strings.Contains(content, "groq/llama-3.3-70b-versatile") {
+		t.Errorf("generated config models = %q; want selected Gemini and mock, without deselected Groq", content)
+	}
+}
+
+func TestRun_InitExistingInteractivePathPromptsForAnotherFile(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	existing := filepath.Join(directory, "config.yaml")
+	newPath := filepath.Join(directory, "config-test.yaml")
+	before := []byte("keep this config\n")
+	if err := os.WriteFile(existing, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{existing, newPath, "0", "0", "n", ""}, "\n")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init"}, strings.NewReader(input), &stdout, &stderr, noEnv)
+	if code != 0 {
+		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
+	}
+	after, err := readInitFile(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Errorf("existing config changed: got %q, want %q", after, before)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("new config was not created: %v", err)
+	}
+}
+
 func TestRun_InitInteractiveHuhChoicesPreserveSemanticsAndHideSecrets(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -114,7 +169,7 @@ func TestRun_InitInteractiveHuhChoicesPreserveSemanticsAndHideSecrets(t *testing
 		return secret, name == "GEMINI_API_KEY"
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("1\n0\ny\ny\n"), &stdout, &stderr, lookup)
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader("1\n0\ny\n0\ny\n"), &stdout, &stderr, lookup)
 	if code != 0 {
 		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
 	}
@@ -139,7 +194,7 @@ func TestRun_InitInteractiveEOFDoesNotCreateConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
-	if code != 1 || !strings.Contains(stderr.String(), "unexpected end of input") {
+	if code != 1 || !strings.Contains(stderr.String(), "needs more input") || !strings.Contains(stderr.String(), "no config file was created") || !strings.Contains(stderr.String(), "spillway init -yes") {
 		t.Fatalf("init = %d; stderr %q; want an input error", code, stderr.String())
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -160,7 +215,7 @@ func TestRun_InitNeverOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path+" already exists") || !strings.Contains(stderr.String(), "init never overwrites a config") || !strings.Contains(stderr.String(), "spillway check -config "+path) || !strings.Contains(stderr.String(), "new-path") {
+	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path+" already exists") || !strings.Contains(stderr.String(), "never overwrites existing configs") || !strings.Contains(stderr.String(), "spillway check -config "+path) || !strings.Contains(stderr.String(), "new-path") {
 		t.Errorf("init = %d, stderr %q, contents %q; want exit 1, recovery guidance, unchanged bytes", code, stderr.String(), after)
 	}
 }
@@ -282,7 +337,7 @@ func TestRun_InitPromptStopsWhenContextIsCancelled(t *testing.T) {
 	exit := make(chan int, 1)
 	var stderr bytes.Buffer
 	go func() {
-		exit <- cli.Run(ctx, []string{"init"}, reader, promptWriter{wrote: prompted}, &stderr, noEnv)
+		exit <- cli.Run(ctx, []string{"init"}, reader, promptWriter{wrote: prompted, want: "Config file"}, &stderr, noEnv)
 	}()
 	select {
 	case <-prompted:
@@ -292,7 +347,7 @@ func TestRun_InitPromptStopsWhenContextIsCancelled(t *testing.T) {
 	cancel()
 	<-reader.closed
 	code := <-exit
-	if code != 1 || !strings.Contains(stderr.String(), "context canceled") {
+	if code != 1 || !strings.Contains(stderr.String(), "Setup was cancelled") || !strings.Contains(stderr.String(), "No config file was created") {
 		t.Errorf("init = %d; stderr %q; want cancellation error", code, stderr.String())
 	}
 }
