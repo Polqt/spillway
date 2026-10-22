@@ -552,6 +552,23 @@ func secretsFromNode(root *yaml.Node) []redact.Secret {
 	return secrets
 }
 
+func providerKeyEnvironmentNames(root *yaml.Node) map[string]string {
+	result := make(map[string]string)
+	providersNode := mappingValue(root, "providers")
+	if providersNode == nil || providersNode.Kind != yaml.MappingNode {
+		return result
+	}
+	for i := 0; i+1 < len(providersNode.Content); i += 2 {
+		name, entry := providersNode.Content[i].Value, providersNode.Content[i+1]
+		value := mappingValue(entry, "api_key")
+		if value == nil || value.Kind != yaml.ScalarNode || !providerKeyReference.MatchString(value.Value) {
+			continue
+		}
+		result[name] = strings.TrimSuffix(strings.TrimPrefix(value.Value, "${"), "}")
+	}
+	return result
+}
+
 func mappingValue(mapping *yaml.Node, name string) *yaml.Node {
 	if mapping == nil || mapping.Kind != yaml.MappingNode {
 		return nil

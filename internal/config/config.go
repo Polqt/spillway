@@ -473,6 +473,7 @@ func (s Server) Loopback() bool {
 // Provider configures one upstream provider.
 type Provider struct {
 	Type         string            `yaml:"type,omitempty"`
+	APIKeyEnv    string            `yaml:"-"`
 	APIKey       redact.Secret     `yaml:"api_key,omitempty"`
 	BaseURL      string            `yaml:"base_url,omitempty"`
 	Timeout      time.Duration     `yaml:"timeout,omitempty"`
@@ -642,6 +643,7 @@ func ParseWithEnv(data []byte, lookupEnv func(string) (string, bool)) (Config, e
 	if err := rejectUnknownFields(node.Content[0]); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
+	providerKeyEnvs := providerKeyEnvironmentNames(node.Content[0])
 	if err := expandConfig(node.Content[0], lookupEnv); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
 	}
@@ -672,10 +674,11 @@ func ParseWithEnv(data []byte, lookupEnv func(string) (string, bool)) (Config, e
 		cfg.Store.Retention = 90 * 24 * time.Hour
 	}
 	for name, provider := range cfg.Providers {
+		provider.APIKeyEnv = providerKeyEnvs[name]
 		if !provider.timeoutSet {
 			provider.Timeout = 120 * time.Second
-			cfg.Providers[name] = provider
 		}
+		cfg.Providers[name] = provider
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, fmt.Errorf("config: %w", redact.NewScrubber(cfg.Secrets()...).Error(err))
