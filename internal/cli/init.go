@@ -13,9 +13,14 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/glamour/v2"
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
+	charmLog "charm.land/log/v2"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
+	glowui "github.com/charmbracelet/glow/v2/ui"
+	"golang.org/x/term"
 )
 
 func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
@@ -39,9 +44,31 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	inputCloser, _ := stdin.(io.Closer)
 	provided := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	if !*yes {
+		if err := writeInitBanner(stdout); err != nil {
+			report(stderr, "spillway: init: write setup heading: %v\n", err)
+			return 1
+		}
+	}
+	targetConfigPath := *configPath
+	var err error
+	if provided["config"] || *yes {
+		if err := validateNewConfigPath(targetConfigPath); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s already exists. Spillway never overwrites existing configs.", targetConfigPath), fmt.Sprintf("Check it with `spillway check -config %s`, add a provider with `spillway provider add`, or choose a new path with `spillway init -config <new-path>`.", targetConfigPath))
+			} else {
+				reportInitError(stderr, "Couldn't use that config path", err.Error(), "Choose a writable file path and try `spillway init` again.")
+			}
+			return 1
+		}
+	} else {
+		targetConfigPath, err = chooseConfigPathInteractive(ctx, stdin, inputCloser, stdout)
+		if err != nil {
+			return initChoiceError(stderr, err)
+		}
+	}
 
 	var selected []string
-	var err error
 	if provided["providers"] || *yes {
 		selected, err = chooseProviders(ctx, *providerFlag, provided["providers"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
 	} else {
@@ -59,6 +86,13 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if err != nil {
 		return initChoiceError(stderr, err)
 	}
+	models := eligibleModels(selected, attested)
+	if !*yes && len(models) > 0 {
+		models, err = chooseModelsInteractive(ctx, models, stdin, inputCloser, stdout)
+		if err != nil {
+			return initChoiceError(stderr, err)
+		}
+	}
 	var storeEnabled bool
 	if provided["store"] || *yes {
 		storeEnabled, err = chooseStore(ctx, *storeFlag, provided["store"], *yes, bufio.NewReader(stdin), inputCloser, stdout)
@@ -69,21 +103,39 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return initChoiceError(stderr, err)
 	}
 
-	content, statuses, err := buildInitConfig(selected, attested, storeEnabled, lookupEnv)
+	content, statuses, err := buildInitConfig(selected, attested, models, storeEnabled, lookupEnv)
 	if err != nil {
-		report(stderr, "spillway: init: %v\n", err)
+		reportInitError(stderr, "Couldn't prepare the config", err.Error(), "Review the selected providers and environment values, then try `spillway init` again.")
 		return 1
 	}
-	if err := writeInitConfig(ctx, *configPath, content); err != nil {
+	if err := writeInitConfig(ctx, targetConfigPath, content); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			report(stderr, "spillway: init: %s already exists: %v\ninit never overwrites a config. Validate it with `spillway check -config %s`, add another provider with `spillway provider add`, or create another config with `spillway init -config <new-path>`.\n", *configPath, err, *configPath)
+			reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s already exists. Spillway never overwrites existing configs.", targetConfigPath), fmt.Sprintf("Check it with `spillway check -config %s`, add a provider with `spillway provider add`, or choose a new path with `spillway init -config <new-path>`.", targetConfigPath))
 		} else {
-			report(stderr, "spillway: init: create %s: %v\n", *configPath, err)
+			reportInitError(stderr, "Couldn't create the config file", fmt.Sprintf("`%s`: %v", targetConfigPath, err), "Check that the folder exists and is writable, or choose another path.")
 		}
 		return 1
 	}
+	baseURL := "http:" + "/" + "/127.0.0.1:8080"
+	createdStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	keyCommand := "spillway key"
+	if targetConfigPath != defaultConfigPath {
+		keyCommand += " -config \"" + targetConfigPath + "\""
+	}
+	if interactiveTerminal(stdin, stdout) {
+		if err := writeInitSummary(stdout, targetConfigPath, statuses, attested, selected, storeEnabled, baseURL, keyCommand); err == nil {
+			return 0
+		}
+		_, _ = fmt.Fprintf(stderr, "Note: the config is ready, but the styled summary could not render.\n")
+	}
 	for _, status := range statuses {
-		if _, err := fmt.Fprintf(stdout, "%s\n", status); err != nil {
+		name, value, _ := strings.Cut(status, ": ")
+		valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+		if value == "not set" {
+			valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+		}
+		if _, err := lipgloss.Fprintf(stdout, "%s: %s\n", name, valueStyle.Render(value)); err != nil {
 			report(stderr, "spillway: init: write next steps: %v\n", err)
 			return 1
 		}
@@ -96,43 +148,129 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		}
 	}
 	if len(attested) < len(selected) {
+		warningStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 		for _, name := range selected {
 			preset, _ := providers.LookupPreset(name)
 			if preset.FreeTierAttestable && !attested[name] {
-				if _, err := fmt.Fprintf(stdout, "%s is configured but omitted from tiers.free until you attest that its account or project has no paid plan.\n", name); err != nil {
+				if _, err := lipgloss.Fprintf(stdout, "%s %s is configured but omitted from tiers.free until you attest that its account or project has no paid plan.\n", warningStyle.Render("Note:"), name); err != nil {
 					report(stderr, "spillway: init: write next steps: %v\n", err)
 					return 1
 				}
 			}
 		}
 	}
-	baseURL := "http:" + "/" + "/" + "127.0.0.1:8080"
-	keyCommand := "spillway key"
-	if *configPath != defaultConfigPath {
-		keyCommand += " -config \"" + *configPath + "\""
-	}
-	if _, err := fmt.Fprintf(stdout, "Created %s (keep private).\n", *configPath); err != nil {
+	if _, err := lipgloss.Fprintf(stdout, "%s %s (keep private).\n", createdStyle.Render("Created"), targetConfigPath); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
-	if _, err := fmt.Fprintf(stdout, "Client: base URL %s/v1; model `auto`; key `%s default`.\n", baseURL, keyCommand); err != nil {
+	if _, err := lipgloss.Fprintf(stdout, "%s base URL %s/v1; model `auto`; key `%s default`.\n", labelStyle.Render("Client:"), baseURL, keyCommand); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
 	if storeEnabled {
-		if _, err := fmt.Fprintf(stdout, "Dashboard: page %s/dashboard; key `%s dashboard`.\n", baseURL, keyCommand); err != nil {
+		if _, err := lipgloss.Fprintf(stdout, "%s page %s/dashboard; key `%s dashboard`.\n", labelStyle.Render("Dashboard:"), baseURL, keyCommand); err != nil {
 			report(stderr, "spillway: init: write next steps: %v\n", err)
 			return 1
 		}
-	} else if _, err := fmt.Fprintf(stdout, "Dashboard: %s/dashboard (rerun init with `-store` to enable login).\n", baseURL); err != nil {
+	} else if _, err := lipgloss.Fprintf(stdout, "%s %s/dashboard (rerun init with `-store` to enable login).\n", labelStyle.Render("Dashboard:"), baseURL); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
-	if _, err := fmt.Fprintf(stdout, "Start: `spillway check -config %s`, then `spillway serve -config %s`.\n", *configPath, *configPath); err != nil {
+	if _, err := lipgloss.Fprintf(stdout, "%s `spillway check -config %s`, then `spillway serve -config %s`.\n", labelStyle.Render("Start:"), targetConfigPath, targetConfigPath); err != nil {
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func interactiveTerminal(stdin io.Reader, stdout io.Writer) bool {
+	in, inputOK := stdin.(*os.File)
+	out, outputOK := stdout.(*os.File)
+	return inputOK && outputOK && in == os.Stdin && out == os.Stdout && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(out.Fd()))
+}
+
+func writeInitSummary(stdout io.Writer, configPath string, statuses []string, attested map[string]bool, selected []string, storeEnabled bool, baseURL, keyCommand string) error {
+	var markdown strings.Builder
+	markdown.WriteString("# Spillway is ready\n\n")
+	markdown.WriteString("Your local gateway is set up. Here's everything you need to get connected.\n\n")
+	markdown.WriteString("## Config\n\n`" + configPath + "` was created with private file permissions.\n\n")
+	markdown.WriteString("## Providers\n\n")
+	for _, name := range selected {
+		preset, _ := providers.LookupPreset(name)
+		if preset.KeyEnv == "" {
+			markdown.WriteString("- **" + name + ":** ready\n")
+			continue
+		}
+		status := "not set"
+		for _, value := range statuses {
+			if strings.HasPrefix(value, preset.KeyEnv+": ") {
+				status = strings.TrimPrefix(value, preset.KeyEnv+": ")
+				break
+			}
+		}
+		markdown.WriteString("- **" + name + ":** `" + preset.KeyEnv + "` " + status + "\n")
+	}
+	markdown.WriteString("\n")
+	if len(statuses) > 0 {
+		for _, status := range statuses {
+			if strings.HasSuffix(status, ": not set") {
+				variable := strings.TrimSuffix(status, ": not set")
+				markdown.WriteString("Set it in this shell: `" + environmentRecoveryCommand(variable) + "`\n\n")
+			}
+		}
+	}
+	for _, name := range selected {
+		preset, _ := providers.LookupPreset(name)
+		if preset.FreeTierAttestable && !attested[name] {
+			markdown.WriteString("> **Note:** " + name + " is configured but excluded from the free tier until you attest that its account or project has no paid plan.\n\n")
+		}
+	}
+	markdown.WriteString("## Connect your app\n\n")
+	markdown.WriteString("- **Base URL:** `" + baseURL + "/v1`\n")
+	markdown.WriteString("- **Model:** `auto`\n")
+	markdown.WriteString("- **API key:** run `" + keyCommand + " default`\n\n")
+	if storeEnabled {
+		markdown.WriteString("## Local dashboard\n\nOpen `" + baseURL + "/dashboard`. Get its key with `" + keyCommand + " dashboard`.\n\n")
+	}
+	markdown.WriteString("## Start the gateway\n\n```sh\nspillway check -config " + configPath + "\nspillway serve -config " + configPath + "\n```")
+	program := glowui.NewProgram(glowui.Config{GlamourEnabled: true, GlamourMaxWidth: 88}, markdown.String())
+	_, err := program.Run()
+	return err
+}
+
+func writeInitBanner(stdout io.Writer) error {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Render("SPILLWAY / setup")
+	subtitle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render("Your local AI gateway, ready in a few steps")
+	banner := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("57")).Padding(0, 1).Render(title + "\n" + subtitle)
+	_, err := lipgloss.Fprintln(stdout, banner+"\n")
+	return err
+}
+
+func chooseConfigPathInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (string, error) {
+	path := defaultConfigPath
+	field := huh.NewInput().
+		Title("Config file").
+		Description("Choose where Spillway creates the new config.").
+		Value(&path).
+		Validate(validateNewConfigPath)
+	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func validateNewConfigPath(path string) error {
+	if path == "" {
+		return errors.New("config path must not be empty")
+	}
+	_, err := os.Lstat(path)
+	if err == nil {
+		return fmt.Errorf("%w: %s already exists; choose another path", os.ErrExist, path)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check config path: %w", err)
+	}
+	return nil
 }
 
 func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
@@ -156,6 +294,29 @@ func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput
 		return nil, err
 	}
 	return parseProviderList(strings.Join(selected, ","))
+}
+
+func chooseModelsInteractive(ctx context.Context, suggestions []string, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
+	selected := slices.Clone(suggestions)
+	options := make([]huh.Option[string], 0, len(suggestions))
+	for _, model := range suggestions {
+		options = append(options, huh.NewOption(model, model))
+	}
+	field := huh.NewMultiSelect[string]().
+		Title("Choose models for auto").
+		Description("Select the suggested models to include in the free tier.").
+		Options(options...).
+		Value(&selected).
+		Validate(func(values []string) error {
+			if len(values) == 0 {
+				return initUsageError{message: "select at least one model"}
+			}
+			return nil
+		})
+	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
+		return nil, err
+	}
+	return selected, nil
 }
 
 func chooseAttestationsInteractive(ctx context.Context, selected []string, stdin io.Reader, closeInput io.Closer, stdout io.Writer) (map[string]bool, error) {
@@ -250,11 +411,43 @@ func runInitForm(ctx context.Context, closeInput io.Closer, stdin io.Reader, std
 func initChoiceError(stderr io.Writer, err error) int {
 	var usageErr initUsageError
 	if errors.As(err, &usageErr) {
-		report(stderr, "spillway: init: %v\n", err)
+		reportInitError(stderr, "One of the setup choices needs attention", err.Error(), "Choose a listed option, then continue setup.")
 		return 2
 	}
-	report(stderr, "spillway: init: %v\n", err)
+	if errors.Is(err, context.Canceled) {
+		reportInitError(stderr, "Setup was cancelled", "No config file was created.", "Run `spillway init` when you're ready to continue.")
+		return 1
+	}
+	if strings.Contains(err.Error(), "unexpected end of input") {
+		reportInitError(stderr, "Setup needs more input", "The prompt ended before all choices were complete, so no config file was created.", "Run `spillway init` in a terminal, or use `spillway init -yes -providers mock` for non-interactive setup.")
+		return 1
+	}
+	reportInitError(stderr, "Setup couldn't continue", err.Error(), "Run `spillway init --help` to review the available options.")
 	return 1
+}
+
+func reportInitError(stderr io.Writer, title, detail, suggestion string) {
+	logger := charmLog.NewWithOptions(stderr, charmLog.Options{Prefix: "spillway", ReportTimestamp: false})
+	logger.Error(title)
+	style := glamour.WithEnvironmentConfig()
+	if _, noColor := os.LookupEnv("NO_COLOR"); noColor || os.Getenv("TERM") == "dumb" {
+		style = glamour.WithStandardStyle("notty")
+	}
+	renderer, err := glamour.NewTermRenderer(style, glamour.WithWordWrap(78))
+	if err == nil {
+		if rendered, renderErr := renderer.Render("**What happened**\n"); renderErr == nil {
+			_, _ = io.WriteString(stderr, rendered)
+		}
+	}
+	_, _ = fmt.Fprintf(stderr, "%s\n", detail)
+	if err == nil {
+		if rendered, renderErr := renderer.Render("\n**Next step**\n"); renderErr == nil {
+			_, _ = io.WriteString(stderr, rendered)
+		}
+	} else {
+		_, _ = io.WriteString(stderr, "Next step:\n")
+	}
+	_, _ = fmt.Fprintf(stderr, "%s\n", suggestion)
 }
 
 type initUsageError struct{ message string }
@@ -402,7 +595,18 @@ func providerNames() string {
 	return strings.Join(names, ", ")
 }
 
-func buildInitConfig(selected []string, attested map[string]bool, storeEnabled bool, lookupEnv func(string) (string, bool)) ([]byte, []string, error) {
+func eligibleModels(selected []string, attested map[string]bool) []string {
+	models := make([]string, 0, len(selected))
+	for _, name := range selected {
+		preset, _ := providers.LookupPreset(name)
+		if !preset.FreeTierAttestable || attested[name] {
+			models = append(models, name+"/"+preset.SuggestedModel)
+		}
+	}
+	return models
+}
+
+func buildInitConfig(selected []string, attested map[string]bool, models []string, storeEnabled bool, lookupEnv func(string) (string, bool)) ([]byte, []string, error) {
 	localKey, err := generateLocalKey()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate local key: %w", err)
@@ -425,7 +629,6 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 	}
 	out.WriteString("providers:\n")
 	statuses := make([]string, 0)
-	eligible := make([]string, 0, len(selected))
 	for _, name := range selected {
 		preset, _ := providers.LookupPreset(name)
 		if preset.KeyEnv != "" {
@@ -451,14 +654,11 @@ func buildInitConfig(selected []string, attested map[string]bool, storeEnabled b
 			out.WriteString(name)
 			out.WriteString(": {}\n")
 		}
-		if !preset.FreeTierAttestable || attested[name] {
-			eligible = append(eligible, name+"/"+preset.SuggestedModel)
-		}
 	}
-	if len(eligible) > 0 {
+	if len(models) > 0 {
 		out.WriteString("# Suggested model IDs may be outdated; check current provider documentation.\n")
 		out.WriteString("tiers:\n  free:\n    models:\n")
-		for _, model := range eligible {
+		for _, model := range models {
 			out.WriteString("      - ")
 			out.WriteString(model)
 			out.WriteString("\n")
