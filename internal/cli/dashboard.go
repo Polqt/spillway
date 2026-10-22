@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -28,7 +30,7 @@ func dashboardCommand(ctx context.Context, args []string, stdin io.Reader, stdou
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", defaultConfigPath, "path to the config file holding the dashboard key")
-	endpoint := fs.String("endpoint", "http://127.0.0.1:8080", "running Spillway base URL")
+	endpoint := fs.String("endpoint", "", "running Spillway base URL (default: server.listen from -config)")
 	interval := fs.Duration("interval", 2*time.Second, "refresh interval (1s-1m)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -41,10 +43,32 @@ func dashboardCommand(ctx context.Context, args []string, stdin io.Reader, stdou
 		report(stderr, "spillway: dashboard: -interval must be between 1s and 1m\n")
 		return 2
 	}
-	base, err := url.Parse(strings.TrimRight(*endpoint, "/"))
-	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		report(stderr, "spillway: dashboard: -endpoint must be an http or https base URL\n")
-		return 2
+	var base *url.URL
+	if *endpoint == "" {
+		listen, err := config.LoadListenWithEnv(*configPath, lookupEnv)
+		if err != nil {
+			report(stderr, "spillway: dashboard: %v\nRun `spillway init` to create a config, or pass -config.\n", err)
+			return 1
+		}
+		if base, err = listenEndpoint(listen); err != nil {
+			report(stderr, "spillway: dashboard: %v\n", err)
+			return 2
+		}
+	} else {
+		parsed, err := url.Parse(strings.TrimRight(*endpoint, "/"))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			report(stderr, "spillway: dashboard: -endpoint must be an http or https base URL\n")
+			return 2
+		}
+		base = parsed
+	}
+	// The dashboard key is a full local key, so it never crosses a network in cleartext.
+	if !isLoopbackHost(base.Hostname()) {
+		if base.Scheme != "https" {
+			report(stderr, "spillway: dashboard: refusing to send the dashboard key over plain http to %s; use an https -endpoint\n", base.Host)
+			return 2
+		}
+		report(stderr, "spillway: dashboard: sending the dashboard key to %s\n", base.Host)
 	}
 	keys, err := config.LoadLocalKeysWithEnv(*configPath, lookupEnv)
 	if err != nil {
@@ -63,8 +87,14 @@ func dashboardCommand(ctx context.Context, args []string, stdin io.Reader, stdou
 		return 1
 	}
 
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	client := &dashboardClient{
-		http:     &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		http: &http.Client{
+			Timeout:       5 * time.Second,
+			Transport:     transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		base:     base,
 		key:      key,
 		endpoint: base.Host,
@@ -129,7 +159,7 @@ func (c *dashboardClient) fetch(ctx context.Context, group string, now time.Time
 	if err := c.get(ctx, "/api/gateway", nil, &gateway); err != nil {
 		return snapshot, err
 	}
-	snapshot.Version = gateway.Version
+	snapshot.Version = printable(gateway.Version)
 	var providerStatus struct {
 		Providers []dashboardProvider `json:"providers"`
 	}
@@ -137,6 +167,14 @@ func (c *dashboardClient) fetch(ctx context.Context, group string, now time.Time
 		return snapshot, err
 	}
 	snapshot.Providers = providerStatus.Providers
+	for i := range snapshot.Providers {
+		provider := &snapshot.Providers[i]
+		provider.Name = printable(provider.Name)
+		for j := range provider.Signals {
+			provider.Signals[j].Model = printable(provider.Signals[j].Model)
+			provider.Signals[j].Reason = printable(provider.Signals[j].Reason)
+		}
+	}
 	if err := c.get(ctx, "/api/budget", nil, &snapshot.Budget); err != nil {
 		return snapshot, err
 	}
@@ -155,7 +193,34 @@ func (c *dashboardClient) fetch(ctx context.Context, group string, now time.Time
 		return snapshot, nil
 	}
 	snapshot.Usage = usage.Rows
+	for i := range snapshot.Usage {
+		snapshot.Usage[i].Key = printable(snapshot.Usage[i].Key)
+	}
 	return snapshot, err
+}
+
+// printable replaces control and other non-printing runes from the gateway,
+// so a foreign endpoint cannot drive the terminal with escape sequences.
+func printable(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return '?'
+	}, value)
+}
+
+// listenEndpoint is the loopback base URL for a server.listen address.
+func listenEndpoint(listen string) (*url.URL, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil || port == "" || port == "0" {
+		return nil, fmt.Errorf("cannot derive the gateway address from server.listen %q; pass -endpoint", listen)
+	}
+	switch strings.Trim(host, "[]") {
+	case "", "0.0.0.0", "::", "localhost":
+		host = "127.0.0.1"
+	}
+	return &url.URL{Scheme: "http", Host: net.JoinHostPort(strings.Trim(host, "[]"), port)}, nil
 }
 
 type dashboardAPIError struct {
@@ -196,7 +261,7 @@ func (c *dashboardClient) get(ctx context.Context, path string, query url.Values
 			} `json:"error"`
 		}
 		_ = json.NewDecoder(body).Decode(&envelope)
-		return dashboardAPIError{status: response.StatusCode, code: envelope.Error.Code, message: envelope.Error.Message}
+		return dashboardAPIError{status: response.StatusCode, code: envelope.Error.Code, message: printable(envelope.Error.Message)}
 	}
 	if err := json.NewDecoder(body).Decode(into); err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
@@ -212,20 +277,23 @@ type dashboardModel struct {
 	snapshot *dashboardSnapshot
 	err      error
 	width    int
+	// generation tags the one live refresh chain; results and ticks from older chains are dropped.
+	generation int
 }
 
 type dashboardResultMsg struct {
-	snapshot dashboardSnapshot
-	err      error
+	generation int
+	snapshot   dashboardSnapshot
+	err        error
 }
 
-type dashboardTickMsg struct{}
+type dashboardTickMsg struct{ generation int }
 
 func (m dashboardModel) refresh() tea.Cmd {
-	group := dashboardGroups[m.group]
+	group, generation := dashboardGroups[m.group], m.generation
 	return func() tea.Msg {
 		snapshot, err := m.client.fetch(m.ctx, group, time.Now())
-		return dashboardResultMsg{snapshot: snapshot, err: err}
+		return dashboardResultMsg{generation: generation, snapshot: snapshot, err: err}
 	}
 }
 
@@ -240,18 +308,27 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
 		case "r":
+			m.generation++
 			return m, m.refresh()
 		case "tab", "g":
 			m.group = (m.group + 1) % len(dashboardGroups)
+			m.generation++
 			return m, m.refresh()
 		}
 	case dashboardResultMsg:
+		if msg.generation != m.generation {
+			return m, nil
+		}
 		m.err = msg.err
 		if msg.err == nil {
 			m.snapshot = &msg.snapshot
 		}
-		return m, tea.Tick(m.interval, func(time.Time) tea.Msg { return dashboardTickMsg{} })
+		generation := m.generation
+		return m, tea.Tick(m.interval, func(time.Time) tea.Msg { return dashboardTickMsg{generation: generation} })
 	case dashboardTickMsg:
+		if msg.generation != m.generation {
+			return m, nil
+		}
 		return m, m.refresh()
 	}
 	return m, nil

@@ -156,3 +156,74 @@ func TestRun_DashboardValidatesFlags(t *testing.T) {
 		}
 	}
 }
+
+// Security property: without -endpoint the key goes only to the gateway the config describes.
+func TestRun_DashboardDefaultsToConfiguredListenAddress(t *testing.T) {
+	t.Parallel()
+	server := fakeDashboardAPI(t, "")
+	listen := strings.TrimPrefix(server.URL, "http://")
+	for name, address := range map[string]string{
+		"loopback":       listen,
+		"all interfaces": "0.0.0.0:" + listen[strings.LastIndex(listen, ":")+1:],
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := strings.Replace(dashboardConfig, "server:\n", "server:\n  listen: \""+address+"\"\n", 1)
+			var stdout, stderr bytes.Buffer
+
+			code := cli.Run(t.Context(), []string{"dashboard", "-config", writeConfig(t, config)}, nil, &stdout, &stderr, noEnv)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "v9.9.9") {
+				t.Errorf("stdout = %q, want data from the configured gateway", stdout.String())
+			}
+		})
+	}
+}
+
+// Security property: the dashboard key never crosses a network in cleartext.
+func TestRun_DashboardRefusesPlainHTTPToRemoteHost(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"dashboard", "-config", writeConfig(t, dashboardConfig), "-endpoint", "http://192.0.2.10:8080"}, nil, &stdout, &stderr, noEnv)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "refusing to send the dashboard key over plain http") || strings.Contains(stderr.String(), "sk-test-local") {
+		t.Errorf("stderr = %q, want refusal without the key", stderr.String())
+	}
+}
+
+// Security property: gateway strings cannot carry terminal escape sequences.
+func TestRun_DashboardNeutralizesControlCharacters(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/gateway":
+			_, _ = w.Write([]byte(`{"version":"v1\u001b]52;c;Zm9v\u0007"}`))
+		case "/api/providers":
+			_, _ = w.Write([]byte(`{"providers":[{"name":"evil\u001b[2Jname","signals":[]}]}`))
+		case "/api/budget":
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/usage":
+			_, _ = w.Write([]byte(`{"data":[{"key":"row\u009bkey","requests":1}]}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	var stdout, stderr bytes.Buffer
+
+	code := cli.Run(t.Context(), []string{"dashboard", "-config", writeConfig(t, dashboardConfig), "-endpoint", server.URL}, nil, &stdout, &stderr, noEnv)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
+	}
+	for _, want := range []string{"v1?]52;c;Zm9v?", "evil?[2Jname", "row?key"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("snapshot missing neutralized %q:\n%s", want, stdout.String())
+		}
+	}
+}

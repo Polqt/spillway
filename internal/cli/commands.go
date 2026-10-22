@@ -118,7 +118,7 @@ flags:
 		return dashboardCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file holding the dashboard key")
-		flags.String("endpoint", "http://127.0.0.1:8080", "running Spillway base URL")
+		flags.String("endpoint", "", "running Spillway base URL (default: server.listen from -config)")
 		flags.Duration("interval", 2*time.Second, "refresh interval (1s-1m)")
 	})
 	addLegacyCommand(root, exitCode, "catalog", "suggest model declarations and pricing from configured providers", `  spillway catalog -config config.yaml`, func(cmd *cobra.Command, args []string) int {
