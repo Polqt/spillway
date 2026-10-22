@@ -881,7 +881,7 @@ func TestChat_TierCooldownExhaustionUsesEarliestRetryAfter(t *testing.T) {
 		if parseErr != nil || retry != 7 {
 			t.Errorf("Retry-After = %q, want earliest cooldown of 7", rec.Header().Get("Retry-After"))
 		}
-		for _, candidate := range []string{"first/candidate rate limited (retry in 34s)", "second/candidate rate limited (retry in 7s)"} {
+		for _, candidate := range []string{"first/candidate rate limited; quota scope unknown, conservatively shared (retry in 34s)", "second/candidate rate limited; quota scope unknown, conservatively shared (retry in 7s)"} {
 			if !strings.Contains(rec.Body.String(), candidate) {
 				t.Errorf("cooldown reason %q missing from body: %s", candidate, rec.Body)
 			}

@@ -54,6 +54,43 @@ func TestGate_UTCPeriodsAndFreeModels(t *testing.T) {
 	})
 }
 
+func TestGate_InstanceBudgetAndAggregateCeiling(t *testing.T) {
+	now := time.Date(2026, time.October, 22, 12, 0, 0, 0, time.UTC)
+	usageStore, err := store.Open(t.Context(), store.Options{Path: filepath.Join(t.TempDir(), "usage.db"), Retention: 40 * 24 * time.Hour, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := usageStore.Close(); err != nil {
+			t.Errorf("close usage store: %v", err)
+		}
+	}()
+	if err := usageStore.Record(t.Context(), store.Request{At: now, Attempts: []store.Attempt{{At: now, Provider: "gemini-research", CostMicroUSD: 4}}}); err != nil {
+		t.Fatal(err)
+	}
+	providersConfig := map[string]config.Provider{
+		"gemini-research": {Type: "gemini", Budget: &config.Budgets{DailyMicroUSD: 10}},
+		"groq":            {Budget: &config.Budgets{DailyMicroUSD: 100}},
+	}
+	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 20}, Providers: providersConfig, Store: usageStore, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	research := providers.ModelRef{Provider: "gemini-research", Model: "paid"}
+	groq := providers.ModelRef{Provider: "groq", Model: "paid"}
+	gate.ChargeFor(research, now, 6)
+	if allowed, _ := gate.Allow(research); allowed {
+		t.Fatal("instance budget allowed spend above its limit")
+	}
+	if allowed, _ := gate.Allow(groq); !allowed {
+		t.Fatal("another instance was blocked by the instance budget")
+	}
+	gate.ChargeFor(groq, now, 10)
+	if allowed, _ := gate.Allow(groq); allowed {
+		t.Fatal("process-wide budget did not remain the aggregate ceiling")
+	}
+}
+
 func TestGate_ConcurrentCapEdgeBlocksNextRequest(t *testing.T) {
 	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 100}, Providers: map[string]config.Provider{"groq": {}}})
 	if err != nil {

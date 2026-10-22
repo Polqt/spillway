@@ -7,8 +7,23 @@ A self-hosted gateway that gives client apps one OpenAI-compatible endpoint and 
 ### Providers and models
 
 **Provider**:
-One configured upstream service that serves models, such as Groq, Gemini or a local Ollama.
+One configured upstream provider instance that serves models, such as `gemini-research` or `groq-staging`.
 _Avoid_: vendor, backend, upstream
+
+**Provider service type**:
+The upstream service identity that determines provider policy and virtual-route uniqueness, such as `gemini`, `groq` or `ollama`.
+Several configured instances may share one service type, but a virtual route cannot use two distinct instances of that service as spillover candidates.
+_Avoid_: adapter name
+
+**Provider instance**:
+One named configuration entry with its own environment-referenced credential, endpoint, model references, optional quota-domain labels and optional budget.
+An instance name identifies routing and local accounting; it does not prove independent upstream capacity.
+_Avoid_: account, key pool
+
+**Quota domain**:
+A provider-documented limit scope, such as a Gemini project or Groq organization, represented locally by an opaque alias to share cooldown state across instances.
+When the upstream scope or its association is unknown, Spillway applies the conservative service-wide cooldown.
+_Avoid_: credential identity
 
 **Provider status**:
 The dashboard summary of whether a provider is configured, whether its required credential is present, and any observed cooldown or failure signals.
@@ -16,7 +31,8 @@ It does not establish current reachability or guarantee that a request will succ
 _Avoid_: provider health, connection status
 
 **Model reference**:
-How a client names a model: `provider/model`, for example `groq/llama-3.1-8b-instant`.
+How a client names a model: `instance/model`, for example `groq/llama-3.1-8b-instant` or `gemini-research/gemini-2.5-flash`.
+Legacy `provider/model` references retain their configured meaning.
 _Avoid_: model name, model id
 
 **Upstream model**:
@@ -139,6 +155,11 @@ _Avoid_: actual cost
 A local daily or monthly soft cap on estimated paid-model spend recorded by one Spillway process.
 It can overshoot for in-flight requests and does not include spend outside that process (ADR 0010).
 _Avoid_: hard cap
+
+**Instance budget**:
+An optional local daily or monthly soft cap for paid-model attempts sent through one configured provider instance.
+It can only restrict eligibility; the process-wide budget remains the aggregate ceiling across all instances.
+_Avoid_: provider quota
 
 **Cache hit**:
 A response served from the opt-in, in-memory exact cache for the same client app and byte-identical request body.

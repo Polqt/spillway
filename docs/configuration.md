@@ -7,15 +7,67 @@ See [install](install.md) for the first-run sequence and [client examples](clien
 
 ## Provider management
 
-`spillway provider list -config <path>` shows configured providers, safe endpoint metadata and whether each required environment variable is set.
-`spillway provider show <name> -config <path>` shows one provider's preset and config location.
+`spillway provider list -config <path>` shows configured instances, their provider service types and whether each required environment variable is set.
+`spillway provider show <instance> -config <path>` shows one instance's safe configuration metadata.
 Neither command prints provider key values or makes provider requests.
 
-`spillway provider add <name> -config <path>` is experimental in v1.1.x.
-It validates the existing config, previews the provider entry and proposed tier changes, creates a private backup, then atomically saves the edit.
+`spillway provider add <type> -config <path>` adds the canonical legacy instance.
+`spillway provider add <type> --name <instance> -config <path>` adds a separately named instance, for example `spillway provider add gemini --name gemini-research --key-env GEMINI_RESEARCH_API_KEY`.
+Named aliases must be short, lowercase, non-identifying slugs; do not use an email address or account, project, organization or person identifier.
+When no `--key-env` is supplied, the command derives an environment-variable name from the alias, such as `GEMINI_RESEARCH_API_KEY`.
+Each instance must use its own environment-variable reference; this does not prove that the credential has independent quota or authorization.
+The experimental command validates the existing config, previews the provider entry and proposed tier changes, creates a private backup, then atomically saves the edit.
 It does not accept provider key values; set the named environment variable in your shell.
 Use `--dry-run` to inspect the preview without writing.
-It refuses to add a second instance of the same provider, which avoids account rotation around provider limits.
+An instance addition does not change `auto` or any existing virtual route.
+Use an explicit model reference such as `gemini-research/gemini-2.5-flash` to select it.
+Virtual routes reject two distinct instances of one provider service, and no failure automatically rotates to another instance of that service.
+The gateway reads configuration at startup; restart it after a config change.
+
+## Named provider instances
+
+Each `providers.<instance>` entry can use `type` to identify a supported provider service.
+Legacy entries such as `providers.gemini` keep their existing meaning without a `type` field.
+An instance has its own endpoint, environment reference, free-tier attestation, optional quota-domain labels and optional local budget.
+Credentials, endpoints, attestations and instance budgets are never inherited from another entry.
+
+```yaml spillway-config
+server:
+  api_keys:
+    - name: example-app
+      key: "${SPILLWAY_KEY}"
+providers:
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+    free_tier: true
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY}"
+    free_tier: true
+    quota_domains:
+      project: research-project
+      billing_account: google-billing
+    budget:
+      monthly_usd: 2.00
+store:
+  path: ./spillway.db
+  retention: 35d
+tiers:
+  free:
+    models: [gemini/gemini-2.5-flash]
+router:
+  auto: [free]
+```
+
+The aliases in `quota_domains` are opaque local labels to join instances that share a provider-documented quota scope.
+Do not put actual project, account or organization identifiers there.
+If the upstream response does not identify its quota scope, Spillway applies a provider-service-wide cooldown, even when multiple credentials are configured.
+A documented model-scoped limit is shared for that service and model; other models remain eligible only when the provider's policy permits it.
+The per-instance budget is an additional restriction; the process-wide daily and monthly budgets remain the aggregate spending ceiling across every instance and spill attempt.
+
+An explicit reference such as `gemini-research/gemini-2.5-flash` selects only that instance and never spills to its sibling.
+Existing `gemini/...`, `groq/...`, `auto` and `spillway/<tier>` meanings remain unchanged unless a virtual route is invalid under the same-service uniqueness rule.
+OpenAI-compatible `/v1/*` request and response shapes are unchanged.
 
 Run `spillway doctor -config <path>` to diagnose config selection, missing environment variables, local key entries, store schema, install channel and the configured listen address.
 It probes only that listener with unauthenticated requests and does not contact providers.
@@ -50,17 +102,19 @@ router:
 | `server.api_keys` | list of strings or `{name, key, dashboard}` | none; required | At least one key on every listen address. A string entry gets the generated name `key-N`; named keys: `name` is 1–64 lowercase letters, digits or hyphens; key is non-empty and has no whitespace. Names and keys must be unique. `dashboard` is boolean and defaults false. | Add a long random local key even on loopback; give each app a different name and key. | ADR 0003, 0012 |
 | `server.shutdown_timeout` | duration string | `10s` | `1s` to `5m`. | Use a duration in that range, for example `30s`; align Docker stop grace with it. | ADR 0015 |
 | `logging.level` | enum string | `info` | `debug`, `info`, `warn` or `error`. | Choose one of the four supported levels. | v1.0 logging configuration |
-| `providers.<name>` | mapping | none; at least one provider required | Built-ins: `gemini`, `groq`, `mock`, `ollama`, `openrouter`. Provider names `auto` and `spillway` are reserved. | Add a supported provider; `mock: {}` is the offline option. | ADR 0001, 0005 |
+| `providers.<instance>` | mapping | none; at least one provider required | Legacy preset names remain valid; additional aliases require an explicit supported `type`. At most 32 instances; `auto` and `spillway` are reserved. | Add a supported service; `mock: {}` is the offline option. | ADR 0001, 0028 |
+| `providers.<instance>.type` | provider service type | inferred only for legacy preset keys | Built-ins: `gemini`, `groq`, `mock`, `ollama`, `openrouter`. DeepSeek adapter support is not included. | Use a supported service type and a safe alias. | ADR 0028, 0030 |
 | `providers.<name>.api_key` | environment reference string | none | Required for Gemini, Groq and OpenRouter; those values must use `${VARIABLE}`. Not accepted for Mock or Ollama. | Set the named environment variable and use its exact reference in YAML. | ADR 0017 |
 | `providers.<name>.base_url` | absolute URL string | provider preset URL | Only `http` or `https`; HTTP is allowed only for loopback. No userinfo, query or fragment. | Use the provider's HTTPS endpoint; local Ollama can use `http://localhost:11434`. | ADR 0001 |
 | `providers.<name>.timeout` | duration string | `120s` | Greater than zero and at most `30m`. | Use a positive Go duration such as `30s`. | Baseline provider config |
-| `providers.groq.free_tier` | boolean | `false` | Only supported for Groq and Gemini. Set true only when the account has no paid plan. | Without the attestation, put its model in an `allow_spend: true` tier. | ADR 0005 |
-| `providers.gemini.free_tier` | boolean | `false` | Only supported for Groq and Gemini. Set true only when the Google Cloud project has no billing. | Without the attestation, put its model in an `allow_spend: true` tier. | ADR 0005 |
+| `providers.<instance>.free_tier` | boolean | `false` | Only supported for Groq and Gemini. Each instance's claim applies only to its associated account or project. | Without the attestation, put its model in an `allow_spend: true` tier. | ADR 0005 |
+| `providers.<instance>.quota_domains` | scope-to-alias mapping | unknown scope defaults to service-wide cooldown | Gemini: `project`, `billing_account`; Groq: `organization`, `project`; OpenRouter: `account`, `workspace`, `member`, `key`. Alias labels are at most 32 safe characters and are hidden by diagnostics. | Use the same alias only when instances are known to share that provider-documented scope. | ADR 0029, 0030 |
+| `providers.<instance>.budget.daily_usd` / `.monthly_usd` | positive decimal USD | unset | Additional per-instance soft cap; requires `store.path`, with `2d`/`35d` retention respectively. Cannot raise the process-wide cap. | Add the store and retain the full budget period. | ADR 0010, 0029 |
 | `tiers.<name>` | mapping | none | Name matches `[a-z0-9-]{1,64}`; `auto` is reserved. | Use a short lowercase tier name. | ADR 0005, 0006 |
-| `tiers.<name>.models` | list of `provider/model` strings | none; required | 1–16 distinct printable references; provider must be configured. A zero-spend tier may contain only eligible free models. | Set `allow_spend: true` for paid models, or use a local model, an OpenRouter `:free` model or a correctly attested provider. | ADR 0005, 0006 |
+| `tiers.<name>.models` | list of `instance/model` strings | none; required | 1–16 distinct printable references; instance must be configured. Expanded virtual routes reject two distinct instances of one service type. | Use one instance per provider service in a virtual route; use explicit references for direct instance selection. | ADR 0005, 0006, 0029 |
 | `tiers.<name>.allow_spend` | boolean | `false` | A true value explicitly permits paid models in this tier. | Keep omitted or false for a zero-spend tier. | ADR 0005 |
-| `models.<provider/model>.capabilities` | list of strings | no declaration | Required for every entry; allowed values: `tools`, `vision`, `json_mode`, `structured_outputs`. No duplicates; `[]` means text only. Model must be in a tier. | Declare the complete known capability set, or use `[]`. | ADR 0007 |
-| `models.<provider/model>.context_window` | integer tokens | unset | Optional, 1–10,000,000. Only filters virtual-model routing when the conservative request estimate exceeds it. | Use a positive token count from a trustworthy model specification. | ADR 0007 |
+| `models.<instance/model>.capabilities` | list of strings | no declaration | Required for every entry; allowed values: `tools`, `vision`, `json_mode`, `structured_outputs`. No duplicates; `[]` means text only. Model must be in a tier. | Declare the complete known capability set, or use `[]`. | ADR 0007 |
+| `models.<instance/model>.context_window` | integer tokens | unset | Optional, 1–10,000,000. Only filters virtual-model routing when the conservative request estimate exceeds it. | Use a positive token count from a trustworthy model specification. | ADR 0007 |
 | `router.auto` | ordered list of tier names | unset | Required when using `auto`; at least one configured tier, no duplicates, no more than 16 resolved distinct candidates. Zero-spend tiers must precede spend-enabled tiers. | List only configured tiers, free first. | ADR 0008 |
 | `router.mode` | enum string | legacy ordered auto chain | Only `rules` is accepted. | Remove the field or set `mode: rules`. | ADR 0014 |
 | `router.difficulty` | mapping of labels to tier lists | unset | In rules mode all of `simple`, `moderate` and `hard` are required; each non-empty and lists only `router.auto` tiers without duplicates. | Add a non-empty ordered fallback list for every label. | ADR 0014 |

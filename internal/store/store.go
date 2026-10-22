@@ -277,7 +277,22 @@ func (s *Store) RecordFailures() int64 {
 
 // SpendSince returns recorded request costs at or after the UTC timestamp.
 func (s *Store) SpendSince(ctx context.Context, since time.Time) (int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT cost_micro_usd FROM attempts WHERE at_ns >= ?`, since.UTC().UnixNano())
+	return s.spendSince(ctx, since, "")
+}
+
+// SpendSinceProvider returns recorded attempt costs for one safe instance alias.
+func (s *Store) SpendSinceProvider(ctx context.Context, since time.Time, provider string) (int64, error) {
+	return s.spendSince(ctx, since, provider)
+}
+
+func (s *Store) spendSince(ctx context.Context, since time.Time, provider string) (int64, error) {
+	query := `SELECT cost_micro_usd FROM attempts WHERE at_ns >= ?`
+	args := []any{since.UTC().UnixNano()}
+	if provider != "" {
+		query += ` AND provider = ?`
+		args = append(args, provider)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("query usage spend: %w", err)
 	}

@@ -18,13 +18,17 @@ import (
 var environmentVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
-	var keyEnv, baseURL, tier string
+	var keyEnv, baseURL, tier, instanceName string
+	var quotaDomainArgs []string
 	var attest, noTier, dryRun, yes bool
 	command := &cobra.Command{
-		Use:   "add [name]",
+		Use:   "add [type] [--name instance]",
 		Short: "add a provider to the config (experimental)",
 		Args:  cobra.MaximumNArgs(1),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+			if cmd.Flags().Changed("name") {
+				return allProviderNames(), cobra.ShellCompDirectiveNoFileComp
+			}
 			path, _ := cmd.Flags().GetString("config")
 			lookup := func(string) (string, bool) { return "spillway-completion-placeholder", true }
 			cfg, err := config.LoadWithEnv(path, lookup)
@@ -45,33 +49,46 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 			if len(args) == 0 && yes {
 				return usageFailure(cmd, "--yes requires a provider name")
 			}
-			name := ""
+			serviceType := ""
 			if len(args) == 1 {
-				name = args[0]
+				serviceType = args[0]
 			}
 			interactive := options.StdinTerminal && options.StdoutTerminal && !yes
 			prompted := false
-			if name == "" {
+			if serviceType == "" {
 				if !interactive {
 					return usageFailure(cmd, "provider name is required when prompts are unavailable; choose one of: "+strings.Join(availableProviderNames(cfg), ", "))
 				}
-				name, err = chooseProviderToAdd(ctx, options, cfg)
+				serviceType, err = chooseProviderToAdd(ctx, options, cfg)
 				if err != nil {
 					return commandFailure{code: 1, err: err}
 				}
 				prompted = true
 			}
-			preset, ok := providers.LookupPreset(name)
+			preset, ok := providers.LookupPreset(serviceType)
 			if !ok {
-				return commandFailure{code: 1, err: fmt.Errorf("%q is not a supported provider; choose one of %s", name, strings.Join(allProviderNames(), ", "))}
+				return commandFailure{code: 1, err: fmt.Errorf("%q is not a supported provider; choose one of %s", serviceType, strings.Join(allProviderNames(), ", "))}
+			}
+			name := serviceType
+			if instanceName != "" {
+				if !config.ValidProviderInstanceName(instanceName) {
+					return commandFailure{code: 1, err: errors.New("--name must be a safe alias matching [a-z][a-z0-9-]{0,31}; do not use an account or project identifier")}
+				}
+				name = instanceName
 			}
 			if _, exists := cfg.Providers[name]; exists {
 				line, _ := providerConfigLine(ctx, path, name)
-				return commandFailure{code: 1, err: duplicateProviderMessage(path, name, line)}
+				if name == serviceType {
+					return commandFailure{code: 1, err: duplicateProviderMessage(path, name, line)}
+				}
+				return commandFailure{code: 1, err: fmt.Errorf("provider instance %s is already configured in %s (line %d)", name, path, line)}
 			}
 			if preset.RequiresKey {
 				if keyEnv == "" {
 					keyEnv = preset.KeyEnv
+					if name != serviceType {
+						keyEnv = strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEY"
+					}
 				}
 				if interactive && !cmd.Flags().Changed("key-env") {
 					keyEnv, err = chooseKeyEnvironment(ctx, options, keyEnv)
@@ -85,10 +102,10 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				}
 			}
 			if !preset.RequiresKey && keyEnv != "" {
-				return commandFailure{code: 1, err: fmt.Errorf("%s does not take a provider key", name)}
+				return commandFailure{code: 1, err: fmt.Errorf("%s does not take a provider key", serviceType)}
 			}
 			if attest && !preset.FreeTierAttestable {
-				return commandFailure{code: 1, err: fmt.Errorf("--attest-free-tier is supported only for groq and gemini, not %s", name)}
+				return commandFailure{code: 1, err: fmt.Errorf("--attest-free-tier is supported only for groq and gemini, not %s", serviceType)}
 			}
 			if interactive && preset.FreeTierAttestable && !cmd.Flags().Changed("attest-free-tier") {
 				attest, err = chooseFreeTierAttestation(ctx, options, name)
@@ -102,7 +119,14 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				return commandFailure{code: 1, err: err}
 			}
 			edit := doc.Edit()
-			entry := config.ProviderEntry{Name: name, KeyEnv: keyEnv, BaseURL: baseURL, FreeTier: attest}
+			domains, domainErr := parseQuotaDomainArgs(quotaDomainArgs)
+			if domainErr != nil {
+				return commandFailure{code: 1, err: domainErr}
+			}
+			entry := config.ProviderEntry{Name: name, KeyEnv: keyEnv, BaseURL: baseURL, FreeTier: attest, QuotaDomains: domains}
+			if name != serviceType {
+				entry.Type = serviceType
+			}
 			if err := edit.AddProvider(entry); err != nil {
 				return commandFailure{code: 1, err: err}
 			}
@@ -132,9 +156,10 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				if parseErr != nil {
 					return commandFailure{code: 1, err: parseErr}
 				}
-				if !config.IsZeroSpendEligible(ref, cfg.Providers[name]) && name != "gemini" && name != "groq" {
+				selectedProvider := config.Provider{Type: serviceType, FreeTier: attest}
+				if !config.IsZeroSpendEligible(ref, selectedProvider) && serviceType != "gemini" && serviceType != "groq" {
 					warning = fmt.Sprintf("Suggested model %s was not added to tier %q because it is not known to be zero-spend eligible (ADR 0005).\n", modelRef, tier)
-				} else if (name == "gemini" || name == "groq") && !attest {
+				} else if (serviceType == "gemini" || serviceType == "groq") && !attest {
 					warning = fmt.Sprintf("Suggested model %s was not added to tier %q because %s is not attested as having no paid plan.\n", modelRef, tier, name)
 				} else if err := edit.AppendTierModel(tier, modelRef); err != nil {
 					return commandFailure{code: 1, err: err}
@@ -199,6 +224,8 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 		},
 	}
 	command.Flags().String("config", defaultConfigPath, "path to the config file")
+	command.Flags().StringVar(&instanceName, "name", "", "safe alias for an additional provider instance")
+	command.Flags().StringArrayVar(&quotaDomainArgs, "quota-domain", nil, "declare a shared quota scope alias as SCOPE=ALIAS (repeatable)")
 	command.Flags().StringVar(&keyEnv, "key-env", "", "environment variable holding the provider key")
 	command.Flags().BoolVar(&attest, "attest-free-tier", false, "attest that the Groq account or Gemini project has no paid plan")
 	command.Flags().StringVar(&baseURL, "base-url", "", "custom provider base URL")
@@ -207,6 +234,21 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview the edit without writing")
 	command.Flags().BoolVar(&yes, "yes", false, "run without prompts using safe defaults")
 	return command
+}
+
+func parseQuotaDomainArgs(values []string) (map[string]string, error) {
+	domains := make(map[string]string, len(values))
+	for _, value := range values {
+		scope, alias, ok := strings.Cut(value, "=")
+		if !ok || scope == "" || !config.ValidProviderInstanceName(alias) {
+			return nil, errors.New("--quota-domain must use SCOPE=SAFE_ALIAS; alias values are hidden from diagnostics")
+		}
+		if _, exists := domains[scope]; exists {
+			return nil, fmt.Errorf("--quota-domain repeats the %s scope", scope)
+		}
+		domains[scope] = alias
+	}
+	return domains, nil
 }
 
 func usageFailure(cmd *cobra.Command, message string) error {
@@ -266,7 +308,7 @@ func duplicateProviderMessage(path, name string, line int) error {
 			others = append(others, provider)
 		}
 	}
-	return fmt.Errorf("%s is already configured in %s%s. Spillway uses one key per provider and spills over across different providers, never across accounts of the same provider, because rotating accounts would evade provider rate limits and terms. For more capacity, upgrade your %s plan or add another provider: spillway provider add %s. To use a different %s key, change the value of its environment variable; no config change is needed", name, path, lineText, name, strings.Join(others, ", "), name)
+	return fmt.Errorf("%s is already configured in %s%s. Spillway never rotates provider instances to bypass limits. A separately authorized instance for legitimate workload isolation can be added with `spillway provider add %s --name <safe-alias>`; otherwise add a different provider service: %s", name, path, lineText, name, strings.Join(others, ", "))
 }
 
 func chooseProviderToAdd(ctx context.Context, options Options, cfg config.Config) (string, error) {

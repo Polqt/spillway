@@ -54,6 +54,9 @@ func (c Config) validate() error {
 	if err := validateRouter(c.Router, c.Tiers); err != nil {
 		return err
 	}
+	if err := validateRouteProviderUniqueness(c.Router, c.Tiers, c.Providers); err != nil {
+		return err
+	}
 	if err := validateClassifier(c.Router, c.Providers); err != nil {
 		return err
 	}
@@ -67,6 +70,57 @@ func (c Config) validate() error {
 		return errors.New("cache.ttl must be 1s to 24h and cache.max_mb must be 1 to 1024")
 	}
 	return validateBudgets(c)
+}
+
+// validateRouteProviderUniqueness prevents a virtual route from using two
+// separately named instances of one provider service as automatic fallback.
+func validateRouteProviderUniqueness(routerConfig Router, tiers map[string]Tier, configured map[string]Provider) error {
+	check := func(route string, tierNames []string) error {
+		firstInstance := make(map[string]string)
+		for _, tierName := range tierNames {
+			for _, model := range tiers[tierName].Models {
+				ref, err := providers.ParseModelRef(model)
+				if err != nil {
+					continue // The regular route validator reports malformed references.
+				}
+				provider, exists := configured[ref.Provider]
+				if !exists {
+					continue
+				}
+				serviceType := provider.Type
+				if serviceType == "" {
+					serviceType = ref.Provider
+				}
+				if first, exists := firstInstance[serviceType]; exists && first != ref.Provider {
+					return fmt.Errorf("%s includes provider instances %s and %s of service type %s; virtual routes may spill only across distinct provider services", route, first, ref.Provider, serviceType)
+				}
+				firstInstance[serviceType] = ref.Provider
+			}
+		}
+		return nil
+	}
+
+	tierNames := make([]string, 0, len(tiers))
+	for name := range tiers {
+		tierNames = append(tierNames, name)
+	}
+	slices.Sort(tierNames)
+	for _, name := range tierNames {
+		if err := check("tiers."+name, []string{name}); err != nil {
+			return err
+		}
+	}
+	if len(routerConfig.Auto) > 0 {
+		if err := check("router.auto", routerConfig.Auto); err != nil {
+			return err
+		}
+	}
+	for difficulty, tierNames := range routerConfig.Difficulty {
+		if err := check("router.difficulty."+difficulty, tierNames); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateBudgets(c Config) error {
@@ -207,6 +261,8 @@ func validateModels(models map[string]ModelDeclaration, tiers map[string]Tier) e
 // maxAutoCandidates keeps auto within the per-request attempt bound of one
 // tier (ADR 0008).
 const maxAutoCandidates = 16
+const maxProviderInstances = 32
+const maxConfiguredCandidates = 512
 const maxDifficultyRules = 32
 const maxDifficultyTokenThreshold = 2_000_000
 
@@ -342,6 +398,7 @@ func printableModelRef(ref string) bool {
 
 func validateTiers(tiers map[string]Tier, configured map[string]Provider) error {
 	names := make([]string, 0, len(tiers))
+	candidateRefs := make(map[string]struct{})
 	for name := range tiers {
 		names = append(names, name)
 	}
@@ -375,6 +432,7 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 				return fmt.Errorf("%s duplicates an earlier model reference", modelPath)
 			}
 			seen[model] = struct{}{}
+			candidateRefs[model] = struct{}{}
 			if tier.AllowSpend || IsZeroSpendEligible(ref, configured[ref.Provider]) {
 				continue
 			}
@@ -386,6 +444,9 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 			}
 			return fmt.Errorf("%s: %s is not zero-spend eligible: %s (ADR 0005)", modelPath, model, fix)
 		}
+	}
+	if len(candidateRefs) > maxConfiguredCandidates {
+		return fmt.Errorf("tiers define %d unique model references; at most %d are allowed", len(candidateRefs), maxConfiguredCandidates)
 	}
 	return nil
 }
@@ -476,11 +537,15 @@ func validateProviders(ps map[string]Provider) error {
 	if len(ps) == 0 {
 		return errors.New(`providers must configure at least one provider; add "mock: {}" to try Spillway without provider keys`)
 	}
+	if len(ps) > maxProviderInstances {
+		return fmt.Errorf("providers may configure at most %d instances", maxProviderInstances)
+	}
 	names := make([]string, 0, len(ps))
 	for name := range ps {
 		names = append(names, name)
 	}
 	slices.Sort(names)
+	credentialEnvAt := make(map[string]map[string]string)
 	for _, name := range names {
 		if name == "spillway" || name == "auto" {
 			return fmt.Errorf("providers.%s is reserved; use a provider name: %s", name, strings.Join(knownProviders(), ", "))
@@ -521,6 +586,15 @@ func validateProviders(ps map[string]Provider) error {
 		if err := validateQuotaDomains(name, provider); err != nil {
 			return err
 		}
+		if provider.APIKeyEnv != "" {
+			if credentialEnvAt[preset.Name] == nil {
+				credentialEnvAt[preset.Name] = make(map[string]string)
+			}
+			if first, exists := credentialEnvAt[preset.Name][provider.APIKeyEnv]; exists && first != name {
+				return fmt.Errorf("providers.%s.api_key uses the same environment reference as providers.%s for service %s; give each instance a separate environment reference", name, first, preset.Name)
+			}
+			credentialEnvAt[preset.Name][provider.APIKeyEnv] = name
+		}
 	}
 	return nil
 }
@@ -532,6 +606,9 @@ func validProviderInstanceName(name string) bool {
 	lower := strings.ToLower(name)
 	return !strings.HasPrefix(lower, "sk-") && !strings.HasPrefix(lower, "pk-") && !strings.HasPrefix(lower, "rk-") && !strings.HasPrefix(lower, "aiza-")
 }
+
+// ValidProviderInstanceName reports whether name is a safe, non-identifying alias.
+func ValidProviderInstanceName(name string) bool { return validProviderInstanceName(name) }
 
 func validateQuotaDomains(name string, provider Provider) error {
 	if len(provider.QuotaDomains) > 8 {

@@ -99,7 +99,7 @@ func (rec *requestRecord) endAttempt(outcome string) {
 			rec.usage.CostSource = "mixed"
 		}
 		if rec.gate != nil {
-			rec.gate.Charge(at, cost.MicroUSD)
+			rec.gate.ChargeFor(providers.ModelRef{Provider: attempt.Provider, Model: attempt.Model}, at, cost.MicroUSD)
 		}
 	}
 	rec.usage.PromptTokens = attempt.PromptTokens

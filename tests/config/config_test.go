@@ -838,6 +838,64 @@ func TestParse_TiersValidateZeroSpendEligibility(t *testing.T) {
 	}
 }
 
+func TestParse_VirtualRoutesRejectDistinctInstancesOfOneService(t *testing.T) {
+	t.Parallel()
+	base := `server: {api_keys: [sk-test-local-ci]}
+providers:
+  gemini: {api_key: "${GEMINI_API_KEY}"}
+  gemini-research: {type: gemini, api_key: "${GEMINI_RESEARCH_KEY}"}
+  groq: {api_key: "${GROQ_API_KEY}"}
+`
+	lookup := func(name string) (string, bool) { return "sk-test-" + strings.ToLower(name), true }
+	tests := []struct {
+		name      string
+		extra     string
+		wantError bool
+	}{
+		{name: "same instance multiple models allowed", extra: "tiers:\n  mixed:\n    allow_spend: true\n    models: [gemini-research/a, gemini-research/b]\nrouter: {auto: [mixed]}\n"},
+		{name: "different services allowed", extra: "tiers:\n  mixed:\n    allow_spend: true\n    models: [gemini/a, groq/b]\nrouter: {auto: [mixed]}\n"},
+		{name: "two instances same service rejected in tier", extra: "tiers:\n  mixed:\n    allow_spend: true\n    models: [gemini/a, gemini-research/b]\nrouter: {auto: [mixed]}\n", wantError: true},
+		{name: "two instances across auto tiers rejected", extra: "tiers:\n  first: {allow_spend: true, models: [gemini/a]}\n  second: {allow_spend: true, models: [gemini-research/b]}\nrouter: {auto: [first, second]}\n", wantError: true},
+		{name: "two instances across rule difficulty rejected", extra: "tiers:\n  first: {allow_spend: true, models: [gemini/a]}\n  second: {allow_spend: true, models: [gemini-research/b]}\nrouter:\n  mode: rules\n  auto: [first, second]\n  difficulty: {simple: [first, second], moderate: [first], hard: [second]}\n  rules: [{when: {tools_present: true}, difficulty: simple}]\n", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.ParseWithEnv([]byte(base+tt.extra), lookup)
+			if !tt.wantError {
+				if err != nil {
+					t.Fatalf("ParseWithEnv: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("ParseWithEnv accepted a virtual route containing distinct instances of one service")
+			}
+		})
+	}
+}
+
+func TestParse_ProviderInstancesRetainAndSeparateCredentialReferences(t *testing.T) {
+	t.Parallel()
+	base := []byte(`server: {api_keys: [sk-test-local-ci]}
+providers:
+  gemini: {api_key: "${GEMINI_API_KEY}"}
+  gemini-research: {type: gemini, api_key: "${GEMINI_RESEARCH_API_KEY}"}
+`)
+	cfg, err := config.ParseWithEnv(base, func(name string) (string, bool) { return "sk-test-" + strings.ToLower(name), true })
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+	if got := cfg.Providers["gemini-research"].APIKeyEnv; got != "GEMINI_RESEARCH_API_KEY" {
+		t.Fatalf("APIKeyEnv = %q, want separate variable name", got)
+	}
+	shared := strings.ReplaceAll(string(base), "GEMINI_RESEARCH_API_KEY", "GEMINI_API_KEY")
+	_, err = config.ParseWithEnv([]byte(shared), func(name string) (string, bool) { return "sk-test-" + strings.ToLower(name), true })
+	if err == nil {
+		t.Fatal("ParseWithEnv accepted multiple instances that reference the same environment variable")
+	}
+}
+
 func TestIsZeroSpendEligible_ADR0005Rules(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

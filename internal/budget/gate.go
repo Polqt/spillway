@@ -16,6 +16,10 @@ type SpendSource interface {
 	SpendSince(context.Context, time.Time) (int64, error)
 }
 
+type instanceSpendSource interface {
+	SpendSinceProvider(context.Context, time.Time, string) (int64, error)
+}
+
 // GateOptions configures a local spend gate.
 type GateOptions struct {
 	Limits    config.Budgets
@@ -26,14 +30,23 @@ type GateOptions struct {
 
 // Gate tracks UTC daily and monthly spend for paid models.
 type Gate struct {
-	mu        sync.Mutex
-	limits    config.Budgets
-	providers map[string]config.Provider
-	now       func() time.Time
-	day       time.Time
-	month     time.Time
-	daily     int64
-	monthly   int64
+	mu            sync.Mutex
+	limits        config.Budgets
+	providers     map[string]config.Provider
+	instanceSpend map[string]instancePeriods
+	now           func() time.Time
+	day           time.Time
+	month         time.Time
+	daily         int64
+	monthly       int64
+}
+
+type instancePeriods struct {
+	limits  config.Budgets
+	day     time.Time
+	month   time.Time
+	daily   int64
+	monthly int64
 }
 
 // PeriodStatus reports one configured UTC budget period.
@@ -55,14 +68,24 @@ func NewGate(ctx context.Context, o GateOptions) (*Gate, error) {
 	if o.Limits.DailyMicroUSD < 0 || o.Limits.MonthlyMicroUSD < 0 {
 		return nil, errors.New("budget gate limits must not be negative")
 	}
-	if o.Limits.DailyMicroUSD <= 0 && o.Limits.MonthlyMicroUSD <= 0 {
+	hasInstanceLimit := false
+	for _, provider := range o.Providers {
+		if provider.Budget != nil {
+			hasInstanceLimit = true
+			break
+		}
+	}
+	if o.Limits.DailyMicroUSD <= 0 && o.Limits.MonthlyMicroUSD <= 0 && !hasInstanceLimit {
 		return nil, errors.New("budget gate requires a positive limit")
 	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
 	now := o.Now().UTC()
-	g := &Gate{limits: o.Limits, providers: o.Providers, now: o.Now, day: utcDay(now), month: utcMonth(now)}
+	g := &Gate{limits: o.Limits, providers: o.Providers, now: o.Now, day: utcDay(now), month: utcMonth(now), instanceSpend: make(map[string]instancePeriods)}
+	if hasInstanceLimit && o.Store == nil {
+		return nil, errors.New("budget gate needs a store to load per-instance spend")
+	}
 	if o.Store != nil {
 		if o.Limits.DailyMicroUSD > 0 {
 			spend, err := o.Store.SpendSince(ctx, g.day)
@@ -78,6 +101,30 @@ func NewGate(ctx context.Context, o GateOptions) (*Gate, error) {
 			}
 			g.monthly = spend
 		}
+		providerSource, supportsInstances := o.Store.(instanceSpendSource)
+		for name, provider := range o.Providers {
+			if provider.Budget == nil {
+				continue
+			}
+			if !supportsInstances {
+				return nil, errors.New("budget gate store cannot load per-instance spend")
+			}
+			state := instancePeriods{limits: *provider.Budget, day: utcDay(now), month: utcMonth(now)}
+			var err error
+			if state.limits.DailyMicroUSD > 0 {
+				state.daily, err = providerSource.SpendSinceProvider(ctx, state.day, name)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if state.limits.MonthlyMicroUSD > 0 {
+				state.monthly, err = providerSource.SpendSinceProvider(ctx, state.month, name)
+				if err != nil {
+					return nil, err
+				}
+			}
+			g.instanceSpend[name] = state
+		}
 	}
 	return g, nil
 }
@@ -90,9 +137,23 @@ func (g *Gate) Allow(ref providers.ModelRef) (bool, time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.roll(g.now().UTC())
+	g.rollInstances(g.now().UTC())
+	var reset time.Time
 	if (g.limits.DailyMicroUSD > 0 && g.daily >= g.limits.DailyMicroUSD) ||
 		(g.limits.MonthlyMicroUSD > 0 && g.monthly >= g.limits.MonthlyMicroUSD) {
-		return false, g.nextReset(g.now().UTC())
+		reset = g.nextReset(g.now().UTC())
+	}
+	if instance, exists := g.instanceSpend[ref.Provider]; exists {
+		if instance.limits.DailyMicroUSD > 0 && instance.daily >= instance.limits.DailyMicroUSD ||
+			instance.limits.MonthlyMicroUSD > 0 && instance.monthly >= instance.limits.MonthlyMicroUSD {
+			instanceReset := g.instanceNextReset(instance, g.now().UTC())
+			if reset.IsZero() || instanceReset.After(reset) {
+				reset = instanceReset
+			}
+		}
+	}
+	if !reset.IsZero() {
+		return false, reset
 	}
 	return true, time.Time{}
 }
@@ -107,6 +168,57 @@ func (g *Gate) Charge(at time.Time, costMicroUSD int64) {
 	g.roll(at.UTC())
 	g.daily = add(g.daily, costMicroUSD)
 	g.monthly = add(g.monthly, costMicroUSD)
+}
+
+// ChargeFor adds one attempt to the process-wide ceiling and its instance budget.
+func (g *Gate) ChargeFor(ref providers.ModelRef, at time.Time, costMicroUSD int64) {
+	if costMicroUSD <= 0 {
+		return
+	}
+	g.Charge(at, costMicroUSD)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, exists := g.instanceSpend[ref.Provider]
+	if !exists {
+		return
+	}
+	if day := utcDay(at.UTC()); !day.Equal(state.day) {
+		state.day, state.daily = day, 0
+	}
+	if month := utcMonth(at.UTC()); !month.Equal(state.month) {
+		state.month, state.monthly = month, 0
+	}
+	state.daily, state.monthly = add(state.daily, costMicroUSD), add(state.monthly, costMicroUSD)
+	g.instanceSpend[ref.Provider] = state
+}
+
+func (g *Gate) rollInstances(now time.Time) {
+	for name, state := range g.instanceSpend {
+		if day := utcDay(now); !day.Equal(state.day) {
+			state.day, state.daily = day, 0
+		}
+		if month := utcMonth(now); !month.Equal(state.month) {
+			state.month, state.monthly = month, 0
+		}
+		g.instanceSpend[name] = state
+	}
+}
+
+func (g *Gate) instanceNextReset(state instancePeriods, now time.Time) time.Time {
+	var reset time.Time
+	if state.limits.DailyMicroUSD > 0 && state.daily >= state.limits.DailyMicroUSD {
+		reset = state.day.AddDate(0, 0, 1)
+	}
+	if state.limits.MonthlyMicroUSD > 0 && state.monthly >= state.limits.MonthlyMicroUSD {
+		monthly := state.month.AddDate(0, 1, 0)
+		if reset.IsZero() || monthly.After(reset) {
+			reset = monthly
+		}
+	}
+	if reset.Before(now) {
+		return now
+	}
+	return reset
 }
 
 // Status returns limits, spend, remaining amount and the next reset time.

@@ -14,6 +14,7 @@ import (
 
 // Options configures a Gemini provider.
 type Options struct {
+	Name    string
 	APIKey  redact.Secret
 	BaseURL string
 	Timeout time.Duration
@@ -30,8 +31,11 @@ func New(o Options) (*Client, error) {
 		preset, _ := providers.LookupPreset("gemini")
 		o.BaseURL = preset.DefaultBaseURL
 	}
+	if o.Name == "" {
+		o.Name = "gemini"
+	}
 	compat, err := openaicompat.New(openaicompat.Options{
-		Name: "gemini", BaseURL: o.BaseURL, APIKey: o.APIKey, Timeout: o.Timeout,
+		Name: o.Name, BaseURL: o.BaseURL, APIKey: o.APIKey, Timeout: o.Timeout,
 		ClassifyError: classifyError,
 	})
 	if err != nil {
@@ -41,7 +45,7 @@ func New(o Options) (*Client, error) {
 }
 
 // Name returns the provider name used in model references.
-func (c *Client) Name() string { return "gemini" }
+func (c *Client) Name() string { return c.compat.Name() }
 
 // Models lists Gemini models without the API's models/ resource prefix.
 func (c *Client) Models(ctx context.Context) ([]providers.Model, error) {

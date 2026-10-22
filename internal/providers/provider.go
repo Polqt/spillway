@@ -65,6 +65,9 @@ var (
 type RetryAfterError struct {
 	After time.Duration
 	Kind  error
+	// Scope identifies a provider-documented quota scope when the adapter can
+	// safely derive it from the upstream response. Empty means unknown.
+	Scope string
 }
 
 // ClampRetryAfter bounds a provider retry delay to the supported cooldown range.

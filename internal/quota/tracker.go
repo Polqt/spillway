@@ -24,8 +24,10 @@ const (
 
 // Options configures a Tracker. Candidates bounds all tracked state.
 type Options struct {
-	Now        func() time.Time
-	Candidates []providers.ModelRef
+	Now          func() time.Time
+	Candidates   []providers.ModelRef
+	ServiceTypes map[string]string
+	QuotaDomains map[string]map[string]string
 }
 
 type cooldown struct {
@@ -61,11 +63,18 @@ type CandidateSnapshot struct {
 
 // Tracker tracks cooldowns for the configured model references only.
 type Tracker struct {
-	mu         sync.Mutex
-	now        func() time.Time
-	configured map[providers.ModelRef]struct{}
-	candidates map[providers.ModelRef]candidateState
-	providers  map[string]cooldown
+	mu           sync.Mutex
+	now          func() time.Time
+	configured   map[providers.ModelRef]struct{}
+	candidates   map[providers.ModelRef]candidateState
+	serviceTypes map[string]string
+	quotaDomains map[string]map[string]string
+	services     map[string]cooldown
+	domains      map[string]cooldown
+	models       map[string]cooldown
+	knownModels  map[string]struct{}
+	instances    map[string]cooldown
+	breakers     map[string]candidateState
 }
 
 // New creates a tracker bounded to the configured candidates.
@@ -77,17 +86,33 @@ func New(o Options) (*Tracker, error) {
 		o.Now = time.Now
 	}
 	configured := make(map[providers.ModelRef]struct{}, len(o.Candidates))
+	knownModels := make(map[string]struct{}, len(o.Candidates))
+	serviceTypes := make(map[string]string, len(o.ServiceTypes))
+	for instance, service := range o.ServiceTypes {
+		serviceTypes[instance] = service
+	}
+	domains := make(map[string]map[string]string, len(o.QuotaDomains))
+	for instance, labels := range o.QuotaDomains {
+		domains[instance] = make(map[string]string, len(labels))
+		for scope, label := range labels {
+			domains[instance][scope] = label
+		}
+	}
 	for _, ref := range o.Candidates {
 		if ref.Provider == "" || ref.Model == "" {
 			return nil, fmt.Errorf("quota: candidate %q must have a provider and model", ref.String())
 		}
 		configured[ref] = struct{}{}
+		if serviceTypes[ref.Provider] == "" {
+			serviceTypes[ref.Provider] = ref.Provider
+		}
+		knownModels[modelCooldownKey(serviceTypes[ref.Provider], ref.Model)] = struct{}{}
 	}
 	return &Tracker{
-		now:        o.Now,
-		configured: configured,
-		candidates: make(map[providers.ModelRef]candidateState, len(configured)),
-		providers:  make(map[string]cooldown),
+		now: o.Now, configured: configured, candidates: make(map[providers.ModelRef]candidateState, len(configured)),
+		serviceTypes: serviceTypes, quotaDomains: domains,
+		services: make(map[string]cooldown), domains: make(map[string]cooldown), models: make(map[string]cooldown), knownModels: knownModels,
+		instances: make(map[string]cooldown), breakers: make(map[string]candidateState),
 	}, nil
 }
 
@@ -95,14 +120,35 @@ func New(o Options) (*Tracker, error) {
 func (t *Tracker) Available(ref providers.ModelRef) (ok bool, until time.Time, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, configured := t.configured[ref]; !configured {
+	service, knownInstance := t.serviceTypes[ref.Provider]
+	if !knownInstance {
 		return true, time.Time{}, ""
 	}
 	now := t.now()
-	if providerCooldown, exists := t.providers[ref.Provider]; exists && now.Before(providerCooldown.until) {
-		return false, providerCooldown.until, providerCooldown.reason
+	var sharedCooldown cooldown
+	sharedCooldown = t.services[service]
+	if modelCooldown := t.models[modelCooldownKey(service, ref.Model)]; modelCooldown.until.After(sharedCooldown.until) {
+		sharedCooldown = modelCooldown
+	}
+	if instanceCooldown := t.instances[ref.Provider]; instanceCooldown.until.After(sharedCooldown.until) {
+		sharedCooldown = instanceCooldown
+	}
+	for scope, label := range t.quotaDomains[ref.Provider] {
+		if domainCooldown := t.domains[quotaDomainKey(service, scope, label)]; domainCooldown.until.After(sharedCooldown.until) {
+			sharedCooldown = domainCooldown
+		}
+	}
+	if now.Before(sharedCooldown.until) {
+		return false, sharedCooldown.until, sharedCooldown.reason
+	}
+	if _, configured := t.configured[ref]; !configured {
+		return true, time.Time{}, ""
 	}
 	state := t.candidates[ref]
+	breaker := t.breakers[ref.Provider]
+	if now.Before(breaker.until) && breaker.until.After(state.until) {
+		return false, breaker.until, breaker.reason
+	}
 	if now.Before(state.until) {
 		return false, state.until, state.reason
 	}
@@ -117,13 +163,29 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 	now := t.now()
 	for ref := range t.configured {
 		state := t.candidates[ref]
+		breakerState := t.breakers[ref.Provider]
 		until, reason := state.until, state.reason
+		if breakerState.until.After(until) {
+			until, reason = breakerState.until, breakerState.reason
+		}
 		breaker := BreakerClosed
-		if state.upstreamFailures >= 3 && now.Before(state.until) && state.reason == "circuit open" {
+		if breakerState.upstreamFailures >= 3 && now.Before(breakerState.until) && breakerState.reason == "circuit open" {
 			breaker = BreakerOpen
 		}
-		if provider, ok := t.providers[ref.Provider]; ok && provider.until.After(until) {
-			until, reason = provider.until, provider.reason
+		service := t.serviceTypes[ref.Provider]
+		if shared, ok := t.services[service]; ok && shared.until.After(until) {
+			until, reason = shared.until, shared.reason
+		}
+		if shared, ok := t.models[modelCooldownKey(service, ref.Model)]; ok && shared.until.After(until) {
+			until, reason = shared.until, shared.reason
+		}
+		if instance, ok := t.instances[ref.Provider]; ok && instance.until.After(until) {
+			until, reason = instance.until, instance.reason
+		}
+		for scope, label := range t.quotaDomains[ref.Provider] {
+			if shared, ok := t.domains[quotaDomainKey(service, scope, label)]; ok && shared.until.After(until) {
+				until, reason = shared.until, shared.reason
+			}
 		}
 		if !now.Before(until) {
 			until, reason = time.Time{}, ""
@@ -134,7 +196,7 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 		}
 		result = append(result, CandidateSnapshot{
 			Provider: ref.Provider, Model: ref.Model, CooldownUntil: cooldownUntil,
-			Reason: reason, Breaker: breaker, UpstreamFailures: state.upstreamFailures,
+			Reason: reason, Breaker: breaker, UpstreamFailures: breakerState.upstreamFailures,
 		})
 	}
 	slices.SortFunc(result, func(a, b CandidateSnapshot) int {
@@ -151,14 +213,28 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.RateLimit) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, configured := t.configured[ref]; !configured || errors.Is(err, context.Canceled) {
+	_, knownInstance := t.serviceTypes[ref.Provider]
+	if !knownInstance || errors.Is(err, context.Canceled) {
 		return
 	}
+	_, configuredCandidate := t.configured[ref]
 	now := t.now()
 	if err == nil {
+		breaker := t.breakers[ref.Provider]
+		if breaker.reason == "circuit open" {
+			t.breakers[ref.Provider] = candidateState{}
+		}
+		if !configuredCandidate {
+			if hint.Known {
+				reset := max(exhaustedReset(hint.RemainingRequests, hint.ResetRequests), exhaustedReset(hint.RemainingTokens, hint.ResetTokens))
+				if reset > 0 {
+					t.setRateCooldown(ref, "", cooldown{until: now.Add(reset), reason: "rate limited"})
+				}
+			}
+			return
+		}
 		state := t.candidates[ref]
 		state.rateFailures = 0
-		state.upstreamFailures = 0
 		state.cooldown = cooldown{}
 		if hint.Known {
 			reset := max(
@@ -166,7 +242,7 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.Rate
 				exhaustedReset(hint.RemainingTokens, hint.ResetTokens),
 			)
 			if reset > 0 {
-				state.cooldown = cooldown{until: now.Add(reset), reason: "rate limited"}
+				t.setRateCooldown(ref, "", cooldown{until: now.Add(reset), reason: "rate limited"})
 			}
 		}
 		t.candidates[ref] = state
@@ -175,28 +251,37 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.Rate
 	var retry providers.RetryAfterError
 	switch {
 	case errors.Is(err, providers.ErrRateLimited):
+		failures := 1
 		state := t.candidates[ref]
-		state.rateFailures++
-		duration := rateLimitBackoff(state.rateFailures)
+		if configuredCandidate {
+			state.rateFailures++
+			failures = state.rateFailures
+		}
+		duration := rateLimitBackoff(failures)
 		if errors.As(err, &retry) && retry.After > 0 {
 			duration = providers.ClampRetryAfter(retry.After)
 		}
-		state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(duration), reason: "rate limited"})
-		t.candidates[ref] = state
+		t.setRateCooldown(ref, retry.Scope, cooldown{until: now.Add(duration), reason: "rate limited"})
+		if configuredCandidate {
+			t.candidates[ref] = state
+		}
 	case errors.Is(err, providers.ErrPaymentRequired):
 		duration := providerPause
 		if errors.As(err, &retry) && retry.After > 0 {
 			duration = providers.ClampRetryAfter(retry.After)
 		}
-		t.providers[ref.Provider] = laterCooldown(t.providers[ref.Provider], cooldown{until: now.Add(duration), reason: "payment required"})
+		t.setServiceCooldown(ref.Provider, cooldown{until: now.Add(duration), reason: "payment required"})
 	case errors.Is(err, providers.ErrUnauthorized):
-		t.providers[ref.Provider] = laterCooldown(t.providers[ref.Provider], cooldown{until: now.Add(providerPause), reason: "unauthorized"})
+		t.instances[ref.Provider] = laterCooldown(t.instances[ref.Provider], cooldown{until: now.Add(providerPause), reason: "unauthorized"})
 	case errors.Is(err, providers.ErrModelNotFound):
+		if !configuredCandidate {
+			return
+		}
 		state := t.candidates[ref]
 		state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(modelPause), reason: "model not found"})
 		t.candidates[ref] = state
 	case errors.Is(err, providers.ErrUpstreamUnavailable):
-		state := t.candidates[ref]
+		state := t.breakers[ref.Provider]
 		if state.upstreamFailures < 7 {
 			state.upstreamFailures++
 		}
@@ -206,8 +291,53 @@ func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.Rate
 		} else if state.upstreamFailures >= 3 {
 			state.cooldown = laterCooldown(state.cooldown, cooldown{until: now.Add(circuitBackoff(state.upstreamFailures)), reason: "circuit open"})
 		}
-		t.candidates[ref] = state
+		t.breakers[ref.Provider] = state
 	}
+}
+
+func (t *Tracker) setServiceCooldown(instance string, next cooldown) {
+	service := t.serviceTypes[instance]
+	if service == "" {
+		service = instance
+	}
+	t.services[service] = laterCooldown(t.services[service], next)
+}
+
+func (t *Tracker) setRateCooldown(ref providers.ModelRef, scope string, next cooldown) {
+	service := t.serviceTypes[ref.Provider]
+	if scope == "model" {
+		key := modelCooldownKey(service, ref.Model)
+		if _, known := t.knownModels[key]; known {
+			t.models[key] = laterCooldown(t.models[key], next)
+			return
+		}
+	}
+	label := t.quotaDomains[ref.Provider][scope]
+	if scope == "" || label == "" {
+		// An unknown upstream scope must suppress every configured instance of
+		// the service instead of treating another credential as capacity.
+		next.reason = "rate limited; quota scope unknown, conservatively shared"
+		t.setServiceCooldown(ref.Provider, next)
+		return
+	}
+	for instance, instanceService := range t.serviceTypes {
+		if instanceService == service && t.quotaDomains[instance][scope] == "" {
+			// An unlabelled sibling cannot be safely separated from this scope.
+			next.reason = "rate limited; quota scope unknown, conservatively shared"
+			t.setServiceCooldown(ref.Provider, next)
+			return
+		}
+	}
+	key := quotaDomainKey(service, scope, label)
+	t.domains[key] = laterCooldown(t.domains[key], next)
+}
+
+func modelCooldownKey(service, model string) string {
+	return service + "/model/" + model
+}
+
+func quotaDomainKey(service, scope, label string) string {
+	return service + "/" + scope + "/" + label
 }
 
 func exhaustedReset(remaining int, reset time.Duration) time.Duration {

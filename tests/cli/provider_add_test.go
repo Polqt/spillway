@@ -27,8 +27,6 @@ func TestProviderAdd_AddsGeminiToGroqConfig(t *testing.T) {
 		t.Fatalf("exit = %d; stdout = %q; stderr = %q", code, stdout.String(), stderr.String())
 	}
 	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
-	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
-	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +63,7 @@ func TestProviderAdd_SecondInstanceRefusedWithGuidance(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1; stderr = %q", code, stderr.String())
 	}
-	for _, want := range []string{"groq is already configured", "line", "upgrade your groq plan", "another provider", "spillway provider add"} {
+	for _, want := range []string{"groq is already configured", "line", "never rotates provider instances", "--name <safe-alias>", "different provider service"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr %q lacks %q", stderr.String(), want)
 		}
@@ -77,6 +75,36 @@ func TestProviderAdd_SecondInstanceRefusedWithGuidance(t *testing.T) {
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("refused second provider instance changed the config")
+	}
+}
+
+func TestProviderAdd_AddsNamedAuthorizedInstanceWithoutChangingRoutes(t *testing.T) {
+	t.Parallel()
+	path, before := providerAddFixture(t, "groq")
+	var stdout, stderr bytes.Buffer
+	lookup := func(name string) (string, bool) {
+		return "sk-test-provider-add-secret", name == "GEMINI_RESEARCH_KEY" || name == "GROQ_API_KEY"
+	}
+	args := []string{"provider", "add", "gemini", "--name", "gemini-research", "--key-env", "GEMINI_RESEARCH_KEY", "--quota-domain", "project=research-team", "--yes", "--config", path}
+	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, lookup); code != 0 {
+		t.Fatalf("exit = %d; stderr = %q; stdout = %q", code, stderr.String(), stdout.String())
+	}
+	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "gemini-research:\n") || !strings.Contains(string(after), "type: gemini") || !strings.Contains(string(after), `api_key: "${GEMINI_RESEARCH_KEY}"`) || !strings.Contains(string(after), "project: research-team") {
+		t.Fatalf("named instance was not written using an env reference: %s", after)
+	}
+	if configSection(after, "tiers:", "router:") != configSection(before, "tiers:", "router:") || !strings.Contains(stdout.String(), "restart spillway serve") {
+		t.Fatalf("legacy route/config changed or restart guidance missing; output=%q", stdout.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String()+string(after), "sk-test-provider-add-secret") {
+		t.Fatal("provider key value was disclosed")
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "research-team") {
+		t.Fatal("quota-domain alias was disclosed in the preview or diagnostics")
 	}
 }
 

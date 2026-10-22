@@ -19,8 +19,9 @@ var modelReferencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$
 
 // Edit is an ordered set of changes to one Document.
 type Edit struct {
-	doc *Document
-	ops []editOp
+	doc       *Document
+	ops       []editOp
+	sensitive []string
 }
 
 // editOp is one change: apply splices lines into the file, and intend makes
@@ -41,10 +42,12 @@ type hunk struct {
 // ProviderEntry is a provider to add. It has no key field, so a key value
 // cannot be written through it.
 type ProviderEntry struct {
-	Name     string // Name is the provider preset name.
-	KeyEnv   string // KeyEnv is the variable name written as "${KeyEnv}"; empty for presets without keys.
-	BaseURL  string // BaseURL overrides the preset URL; empty keeps the preset default.
-	FreeTier bool   // FreeTier enables free-tier attestation for Groq or Gemini.
+	Name         string // Name is the instance alias, or canonical preset name for legacy form.
+	Type         string // Type is set only for a named provider instance.
+	KeyEnv       string // KeyEnv is the variable name written as "${KeyEnv}"; empty for presets without keys.
+	BaseURL      string // BaseURL overrides the preset URL; empty keeps the preset default.
+	FreeTier     bool   // FreeTier enables free-tier attestation for Groq or Gemini.
+	QuotaDomains map[string]string
 }
 
 // ProviderExistsError reports that the provider is already configured.
@@ -77,19 +80,29 @@ func (e *LayoutError) Error() string {
 
 // AddProvider adds one preset provider to the providers mapping.
 func (e *Edit) AddProvider(p ProviderEntry) error {
-	preset, ok := providers.LookupPreset(p.Name)
+	serviceType := p.Type
+	if serviceType == "" {
+		serviceType = p.Name
+	}
+	preset, ok := providers.LookupPreset(serviceType)
 	if !ok {
-		return fmt.Errorf("config: %q is not a supported provider; use one of %s", p.Name, strings.Join(knownProviders(), ", "))
+		return fmt.Errorf("config: %q is not a supported provider; use one of %s", serviceType, strings.Join(knownProviders(), ", "))
+	}
+	if p.Type != "" && !validProviderInstanceName(p.Name) {
+		return errors.New("config: instance name must use a safe alias matching [a-z][a-z0-9-]{0,31}")
+	}
+	if err := validateQuotaDomains(p.Name, Provider{Type: serviceType, QuotaDomains: p.QuotaDomains}); err != nil {
+		return err
 	}
 	switch {
 	case p.KeyEnv != "" && (!environmentName.MatchString(p.KeyEnv) || looksLikeKey(p.KeyEnv)):
 		return errors.New("config: the key variable must be an environment variable name such as GEMINI_API_KEY, not a key value")
 	case p.KeyEnv != "" && !preset.AcceptsKey:
-		return fmt.Errorf("config: %s does not take a provider key", p.Name)
+		return fmt.Errorf("config: %s does not take a provider key", serviceType)
 	case p.KeyEnv == "" && preset.RequiresKey:
 		return fmt.Errorf("config: %s needs a key variable such as %s", p.Name, preset.KeyEnv)
 	case p.FreeTier && !preset.FreeTierAttestable:
-		return fmt.Errorf("config: free_tier is supported only for groq and gemini, not %s", p.Name)
+		return fmt.Errorf("config: free_tier is supported only for groq and gemini, not %s", serviceType)
 	case strings.ContainsAny(p.BaseURL, "\"\\") || strings.ContainsFunc(p.BaseURL, isControl):
 		return errors.New("config: the base URL contains a quote, backslash or control character")
 	}
@@ -101,6 +114,9 @@ func (e *Edit) AddProvider(p ProviderEntry) error {
 		return err
 	}
 	e.ops = append(e.ops, addProviderOp{entry: p})
+	for _, label := range p.QuotaDomains {
+		e.sensitive = append(e.sensitive, label)
+	}
 	return nil
 }
 
@@ -180,7 +196,7 @@ func (e *Edit) Result() (Change, error) {
 	if err != nil {
 		return Change{}, fmt.Errorf("config: %w", err)
 	}
-	return Change{after: after, beforePath: e.doc.path, beforeDigest: e.doc.digest, hunks: hunks, secrets: localKeyLiterals(root.Content[0])}, nil
+	return Change{after: after, beforePath: e.doc.path, beforeDigest: e.doc.digest, hunks: hunks, secrets: localKeyLiterals(root.Content[0]), sensitive: append([]string(nil), e.sensitive...)}, nil
 }
 
 func (e *Edit) proveIntent(before, after []byte) error {
@@ -209,6 +225,7 @@ type Change struct {
 	beforeDigest [32]byte
 	hunks        []hunk
 	secrets      []redact.Secret
+	sensitive    []string
 }
 
 // Content returns the edited file.
@@ -223,14 +240,23 @@ func (c Change) WritePreview(w io.Writer) error {
 	for _, h := range c.hunks {
 		fmt.Fprintf(&out, "@@ %s @@\n", h.path)
 		for _, line := range h.context {
-			fmt.Fprintf(&out, " %s\n", scrubber.Scrub(line))
+			fmt.Fprintf(&out, " %s\n", c.scrub(scrubber.Scrub(line)))
 		}
 		for _, line := range h.added {
-			fmt.Fprintf(&out, "+%s\n", scrubber.Scrub(line))
+			fmt.Fprintf(&out, "+%s\n", c.scrub(scrubber.Scrub(line)))
 		}
 	}
 	_, err := io.WriteString(w, out.String())
 	return err
+}
+
+func (c Change) scrub(line string) string {
+	for _, value := range c.sensitive {
+		if value != "" {
+			line = strings.ReplaceAll(line, value, "[REDACTED]")
+		}
+	}
+	return line
 }
 
 type addProviderOp struct {
@@ -265,11 +291,25 @@ func (op addProviderOp) lines(indent, step string) []string {
 	if p.KeyEnv != "" {
 		fields = append(fields, indent+step+`api_key: "${`+p.KeyEnv+`}"`)
 	}
+	if p.Type != "" {
+		fields = append(fields, indent+step+"type: "+p.Type)
+	}
 	if p.BaseURL != "" {
 		fields = append(fields, indent+step+`base_url: "`+p.BaseURL+`"`)
 	}
 	if p.FreeTier {
 		fields = append(fields, indent+step+"free_tier: true")
+	}
+	if len(p.QuotaDomains) > 0 {
+		fields = append(fields, indent+step+"quota_domains:")
+		scopes := make([]string, 0, len(p.QuotaDomains))
+		for scope := range p.QuotaDomains {
+			scopes = append(scopes, scope)
+		}
+		sort.Strings(scopes)
+		for _, scope := range scopes {
+			fields = append(fields, indent+step+"  "+scope+": "+p.QuotaDomains[scope])
+		}
 	}
 	if len(fields) == 0 {
 		return []string{indent + p.Name + ": {}"}
@@ -288,6 +328,9 @@ func (op addProviderOp) intend(tree map[string]any) error {
 		return errors.New("config: internal error: providers is not a mapping")
 	}
 	entry := map[string]any{}
+	if op.entry.Type != "" {
+		entry["type"] = op.entry.Type
+	}
 	if op.entry.KeyEnv != "" {
 		entry["api_key"] = "${" + op.entry.KeyEnv + "}"
 	}
@@ -296,6 +339,13 @@ func (op addProviderOp) intend(tree map[string]any) error {
 	}
 	if op.entry.FreeTier {
 		entry["free_tier"] = true
+	}
+	if len(op.entry.QuotaDomains) > 0 {
+		domains := make(map[string]any, len(op.entry.QuotaDomains))
+		for scope, label := range op.entry.QuotaDomains {
+			domains[scope] = label
+		}
+		entry["quota_domains"] = domains
 	}
 	section[op.entry.Name] = entry
 	return nil

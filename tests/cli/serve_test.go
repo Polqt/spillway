@@ -1144,6 +1144,86 @@ func TestRun_ServeGeminiEndToEnd(t *testing.T) {
 	}
 }
 
+func TestRun_ServeNamedGeminiInstancesSelectOnlyRequestedInstance(t *testing.T) {
+	t.Parallel()
+	const primaryKey = "sk-test-gemini-primary"
+	const researchKey = "sk-test-gemini-research"
+	var primaryRequests, researchRequests int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryRequests++
+		if r.Header.Get("Authorization") != "Bearer "+primaryKey {
+			t.Errorf("primary auth = %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `[{"error":{"code":429,"message":"quota exhausted","status":"RESOURCE_EXHAUSTED"}}]`)
+	}))
+	defer primary.Close()
+	research := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		researchRequests++
+		if r.Header.Get("Authorization") != "Bearer "+researchKey {
+			t.Errorf("research auth = %q", r.Header.Get("Authorization"))
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-research","object":"chat.completion","created":1,"model":"gemini-2.5-flash","choices":[{"index":0,"message":{"role":"assistant","content":"research instance"},"finish_reason":"stop"}]}`)
+	}))
+	defer research.Close()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  gemini:\n    api_key: \"${GEMINI_API_KEY}\"\n    base_url: \""+primary.URL+"/v1beta/openai\"\n  gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_RESEARCH_API_KEY}\"\n    base_url: \""+research.URL+"/v1beta/openai\"\n")
+	lookup := func(name string) (string, bool) {
+		values := map[string]string{"SPILLWAY_KEY": e2eKey, "GEMINI_API_KEY": primaryKey, "GEMINI_RESEARCH_API_KEY": researchKey}
+		value, ok := values[name]
+		return value, ok
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pr, pw := io.Pipe()
+	logs := readLogs(pr)
+	exit := make(chan int, 1)
+	go func() {
+		var stdout strings.Builder
+		exit <- cli.Run(ctx, []string{"serve", "-config", path}, nil, &stdout, pw, lookup)
+		_ = pw.Close()
+	}()
+	var base string
+	select {
+	case addr := <-logs.addr:
+		base = "http://" + addr
+	case code := <-exit:
+		t.Fatalf("serve exited with %d before listening:\n%s", code, logs)
+	}
+	send := func(model string) (int, string, []byte) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/chat/completions", strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+e2eKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, resp.Header.Get("X-Spillway-Provider"), body
+	}
+	status, _, _ := send("gemini/gemini-2.5-flash")
+	if status != http.StatusTooManyRequests || primaryRequests != 1 || researchRequests != 0 {
+		t.Fatalf("legacy request status=%d primary=%d research=%d; expected direct-only legacy instance", status, primaryRequests, researchRequests)
+	}
+	status, provider, body := send("gemini-research/gemini-2.5-flash")
+	if status != http.StatusOK || string(body) == "" || researchRequests != 1 || primaryRequests != 1 || provider != "gemini-research" {
+		t.Fatalf("named request status=%d body=%s primary=%d research=%d provider=%q", status, body, primaryRequests, researchRequests, provider)
+	}
+	cancel()
+	if code := <-exit; code != 0 {
+		t.Errorf("exit code after cancel = %d, want 0", code)
+	}
+	<-logs.done
+}
+
 func TestRun_ServeOpenRouterAndOllamaPresets(t *testing.T) {
 	t.Parallel()
 	const openrouterKey = "sk-test-openrouter-cli"
