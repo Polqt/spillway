@@ -30,24 +30,11 @@ func LoadLocalKeys(path string) (LocalKeys, error) {
 
 // LoadLocalKeysWithEnv reads local keys and expands their environment references.
 func LoadLocalKeysWithEnv(path string, lookupEnv func(string) (string, bool)) (LocalKeys, error) {
-	f, err := os.Open(path) // #nosec G304 -- the path is the operator's explicit -config flag.
+	root, err := readConfigDocument(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: open %s: %w", path, err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-
-	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("config: read %s: %w", path, err)
-	}
-	if len(data) > maxFileBytes {
-		return nil, fmt.Errorf("config: %s is larger than 1 MiB", path)
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
-		return nil, errors.New("config: invalid YAML")
-	}
-	server := mappingValue(doc.Content[0], "server")
+	server := mappingValue(root, "server")
 	keyNode := mappingValue(server, "api_keys")
 	if keyNode == nil {
 		return nil, errors.New("config: no local keys found in server.api_keys")
@@ -143,6 +130,51 @@ func decodeNamedKey(n *yaml.Node, path string) (LocalKey, error) {
 		return LocalKey{}, fmt.Errorf("%s.key is required (line %d)", path, n.Line)
 	}
 	return k, nil
+}
+
+// LoadListenWithEnv reads server.listen without resolving or validating
+// providers, so local tools can find the gateway a config describes.
+func LoadListenWithEnv(path string, lookupEnv func(string) (string, bool)) (string, error) {
+	root, err := readConfigDocument(path)
+	if err != nil {
+		return "", err
+	}
+	listen := mappingValue(mappingValue(root, "server"), "listen")
+	if listen == nil {
+		return defaultListen, nil
+	}
+	if listen.Kind != yaml.ScalarNode {
+		return "", fmt.Errorf("config: server.listen (line %d): must be a string", listen.Line)
+	}
+	if lookupEnv == nil {
+		lookupEnv = func(string) (string, bool) { return "", false }
+	}
+	if err := expandScalar(listen, "server.listen", lookupEnv); err != nil {
+		return "", fmt.Errorf("config: %w", err)
+	}
+	return listen.Value, nil
+}
+
+// readConfigDocument returns the root node of a size-limited config file.
+func readConfigDocument(path string) (*yaml.Node, error) {
+	f, err := os.Open(path) // #nosec G304 -- the path is the operator's explicit -config flag.
+	if err != nil {
+		return nil, fmt.Errorf("config: open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	if len(data) > maxFileBytes {
+		return nil, fmt.Errorf("config: %s is larger than 1 MiB", path)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return nil, errors.New("config: invalid YAML")
+	}
+	return doc.Content[0], nil
 }
 
 // localKeyPath is the YAML path of the i-th server.api_keys entry, for errors.

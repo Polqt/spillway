@@ -1575,3 +1575,31 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadListenWithEnv_ReadsListenWithoutProviderEnv(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for name, test := range map[string]struct {
+		server string
+		want   string
+	}{
+		"explicit": {server: "  listen: 127.0.0.1:18089\n", want: "127.0.0.1:18089"},
+		"expanded": {server: "  listen: ${SPILLWAY_LISTEN}\n", want: "127.0.0.1:19090"},
+		"default":  {server: "", want: "127.0.0.1:8080"},
+	} {
+		path := filepath.Join(dir, name+".yaml")
+		writeFile(t, path, "server:\n"+test.server+"  api_keys: [sk-test-local]\nproviders:\n  groq:\n    api_key: ${GROQ_API_KEY}\n")
+		lookup := func(name string) (string, bool) {
+			if name == "SPILLWAY_LISTEN" {
+				return "127.0.0.1:19090", true
+			}
+			return "", false
+		}
+
+		got, err := config.LoadListenWithEnv(path, lookup)
+
+		if err != nil || got != test.want {
+			t.Errorf("%s: LoadListenWithEnv = %q, %v; want %q", name, got, err, test.want)
+		}
+	}
+}

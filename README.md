@@ -71,6 +71,7 @@ The `-store` option creates a separate dashboard key and enables local usage his
 Start Spillway, then open `http://127.0.0.1:8080/dashboard` and enter that dashboard key from your private `config.yaml`.
 Run `spillway key dashboard` to print the dashboard key when prompted. The command prints only the requested key to your terminal.
 The dashboard sends the key only to this local Spillway instance; choose **Forget dashboard key** to clear it from the browser tab.
+To watch the same data in your terminal, run `spillway dashboard` while the server is running; it reads the dashboard key from `config.yaml`.
 To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
 
 Usage history is optional.
