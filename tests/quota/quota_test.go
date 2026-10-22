@@ -21,7 +21,7 @@ func TestTracker_RetryAfterAndBackoffExpireAtExpectedTime(t *testing.T) {
 			t.Fatal(err)
 		}
 		tracker.Observe(ref, providers.RetryAfterError{After: 34 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
-		if available, until, reason := tracker.Available(ref); available || !until.Equal(time.Now().Add(34*time.Second)) || reason != "rate limited" {
+		if available, until, reason := tracker.Available(ref); available || !until.Equal(time.Now().Add(34*time.Second)) || reason != "rate limited; quota scope unknown, conservatively shared" {
 			t.Fatalf("Available() = %v, %v, %q; want false, 34s resume, rate limited", available, until, reason)
 		}
 		<-time.After(33 * time.Second)
@@ -64,6 +64,70 @@ func TestTracker_RetryAfterAndBackoffExpireAtExpectedTime(t *testing.T) {
 	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
 	if _, until, _ := tracker.Available(ref); !until.Equal(now.Add(15 * time.Second)) {
 		t.Fatalf("cooldown after success ends at %v, want 15s", until)
+	}
+}
+
+func TestTracker_UnknownScopeBlocksSiblingInstancesOfSameService(t *testing.T) {
+	t.Parallel()
+	one := providers.ModelRef{Provider: "gemini-research", Model: "flash"}
+	two := providers.ModelRef{Provider: "gemini-staging", Model: "flash"}
+	tracker, err := quota.New(quota.Options{
+		Now:          func() time.Time { return time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC) },
+		Candidates:   []providers.ModelRef{one, two},
+		ServiceTypes: map[string]string{"gemini-research": "gemini", "gemini-staging": "gemini"},
+		QuotaDomains: map[string]map[string]string{"gemini-research": {"project": "research"}, "gemini-staging": {"project": "staging"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(one, providers.ErrRateLimited, providers.RateLimit{})
+	if available, _, reason := tracker.Available(two); available || reason != "rate limited; quota scope unknown, conservatively shared" {
+		t.Fatalf("sibling Available() = %v, %q; unknown scope must block service-wide", available, reason)
+	}
+}
+
+func TestTracker_KnownModelScopeDoesNotBlockOtherModels(t *testing.T) {
+	t.Parallel()
+	one := providers.ModelRef{Provider: "mock", Model: "rate-limited"}
+	two := providers.ModelRef{Provider: "mock", Model: "echo"}
+	tracker, err := quota.New(quota.Options{
+		Now:        func() time.Time { return time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC) },
+		Candidates: []providers.ModelRef{one, two}, ServiceTypes: map[string]string{"mock": "mock"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(one, providers.RetryAfterError{After: time.Minute, Kind: providers.ErrRateLimited, Scope: "model"}, providers.RateLimit{})
+	if available, _, reason := tracker.Available(one); available || reason != "rate limited" {
+		t.Fatalf("limited model Available() = %v, %q; want shared model cooldown", available, reason)
+	}
+	if available, _, _ := tracker.Available(two); !available {
+		t.Fatal("different model was blocked by a known model-scoped limit")
+	}
+}
+
+func TestTracker_KnownQuotaScopeSharesOnlyMatchingDomain(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	one := providers.ModelRef{Provider: "gemini-research", Model: "flash"}
+	same := providers.ModelRef{Provider: "gemini-research-copy", Model: "flash"}
+	other := providers.ModelRef{Provider: "gemini-staging", Model: "flash"}
+	tracker, err := quota.New(quota.Options{
+		Now: func() time.Time { return now }, Candidates: []providers.ModelRef{one, same, other},
+		ServiceTypes: map[string]string{"gemini-research": "gemini", "gemini-research-copy": "gemini", "gemini-staging": "gemini"},
+		QuotaDomains: map[string]map[string]string{
+			"gemini-research": {"project": "research"}, "gemini-research-copy": {"project": "research"}, "gemini-staging": {"project": "staging"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Observe(one, providers.RetryAfterError{After: time.Minute, Kind: providers.ErrRateLimited, Scope: "project"}, providers.RateLimit{})
+	if available, _, reason := tracker.Available(same); available || reason != "rate limited" {
+		t.Fatalf("same domain Available() = %v, %q; want shared cooldown", available, reason)
+	}
+	if available, _, _ := tracker.Available(other); !available {
+		t.Fatal("unrelated verified project domain was blocked")
 	}
 }
 
@@ -318,7 +382,7 @@ func TestTracker_ConcurrentFailuresNeverShortenCooldown(t *testing.T) {
 	}
 	tracker.Observe(ref, providers.RetryAfterError{After: 34 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
 	tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
-	if _, until, reason := tracker.Available(ref); !until.Equal(now.Add(34*time.Second)) || reason != "rate limited" {
+	if _, until, reason := tracker.Available(ref); !until.Equal(now.Add(34*time.Second)) || reason != "rate limited; quota scope unknown, conservatively shared" {
 		t.Fatalf("shorter rate-limit failure shortened cooldown to %v, reason %q", until, reason)
 	}
 	tracker.Observe(ref, providers.RetryAfterError{After: 24 * time.Hour, Kind: providers.ErrPaymentRequired}, providers.RateLimit{})
