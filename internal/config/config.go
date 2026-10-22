@@ -472,11 +472,14 @@ func (s Server) Loopback() bool {
 
 // Provider configures one upstream provider.
 type Provider struct {
-	APIKey     redact.Secret `yaml:"api_key,omitempty"`
-	BaseURL    string        `yaml:"base_url,omitempty"`
-	Timeout    time.Duration `yaml:"timeout,omitempty"`
-	FreeTier   bool          `yaml:"free_tier,omitempty"`
-	timeoutSet bool
+	Type         string            `yaml:"type,omitempty"`
+	APIKey       redact.Secret     `yaml:"api_key,omitempty"`
+	BaseURL      string            `yaml:"base_url,omitempty"`
+	Timeout      time.Duration     `yaml:"timeout,omitempty"`
+	FreeTier     bool              `yaml:"free_tier,omitempty"`
+	QuotaDomains map[string]string `yaml:"quota_domains,omitempty"`
+	Budget       *Budgets          `yaml:"budget,omitempty"`
+	timeoutSet   bool
 }
 
 // UnmarshalYAML accepts durations as strings and keeps errors free of values.
@@ -487,7 +490,7 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 	seen := make(map[string]struct{}, len(n.Content)/2)
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		field, value := n.Content[i], n.Content[i+1]
-		if field.Value != "api_key" && field.Value != "base_url" && field.Value != "timeout" && field.Value != "free_tier" {
+		if field.Value != "type" && field.Value != "api_key" && field.Value != "base_url" && field.Value != "timeout" && field.Value != "free_tier" && field.Value != "quota_domains" && field.Value != "budget" {
 			return fmt.Errorf("provider config (line %d): unknown field", field.Line)
 		}
 		if field.Value == "free_tier" {
@@ -501,6 +504,33 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 			p.FreeTier = value.Value == "true"
 			continue
 		}
+		if field.Value == "quota_domains" {
+			if _, ok := seen[field.Value]; ok {
+				return fmt.Errorf("providers.quota_domains (line %d): duplicate field", field.Line)
+			}
+			seen[field.Value] = struct{}{}
+			domains, err := decodeQuotaDomains(value)
+			if err != nil {
+				return fmt.Errorf("providers.quota_domains: %w", err)
+			}
+			p.QuotaDomains = domains
+			continue
+		}
+		if field.Value == "budget" {
+			if _, ok := seen[field.Value]; ok {
+				return fmt.Errorf("providers.budget (line %d): duplicate field", field.Line)
+			}
+			seen[field.Value] = struct{}{}
+			var budget Budgets
+			if err := value.Decode(&budget); err != nil {
+				return fmt.Errorf("providers.budget: %w", err)
+			}
+			if budget.DailyMicroUSD <= 0 && budget.MonthlyMicroUSD <= 0 {
+				return errors.New("providers.budget must set a positive daily_usd or monthly_usd limit")
+			}
+			p.Budget = &budget
+			continue
+		}
 		if value.Kind != yaml.ScalarNode || value.Tag == "!!null" || value.Tag != "!!str" {
 			return fmt.Errorf("providers.%s (line %d): must be a string", field.Value, value.Line)
 		}
@@ -509,6 +539,8 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 		}
 		seen[field.Value] = struct{}{}
 		switch field.Value {
+		case "type":
+			p.Type = value.Value
 		case "api_key":
 			p.APIKey = redact.NewSecret(value.Value)
 		case "base_url":
@@ -528,6 +560,9 @@ func (p *Provider) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes durations in their human-readable YAML form.
 func (p Provider) MarshalYAML() (any, error) {
 	value := map[string]any{"timeout": p.Timeout.String()}
+	if p.Type != "" {
+		value["type"] = p.Type
+	}
 	if p.FreeTier {
 		value["free_tier"] = true
 	}
@@ -537,7 +572,31 @@ func (p Provider) MarshalYAML() (any, error) {
 	if p.BaseURL != "" {
 		value["base_url"] = p.BaseURL
 	}
+	if len(p.QuotaDomains) > 0 {
+		value["quota_domains"] = p.QuotaDomains
+	}
+	if p.Budget != nil {
+		value["budget"] = p.Budget
+	}
 	return value, nil
+}
+
+func decodeQuotaDomains(n *yaml.Node) (map[string]string, error) {
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("(line %d): must be a mapping", n.Line)
+	}
+	domains := make(map[string]string, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return nil, fmt.Errorf("(line %d): scope and alias must be strings", key.Line)
+		}
+		if _, duplicate := domains[key.Value]; duplicate {
+			return nil, fmt.Errorf("(line %d): duplicate scope", key.Line)
+		}
+		domains[key.Value] = value.Value
+	}
+	return domains, nil
 }
 
 // Load reads, parses and validates the config file at path.
@@ -642,8 +701,19 @@ func (c Config) Secrets() []redact.Secret {
 
 // WriteRedacted writes the validated configuration with all keys redacted.
 func (c Config) WriteRedacted(w io.Writer) error {
+	redacted := c
+	redacted.Providers = make(map[string]Provider, len(c.Providers))
+	for name, provider := range c.Providers {
+		if len(provider.QuotaDomains) > 0 {
+			provider.QuotaDomains = make(map[string]string, len(provider.QuotaDomains))
+			for scope := range c.Providers[name].QuotaDomains {
+				provider.QuotaDomains[scope] = "[REDACTED]"
+			}
+		}
+		redacted.Providers[name] = provider
+	}
 	enc := yaml.NewEncoder(w)
-	if err := enc.Encode(c); err != nil {
+	if err := enc.Encode(redacted); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return enc.Close()

@@ -1,6 +1,6 @@
 # Spillway - Project Context
 
-> A self-hosted, single-binary LLM gateway that gives developers one OpenAI-compatible endpoint, routes each prompt to the cheapest model that's good enough, and spills over to the next provider when a quota runs out.
+> A self-hosted, single-binary LLM gateway that gives developers one OpenAI-compatible endpoint, routes each prompt to the cheapest model that's good enough, and spills over across provider services when a quota runs out.
 
 The name comes from a dam's spillway: when one reservoir is full, the overflow is safely routed to the next channel instead of breaking things.
 
@@ -16,21 +16,21 @@ Spillway runs on the developer's own machine or server as one binary. Their app 
 
 - **Unified API**: one OpenAI-compatible endpoint for every provider.
 - **Smart routing**: picks the cheapest model capable of handling each prompt.
-- **Automatic spillover**: when a provider is rate-limited, out of quota, or down, the request spills over to its next candidate in the tier.
-- **Quota awareness**: tracks each key's limits and routes *before* hitting a 429.
+- **Automatic spillover**: when a provider service is rate-limited, out of quota, or down, the request may spill over to its next candidate from a different provider service in the tier.
+- **Quota awareness**: tracks known shared quota domains and routes *before* hitting a 429.
 - **Caching, budgets, and a dashboard**: see usage, cost, and routing decisions.
 
 ## 3. Principles & Non-Goals
 
 **Principles**
 - **Self-hosted first.** Everything runs locally. No Spillway cloud, no telemetry by default.
-- **Bring your own keys (BYOK).** Each user supplies their own provider keys, one per provider. Keys never leave their machine.
+- **Bring your own keys (BYOK).** Each user supplies their own provider credentials through environment references. Multiple independently authorized provider instances may be configured for legitimate project, account, or workload isolation when provider terms permit it. Credentials never leave the user's machine.
 - **Single binary.** Download, add config, run. No external services required (Ollama is optional).
 - **Drop-in.** Existing OpenAI-SDK code works by changing only `base_url`.
 - **Legitimate use only.** Spillway maximizes each provider's own legitimate free tier and pricing.
 
 **Non-goals**
-- No rotating multiple accounts on the same provider to evade rate limits or free-tier caps.
+- Multiple provider instances do not authorize exceeding shared provider limits, quotas, free-tier caps, or terms. Spillway never rotates or automatically fails over between instances of the same provider service to escape an exhausted limit, and never pools credentials across users.
 - No collecting or storing other people's credentials or Google/Gmail accounts.
 - Not a hosted SaaS (a hosted version may come later, but it is out of scope).
 
@@ -60,7 +60,7 @@ client app (OpenAI SDK)
 │ API layer       /v1/chat/completions, /v1/models                    │
 │                 SSE streaming, OpenAI request/response schema       │
 │ Router          difficulty rules → optional local classifier      │
-│ Quota tracker   per-key RPM/TPM/daily limits, 429 + retry-after     │
+│ Quota tracker   instance and shared-domain limits, cooldowns        │
 │ Spillover       ordered candidates per tier, circuit breakers       │
 │ Cache           opt-in in-memory exact response cache               │
 │ Budgets         local daily and monthly spend caps                  │
@@ -76,17 +76,17 @@ client app (OpenAI SDK)
 3. **Route**: determine the required capabilities and difficulty tier, then pick a candidate list.
 4. **Filter** candidates by quota headroom, budget, and circuit-breaker state.
 5. Call the first candidate through its adapter and stream the response back.
-6. On a 429, 5xx, or timeout, mark the key, then **spill over** to the next candidate.
+6. On a 429, 5xx, or timeout, update the relevant instance and shared quota-domain state, then **spill over** only to a candidate from another provider service.
 7. Log usage, cost, latency, and the routing decision with its reason. Update quota state.
 
 ## 6. Routing Design (v0.3-v0.5)
 
 Legacy routing and Stage 1 rules are deterministic and use only the request body and local configuration; v0.3 does not call a classifier or judge.
 
-1. **Direct model reference.** A reference such as `groq/llama-3.1-8b-instant` passes through unchanged, without capability detection or filtering.
-2. **Tier virtual model.** `spillway/<tier>` checks detected requirements against declared capabilities when declarations exist, then tries eligible candidates in tier order with v0.2 spillover behavior.
+1. **Direct model reference.** A reference such as `groq/llama-3.1-8b-instant` passes through unchanged, without capability detection or filtering. It selects exactly the named instance and never spills.
+2. **Tier virtual model.** `spillway/<tier>` checks detected requirements against declared capabilities when declarations exist, then tries eligible candidates in tier order with v0.2 spillover behavior. A virtual route may contain at most one instance of each provider service type.
    An undeclared candidate remains eligible because the client chose the tier.
-3. **Auto virtual model.** `auto` resolves the ordered, de-duplicated candidates in `router.auto`, applies requirement and context-window filtering, then tries eligible candidates in order.
+3. **Auto virtual model.** `auto` resolves the ordered, de-duplicated candidates in `router.auto`, applies requirement and context-window filtering, then tries eligible candidates in order. A virtual route may contain at most one instance of each provider service type.
    For a request with requirements, undeclared candidates are skipped because Spillway is choosing the model.
    Zero-spend tiers must precede tiers with `allow_spend: true` (ADR 0008).
 
@@ -117,6 +117,10 @@ The embedded dashboard shell is static, while its data APIs require a local key 
 
 ## 7. Configuration (example)
 
+Multi-instance configuration is planned but not implemented. Existing preset-name entries remain valid and retain their current meaning. Additional instances will use an explicit `type` naming the provider service and a distinct environment-referenced credential. Explicit model references select one instance; virtual routes may contain only one instance per provider service type. Provider limits may still be shared across instances.
+
+The additive example below illustrates the proposed schema. The `type`, `quota_domains`, and per-instance `budget` fields are not implemented yet:
+
 ```yaml
 server:
   listen: "127.0.0.1:8080"
@@ -126,6 +130,11 @@ server:
 
 providers:
   gemini:     { api_key: "${GEMINI_API_KEY}", free_tier: true }
+  gemini-lab:
+    type: gemini
+    api_key: "${GEMINI_LAB_API_KEY}"
+    quota_domains: { project: gemini-lab-project, billing_account: shared-google-billing }
+    budget: { monthly_usd: 1.00 }
   groq:       { api_key: "${GROQ_API_KEY}", free_tier: true }
   openrouter: { api_key: "${OPENROUTER_API_KEY}" }
   ollama:     { base_url: "http://localhost:11434" }
@@ -140,6 +149,7 @@ tiers:
 models:
   groq/llama-3.3-70b-versatile: { capabilities: [tools, json_mode], context_window: 131072 }
   gemini/gemini-2.5-flash: { capabilities: [tools, vision, json_mode, structured_outputs], context_window: 1048576 }
+  gemini-lab/gemini-2.5-flash: { capabilities: [tools, vision, json_mode, structured_outputs], context_window: 1048576 }
   ollama/llama3.2:3b: { capabilities: [] }
   openrouter/meta-llama/llama-3.3-70b-instruct: { capabilities: [tools, vision, json_mode, structured_outputs] }
 
@@ -168,7 +178,7 @@ Only `tools`, `vision`, `json_mode` and `structured_outputs` are accepted.
 `context_window` is optional and filters a model only when the conservative request-size estimate exceeds it.
 Direct model references bypass these checks.
 `store:` is opt-in and requires an existing directory for `store.path`; retention defaults to 90 days.
-Budgets require `store:` so observed spend survives restarts, and the store retention must cover the configured period.
+Budgets require `store:` so observed spend survives restarts, and the store retention must cover the configured period. Optional per-instance budgets may further restrict one workload; the existing process-wide daily and monthly budgets remain the absolute configured aggregate eligibility ceiling across all instances and attempts. Enforcement retains ADR 0010's soft-cap limitation: concurrent in-flight requests may overshoot the configured budget.
 `pricing:` gives USD per million input and output tokens; every paid model in an `allow_spend` tier must be priced when a budget is configured.
 Unpriced direct paid models fail closed while a budget is enabled.
 `on_exceed` is removed: reached budgets stop paid models and continue serving free models.

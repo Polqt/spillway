@@ -42,6 +42,272 @@ providers:
 	}
 }
 
+func TestParse_ProviderInstanceFields(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini:
+    api_key: "${GEMINI_API_KEY}"
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY}"
+    quota_domains:
+      project: research-project
+      billing_account: shared-billing
+    budget:
+      monthly_usd: 12.50
+store:
+  path: ./usage.db
+  retention: 90d
+`)
+	cfg, err := config.ParseWithEnv(input, func(name string) (string, bool) {
+		if name == "GEMINI_API_KEY" {
+			return "sk-test-gemini-legacy", true
+		}
+		return "sk-test-gemini-research", true
+	})
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+	legacy := cfg.Providers["gemini"]
+	if legacy.Type != "" {
+		t.Errorf("legacy type = %q, want empty so preset-name resolution remains implicit", legacy.Type)
+	}
+	instance := cfg.Providers["gemini-research"]
+	if instance.Type != "gemini" {
+		t.Errorf("instance type = %q, want gemini", instance.Type)
+	}
+	if instance.QuotaDomains["project"] != "research-project" || instance.QuotaDomains["billing_account"] != "shared-billing" {
+		t.Errorf("quota domains = %v, want project and billing account aliases", instance.QuotaDomains)
+	}
+	if instance.Budget == nil || instance.Budget.MonthlyMicroUSD != 12_500_000 {
+		t.Errorf("instance budget = %+v, want monthly 12.5 USD", instance.Budget)
+	}
+	var redacted strings.Builder
+	if err := cfg.WriteRedacted(&redacted); err != nil {
+		t.Fatalf("WriteRedacted: %v", err)
+	}
+	if strings.Contains(redacted.String(), "sk-test-gemini-legacy") || strings.Contains(redacted.String(), "sk-test-gemini-research") {
+		t.Fatalf("redacted output exposed provider credential: %q", redacted.String())
+	}
+	if !strings.Contains(redacted.String(), "type: gemini") || !strings.Contains(redacted.String(), "monthly_usd: 12.5") {
+		t.Fatalf("redacted output omitted instance config fields: %q", redacted.String())
+	}
+	if strings.Contains(redacted.String(), "research-project") || strings.Contains(redacted.String(), "shared-billing") {
+		t.Fatalf("redacted output exposed quota-domain labels: %q", redacted.String())
+	}
+	if legacy.APIKey.Reveal() == instance.APIKey.Reveal() {
+		t.Fatal("instances resolved to the same credential, want independent environment references")
+	}
+}
+
+func TestParse_ProviderInstanceBudgetNeedsStoreRetention(t *testing.T) {
+	t.Parallel()
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n    budget:\n      monthly_usd: 1\n"
+	_, err := config.ParseWithEnv([]byte(base), func(string) (string, bool) { return "sk-test-provider", true })
+	if err == nil || !strings.Contains(err.Error(), "providers.gemini-research.budget needs store.path") {
+		t.Fatalf("ParseWithEnv error = %v, want store requirement", err)
+	}
+	withShortRetention := base + "store:\n  path: ./usage.db\n  retention: 34d\n"
+	_, err = config.ParseWithEnv([]byte(withShortRetention), func(string) (string, bool) { return "sk-test-provider", true })
+	if err == nil || !strings.Contains(err.Error(), "store.retention must be at least 35d") {
+		t.Fatalf("ParseWithEnv error = %v, want monthly retention requirement", err)
+	}
+}
+
+func TestParse_ProviderInstanceBudgetRejectsInvalidLimits(t *testing.T) {
+	t.Parallel()
+	for _, budget := range []string{
+		"{}",
+		"{daily_usd: 0}",
+		"{monthly_usd: -1}",
+		"{monthly_usd: 1.0000001}",
+		"{monthly_usd: 1e9}",
+		"{yearly_usd: 1}",
+	} {
+		t.Run(budget, func(t *testing.T) {
+			t.Parallel()
+			input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n    budget: " + budget + "\n"
+			_, err := config.ParseWithEnv([]byte(input), func(string) (string, bool) { return "sk-test-provider", true })
+			if err == nil {
+				t.Fatalf("ParseWithEnv(%s) succeeded, want invalid budget rejection", budget)
+			}
+			if strings.Contains(err.Error(), "sk-test-provider") {
+				t.Fatalf("budget error exposed provider credential: %v", err)
+			}
+		})
+	}
+}
+
+func TestParse_ProviderInstanceFreeTierUsesServiceType(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_API_KEY}"
+    free_tier: true
+tiers:
+  free:
+    models: [gemini-research/gemini-model]
+`)
+	_, err := config.ParseWithEnv(input, func(string) (string, bool) { return "sk-test-provider", true })
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+}
+
+func TestParse_ProviderInstanceQuotaScopesByService(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		service   string
+		scopes    string
+		keyEnv    string
+		wantError string
+	}{
+		{name: "Gemini project and billing", service: "gemini", scopes: "project: gemini-project\n      billing_account: google-billing", keyEnv: "GEMINI_API_KEY"},
+		{name: "Groq organization and project", service: "groq", scopes: "organization: groq-org\n      project: groq-project", keyEnv: "GROQ_API_KEY"},
+		{name: "OpenRouter account, workspace, member and key", service: "openrouter", scopes: "account: router-account\n      workspace: router-workspace\n      member: router-member\n      key: router-key", keyEnv: "OPENROUTER_API_KEY"},
+		{name: "Ollama has no verified hosted quota scope", service: "ollama", scopes: "project: local-project", wantError: "scope that is not supported for ollama"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := fmt.Sprintf("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  workload-a:\n    type: %s\n    quota_domains:\n      %s\n", tt.service, tt.scopes)
+			if tt.keyEnv != "" {
+				input = strings.Replace(input, "    quota_domains:", "    api_key: \"${"+tt.keyEnv+"}\"\n    quota_domains:", 1)
+			}
+			_, err := config.ParseWithEnv([]byte(input), func(string) (string, bool) { return "sk-test-provider", true })
+			if tt.wantError == "" && err != nil {
+				t.Fatalf("ParseWithEnv: %v", err)
+			}
+			if tt.wantError != "" && (err == nil || !strings.Contains(err.Error(), tt.wantError)) {
+				t.Errorf("ParseWithEnv error = %v, want substring %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestParse_InstanceBudgetAboveProcessBudgetStillParses(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_API_KEY}"
+    budget:
+      monthly_usd: 10
+store:
+  path: ./usage.db
+  retention: 90d
+budgets:
+  monthly_usd: 5
+`)
+	cfg, err := config.ParseWithEnv(input, func(string) (string, bool) { return "sk-test-provider", true })
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+	if cfg.Providers["gemini-research"].Budget.MonthlyMicroUSD <= cfg.Budgets.MonthlyMicroUSD {
+		t.Fatal("fixture must place the instance budget above the process budget")
+	}
+}
+
+func TestParse_SharedQuotaDomainLabelsCanRepeatAcrossInstances(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY}"
+    quota_domains: {project: shared-project}
+  gemini-staging:
+    type: gemini
+    api_key: "${GEMINI_STAGING_API_KEY}"
+    quota_domains: {project: shared-project}
+`)
+	cfg, err := config.ParseWithEnv(input, func(name string) (string, bool) {
+		return "sk-test-" + strings.ToLower(name), true
+	})
+	if err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+	if cfg.Providers["gemini-research"].QuotaDomains["project"] != cfg.Providers["gemini-staging"].QuotaDomains["project"] {
+		t.Fatal("shared project quota-domain labels did not remain identical")
+	}
+}
+
+func TestParse_ProviderInstanceNamesAndDomains(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		provider  string
+		wantError string
+	}{
+		{name: "email-like alias", provider: "gemini-user@example.com:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "safe instance alias"},
+		{name: "email-like scalar provider", provider: "gemini-user@example.com: anything\n", wantError: "safe instance alias"},
+		{name: "credential-like alias", provider: "sk-test-secret:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "safe instance alias"},
+		{name: "underscore alias", provider: "gemini_research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "safe instance alias"},
+		{name: "numeric identity segment", provider: "research-12345678:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "safe instance alias"},
+		{name: "unsupported domain scope", provider: "gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n    quota_domains:\n      organization: org-a\n", wantError: "quota_domains contains a scope that is not supported for gemini"},
+		{name: "duplicate domain scope", provider: "gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n    quota_domains:\n      project: research-project\n      project: other-project\n", wantError: "duplicate scope"},
+		{name: "unsafe domain alias", provider: "gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_API_KEY}\"\n    quota_domains:\n      project: project@example.com\n", wantError: "quota_domains.project must be a safe alias"},
+		{name: "missing type for new alias", provider: "gemini-research:\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "new provider instance names require an explicit type"},
+		{name: "canonical alias type mismatch", provider: "gemini:\n    type: groq\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "type must match the legacy provider name"},
+		{name: "unknown type", provider: "gemini-research:\n    type: project-secret-id\n    api_key: \"${GEMINI_API_KEY}\"\n", wantError: "unsupported provider service type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  " + tt.provider
+			_, err := config.ParseWithEnv([]byte(data), func(string) (string, bool) { return "sk-test-provider", true })
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Errorf("ParseWithEnv error = %v, want substring %q", err, tt.wantError)
+			}
+			if strings.Contains(errString(err), "example.com") || strings.Contains(errString(err), "project-secret-id") {
+				t.Errorf("error exposed identity-like input: %v", err)
+			}
+		})
+	}
+}
+
+func TestParse_ProviderInstanceRejectsDuplicateAliases(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY}"
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY_2}"
+`)
+	_, err := config.ParseWithEnv(input, func(string) (string, bool) { return "sk-test-provider", true })
+	if err == nil {
+		t.Fatal("ParseWithEnv succeeded, want duplicate instance alias rejection")
+	}
+	if strings.Contains(err.Error(), "sk-test-provider") {
+		t.Fatalf("duplicate alias error exposed provider credential: %v", err)
+	}
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func TestParse_DashboardLocalKey(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: true}]\nproviders:\n  mock: {}\n"))
@@ -921,6 +1187,22 @@ func TestLoad_FullExampleWithEnvironment(t *testing.T) {
 	}
 	if len(cfg.Providers) != 4 || cfg.Server.APIKeys[0].Key.Reveal() != "sk-test-spillway_key" {
 		t.Errorf("full example did not expand expected providers and local key")
+	}
+	for _, name := range []string{"gemini", "groq", "ollama", "openrouter"} {
+		if _, ok := cfg.Providers[name]; !ok {
+			t.Errorf("legacy provider %q was not preserved", name)
+		}
+	}
+	for name, provider := range cfg.Providers {
+		if provider.Type != "" {
+			t.Errorf("legacy provider %q type = %q, want implicit preset resolution", name, provider.Type)
+		}
+	}
+	if len(cfg.Tiers) != 1 || strings.Join(cfg.Tiers["free"].Models, ",") != "ollama/llama3.2:3b" {
+		t.Errorf("legacy free tier = %+v, want ollama/llama3.2:3b", cfg.Tiers)
+	}
+	if len(cfg.Models) != 0 || len(cfg.Router.Auto) != 0 {
+		t.Errorf("legacy model declarations or auto route changed: models=%v auto=%v", cfg.Models, cfg.Router.Auto)
 	}
 }
 

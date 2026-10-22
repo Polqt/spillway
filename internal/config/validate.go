@@ -20,6 +20,8 @@ import (
 // configName keeps identifiers comparable without case folding and short
 // enough to use in paths and log lines.
 var configName = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
+var providerInstanceName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+var numericIdentitySegment = regexp.MustCompile(`(^|-)[0-9]{8,}(-|$)`)
 
 func knownProviders() []string {
 	presets := providers.Presets()
@@ -68,20 +70,39 @@ func (c Config) validate() error {
 }
 
 func validateBudgets(c Config) error {
-	if c.Budgets == nil {
+	instanceBudgets := make([]string, 0)
+	for name, provider := range c.Providers {
+		if provider.Budget != nil {
+			instanceBudgets = append(instanceBudgets, name)
+		}
+	}
+	slices.Sort(instanceBudgets)
+	if c.Budgets == nil && len(instanceBudgets) == 0 {
 		return nil
 	}
 	if c.Store == nil {
+		if c.Budgets == nil {
+			return fmt.Errorf("providers.%s.budget needs store.path so spend survives restarts", instanceBudgets[0])
+		}
 		return errors.New("budgets need store.path so spend survives restarts")
 	}
-	if c.Budgets.DailyMicroUSD <= 0 && c.Budgets.MonthlyMicroUSD <= 0 {
+	if c.Budgets != nil && c.Budgets.DailyMicroUSD <= 0 && c.Budgets.MonthlyMicroUSD <= 0 {
 		return errors.New("budgets: set at least one positive daily_usd or monthly_usd limit")
 	}
-	if c.Budgets.MonthlyMicroUSD > 0 && c.Store.Retention < 35*24*time.Hour {
+	if c.Budgets != nil && c.Budgets.MonthlyMicroUSD > 0 && c.Store.Retention < 35*24*time.Hour {
 		return errors.New("store.retention must be at least 35d with budgets.monthly_usd; increase retention to preserve the full budget period")
 	}
-	if c.Budgets.DailyMicroUSD > 0 && c.Store.Retention < 2*24*time.Hour {
+	if c.Budgets != nil && c.Budgets.DailyMicroUSD > 0 && c.Store.Retention < 2*24*time.Hour {
 		return errors.New("store.retention must be at least 2d with budgets.daily_usd; increase retention to preserve the full budget period")
+	}
+	for _, name := range instanceBudgets {
+		budget := c.Providers[name].Budget
+		if budget.MonthlyMicroUSD > 0 && c.Store.Retention < 35*24*time.Hour {
+			return fmt.Errorf("store.retention must be at least 35d with providers.%s.budget.monthly_usd; increase retention to preserve the full budget period", name)
+		}
+		if budget.DailyMicroUSD > 0 && c.Store.Retention < 2*24*time.Hour {
+			return fmt.Errorf("store.retention must be at least 2d with providers.%s.budget.daily_usd; increase retention to preserve the full budget period", name)
+		}
 	}
 	for _, tier := range c.Tiers {
 		if !tier.AllowSpend {
@@ -90,6 +111,9 @@ func validateBudgets(c Config) error {
 		for _, model := range tier.Models {
 			ref, _ := providers.ParseModelRef(model)
 			if IsZeroSpendEligible(ref, c.Providers[ref.Provider]) {
+				continue
+			}
+			if c.Budgets == nil && c.Providers[ref.Provider].Budget == nil {
 				continue
 			}
 			if _, ok := c.Pricing[model]; !ok {
@@ -368,7 +392,11 @@ func validateTiers(tiers map[string]Tier, configured map[string]Provider) error 
 
 // IsZeroSpendEligible reports whether ADR 0005 identifies a model as free from config alone.
 func IsZeroSpendEligible(ref providers.ModelRef, provider Provider) bool {
-	switch ref.Provider {
+	serviceType := provider.Type
+	if serviceType == "" {
+		serviceType = ref.Provider
+	}
+	switch serviceType {
 	case "ollama", "mock":
 		return true
 	case "openrouter":
@@ -457,27 +485,90 @@ func validateProviders(ps map[string]Provider) error {
 		if name == "spillway" || name == "auto" {
 			return fmt.Errorf("providers.%s is reserved; use a provider name: %s", name, strings.Join(knownProviders(), ", "))
 		}
-		preset, ok := providers.LookupPreset(name)
-		if !ok {
-			return fmt.Errorf("providers.%s: unknown provider; supported: %s", name, strings.Join(knownProviders(), ", "))
+		provider := ps[name]
+		preset, legacyName := providers.LookupPreset(name)
+		if provider.Type == "" {
+			if !legacyName {
+				return fmt.Errorf("providers: unknown provider; new provider instance names require an explicit type; supported: %s", strings.Join(knownProviders(), ", "))
+			}
+		} else {
+			servicePreset, supportedType := providers.LookupPreset(provider.Type)
+			if !supportedType {
+				return fmt.Errorf("providers.%s.type: unsupported provider service type; supported: %s", name, strings.Join(knownProviders(), ", "))
+			}
+			if legacyName && provider.Type != name {
+				return fmt.Errorf("providers.%s.type must match the legacy provider name", name)
+			}
+			if !legacyName && !validProviderInstanceName(name) {
+				return errors.New("providers: instance name must use a safe instance alias matching [a-z][a-z0-9-]{0,31]")
+			}
+			preset = servicePreset
 		}
-		p := ps[name]
-		if preset.RequiresKey && p.APIKey.IsZero() {
+		if preset.RequiresKey && provider.APIKey.IsZero() {
 			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s}\"", name, preset.KeyEnv)
 		}
-		if !preset.AcceptsKey && !p.APIKey.IsZero() {
+		if !preset.AcceptsKey && !provider.APIKey.IsZero() {
 			return fmt.Errorf("providers.%s.api_key is not supported; remove it", name)
 		}
-		if p.Timeout <= 0 || p.Timeout > 30*time.Minute {
+		if provider.Timeout <= 0 || provider.Timeout > 30*time.Minute {
 			return fmt.Errorf("providers.%s.timeout must be positive and at most 30m", name)
 		}
-		if p.BaseURL != "" {
-			if err := validateBaseURL(name, p.BaseURL); err != nil {
+		if provider.BaseURL != "" {
+			if err := validateBaseURL(name, provider.BaseURL); err != nil {
 				return err
 			}
 		}
+		if err := validateQuotaDomains(name, provider); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func validProviderInstanceName(name string) bool {
+	if !providerInstanceName.MatchString(name) || numericIdentitySegment.MatchString(name) {
+		return false
+	}
+	lower := strings.ToLower(name)
+	return !strings.HasPrefix(lower, "sk-") && !strings.HasPrefix(lower, "pk-") && !strings.HasPrefix(lower, "rk-") && !strings.HasPrefix(lower, "aiza-")
+}
+
+func validateQuotaDomains(name string, provider Provider) error {
+	if len(provider.QuotaDomains) > 8 {
+		return fmt.Errorf("providers.%s.quota_domains may contain at most 8 scopes", name)
+	}
+	serviceType := provider.Type
+	if serviceType == "" {
+		serviceType = name
+	}
+	scopes := make([]string, 0, len(provider.QuotaDomains))
+	for scope := range provider.QuotaDomains {
+		scopes = append(scopes, scope)
+	}
+	slices.Sort(scopes)
+	for _, scope := range scopes {
+		label := provider.QuotaDomains[scope]
+		if !validProviderInstanceName(label) {
+			return fmt.Errorf("providers.%s.quota_domains.%s must be a safe alias matching [a-z][a-z0-9-]{0,31}", name, scope)
+		}
+		if !supportedQuotaScope(serviceType, scope) {
+			return fmt.Errorf("providers.%s.quota_domains contains a scope that is not supported for %s", name, serviceType)
+		}
+	}
+	return nil
+}
+
+func supportedQuotaScope(serviceType, scope string) bool {
+	switch serviceType {
+	case "gemini":
+		return scope == "project" || scope == "billing_account"
+	case "groq":
+		return scope == "organization" || scope == "project"
+	case "openrouter":
+		return scope == "account" || scope == "workspace" || scope == "member" || scope == "key"
+	default:
+		return false
+	}
 }
 
 func validateBaseURL(provider, raw string) error {

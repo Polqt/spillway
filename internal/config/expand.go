@@ -175,15 +175,28 @@ func rejectUnknownFields(root *yaml.Node) error {
 				if key.Value == "spillway" || key.Value == "auto" {
 					return fmt.Errorf("providers.%s is reserved (line %d)", key.Value, key.Line)
 				}
-				preset, known := providers.LookupPreset(key.Value)
-				if !known {
-					names := knownProviders()
-					return fmt.Errorf("providers: unknown provider; supported: %s", strings.Join(names, ", "))
+				_, legacyName := providers.LookupPreset(key.Value)
+				if !legacyName && !validProviderInstanceName(key.Value) {
+					return errors.New("providers: instance name must use a safe instance alias matching [a-z][a-z0-9-]{0,31]")
 				}
 				if value.Kind != yaml.MappingNode {
 					return fmt.Errorf("providers.%s (line %d): must be a mapping", key.Value, value.Line)
 				}
-				if err := rejectFields(value, "providers."+key.Value, "api_key", "base_url", "timeout", "free_tier"); err != nil {
+				serviceType := key.Value
+				typeNode := mappingValue(value, "type")
+				if typeNode != nil {
+					if typeNode.Kind != yaml.ScalarNode || typeNode.Tag != "!!str" || typeNode.Value == "" {
+						return fmt.Errorf("providers.%s.type (line %d): must be a provider service type", key.Value, typeNode.Line)
+					}
+					serviceType = typeNode.Value
+				} else if !legacyName {
+					return fmt.Errorf("providers: unknown provider; new provider instance names require an explicit type; supported: %s", strings.Join(knownProviders(), ", "))
+				}
+				preset, known := providers.LookupPreset(serviceType)
+				if !known {
+					return fmt.Errorf("providers.%s.type: unsupported provider service type; supported: %s", key.Value, strings.Join(knownProviders(), ", "))
+				}
+				if err := rejectFields(value, "providers."+key.Value, "type", "api_key", "base_url", "timeout", "free_tier", "quota_domains", "budget"); err != nil {
 					return err
 				}
 				if freeTier := mappingValue(value, "free_tier"); freeTier != nil && freeTier.Tag != "!!bool" {
@@ -195,6 +208,14 @@ func rejectUnknownFields(root *yaml.Node) error {
 				apiKey := mappingValue(value, "api_key")
 				if preset.AcceptsKey && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
 					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s}\"", key.Value, apiKey.Line, preset.KeyEnv)
+				}
+				if domains := mappingValue(value, "quota_domains"); domains != nil && domains.Kind != yaml.MappingNode {
+					return fmt.Errorf("providers.%s.quota_domains (line %d): must be a mapping", key.Value, domains.Line)
+				}
+				if budget := mappingValue(value, "budget"); budget != nil {
+					if err := checkBudgetsShape(budget); err != nil {
+						return fmt.Errorf("providers.%s.budget: %w", key.Value, err)
+					}
 				}
 			}
 		}

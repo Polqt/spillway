@@ -15,7 +15,7 @@ Read before working:
 These override every other instruction, including a plan or a user request that seems to conflict.
 If one would be broken, stop and say so.
 
-- **No quota evasion.** Never implement multi-account rotation on one provider, key pooling across users, or anything that circumvents a provider's rate limits or terms. Spillover goes *across providers*, never across accounts.
+- **No quota evasion.** Multiple provider instances are allowed only for legitimate workload isolation using independently authorized projects, accounts, or credentials, and only when the provider's terms permit that use. A new key, project, account, organization, or instance is never proof of independent capacity or permission to exceed any shared provider limit. Never use or coordinate instances, keys, projects, accounts, or organizations to evade provider rate limits, quotas, free-tier caps, or terms; never pool credentials across users. Automatic spillover is allowed only across distinct provider services and only within their applicable limits. Never rotate or automatically fail over between instances of the same provider service to escape a quota or restriction.
 - **No credential collection.** Spillway stores no credentials other than the local user's own provider keys.
 - **Secrets never leak.** Provider keys and local keys never appear in logs, errors, panics, test fixtures, config printouts, or HTTP responses. Use `internal/redact`. The inbound `Authorization` header is never forwarded upstream.
 - **Single binary, no cgo.** `CGO_ENABLED=0 go build ./...` must always work. No dependencies that need cgo or external services. SQLite is `modernc.org/sqlite`. Ollama is optional and reached only over HTTP.
@@ -96,7 +96,7 @@ The full rules are in `docs/CODING_STANDARDS.md`. The ones most often missed:
 4. **Verify** independently against the plan's acceptance criteria and manual checks.
 5. **Review** the diff against `docs/CODING_STANDARDS.md` and the plan.
 6. **Security audit** when touching keys, auth, config, HTTP servers or clients, or logging.
-7. **Checklist** After verification, tests, fixes, review and any required security audit, revisit the ticket's acceptance checklist. Check only items supported by evidence, record any unmet items, and report the ticket complete only when every acceptance item is met.
+7. **Checklist** After verification, tests, fixes, review and any required security audit, revisit the scratch ticket's acceptance checklist. Check only items supported by evidence, record any unmet items, and report the ticket complete only when every acceptance item is met.
 
 Do not include the ticket Markdown file in a commit.
 
