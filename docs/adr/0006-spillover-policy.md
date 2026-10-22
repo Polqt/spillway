@@ -25,3 +25,14 @@ OpenAI SDKs already retry 429 and 5xx with backoff, honouring `Retry-After`.
 - A request with a capability some candidates lack fails with a 400 that does not spill, until capability detection in v0.3.
 - Spillover across providers respects each provider's limits and never rotates accounts, as the hard rules require.
 - Spilling on 400, retrying a candidate within one request, or spilling after the commit point needs a new ADR.
+
+## Relationship to provider instances (ADRs 0028-0030)
+
+ADRs 0028 and 0029 supersede two assumptions from this ADR while preserving its failure and response-commit rules.
+
+- “Provider” as a candidate identity is now “provider instance”; the provider service type is a separate policy identity.
+- A virtual route may contain repeated model references or models from the same instance, but it may not contain two distinct instances of one provider service type.
+- Direct references still never spill and now select exactly one configured instance.
+
+The spill-triggering failure list, candidate order, one-attempt-per-candidate rule, retry-after handling, OpenAI error behavior, and stream commit point remain in force.
+The no-quota-evasion rule continues to prohibit automatic same-service instance rotation.

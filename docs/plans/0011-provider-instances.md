@@ -1,6 +1,6 @@
 # Provider Instances
 
-Status: proposed, planning only.
+Status: implementation complete locally on `feat/provider-instances`; local `make check` and code/spec review passed. Cross-platform CI and release verification remain pending.
 
 ## Goal
 
@@ -9,9 +9,10 @@ Each instance has its own environment-referenced credential, routing identity, e
 Existing `providers.<preset>` configurations and model references continue to load unchanged.
 The feature preserves OpenAI-compatible APIs and supports automatic spillover only across distinct provider services.
 
-This plan does not authorize implementation, paid provider calls, or release.
-The revised no-quota-evasion hard rule is recorded in `AGENTS.md`.
-Implementation still requires separate approval.
+Implementation is authorized for the ticket scope recorded below.
+No paid or live provider calls are authorized or required.
+Release and publication remain outside this implementation scope.
+The no-quota-evasion hard rule remains in `AGENTS.md`.
 
 ## Approved architectural decisions
 
@@ -88,6 +89,7 @@ The provider service type is the stable policy and virtual-route uniqueness iden
   Cooldown state is keyed by provider service, documented scope, configured domain label, and model where the upstream limit is model-specific.
   A parent-scope block affects every instance assigned to that domain.
 - **Unknown scope:** when the provider response does not reveal the affected scope, or config does not identify it, use a provider-service-wide cooldown rather than assuming separate capacity.
+- **Known model scope:** when the adapter can positively identify a provider-documented model limit, share cooldown state for that provider service and model only. Model cooldown keys are bounded by configured model references; unconfigured or ambiguous model scope falls back to service-wide state.
 - **Circuit breakers and credential rejection:** state is per instance because endpoint and credential failures can be independent.
   This state must not trigger selection of a sibling instance of the same provider service.
 - **Budgets:** existing process-wide daily/monthly budgets aggregate estimated spend from every instance and attempt and remain the absolute configured eligibility ceiling.
@@ -145,7 +147,7 @@ spillway provider show <instance> [-config PATH]
   It continues to fail with the existing duplicate-provider guidance when that alias is already configured.
   The new `--name <instance>` form is additive and permits another named instance only when provider policy eligibility and schema validation allow it.
   Keep existing `provider add` confirmation, `--yes`, `--dry-run`, safe backup, error, and exit-code behavior.
-- **`provider show <instance>`** shows the safe alias, provider service type, environment-variable name and presence status, configured quota-domain labels, budget eligibility, and model references that use the instance.
+- **`provider show <instance>`** shows the safe alias, provider service type, environment-variable name and presence status, configured quota-domain scope names with label values hidden, budget eligibility, and model references that use the instance.
   It never prints a credential value, environment value, guessed provider identity, raw upstream error, or sensitive URL component.
 
 All first-slice commands are offline and make no provider API calls.
@@ -212,7 +214,7 @@ groq             groq       GROQ_API_KEY               set
 $ spillway provider show gemini-research -config ./config.yaml
 gemini-research (gemini instance)
   credential     ${GEMINI_RESEARCH_API_KEY}, set in this process
-  quota domains  project=[redacted], billing_account=[redacted]
+  quota domains  project, billing_account (labels hidden)
   budget         monthly USD 2.00; process-wide budget also applies
   model example  gemini-research/gemini-2.5-flash
 ```
@@ -241,14 +243,14 @@ Where scripts need stable parsing, a future explicit machine-readable format req
 
 Plan 0010 currently excludes a second instance and refuses duplicate preset names.
 Before implementation, revise that plan's no-multi-instance non-goal, provider-add duplicate behavior, help text, and provider list/show model from preset to instance identity.
-Do not change Plan 0010 or its implementation scope as part of this planning-only update.
+This cross-plan compatibility update is now recorded in Plan 0010; it does not change Plan 0010's v1.1.0 deliverables or its reserved ADRs.
 
 ## ADR impact of the revised CLI proposal
 
 The provider-instance ADR drafts use numbers 0028 through 0030 because Plan 0010 already reserves ADR 0025 for config mutation and ADR 0026 for local diagnostics.
 Do not reuse or renumber those Plan 0010 ADRs.
 
-1. **ADR 0028, provider instance identity and additive config:** extend the decision to define safe CLI aliases, the additive `provider add <type> --name <instance>` form, and compatibility with the existing canonical-alias add command.
+1. **ADR 0028, provider instance identity and additive config:** defines safe CLI aliases, the additive `provider add <type> --name <instance>` form, and compatibility with the existing canonical-alias add command.
 2. **ADR 0029, quota domains and routing boundaries:** record direct instance selection, same-provider automatic rotation prohibition, and the requirement that future explicit route configuration obey quota domains, budgets, security checks, and provider restrictions.
 3. **ADR 0030, provider policy eligibility:** require `provider add` to use an eligible supported type, remain offline, and avoid suggesting that another key or project grants extra quota.
 
@@ -257,8 +259,8 @@ Defer both `provider use` and the more accurate `provider prefer` name until suc
 If application-specific route configuration is approved later, draft a separate ADR for its schema, precedence, validation, update/reload behavior, and diagnostics.
 Allocate that ADR number when the proposal is ready and recheck the sequence; do not reserve ADR 0031 for the deferred preference command.
 
-Plan 0010 must also be amended before implementation to remove its blanket multi-instance prohibition, define the new named-instance add form without changing existing flags, update list/show to use instance aliases, and state that only config changes require a gateway restart.
-Its reserved ADRs 0025 and 0026 and existing `provider add`, `list`, and `show` behavior remain intact.
+Plan 0010 was amended before implementation to replace its blanket multi-instance prohibition with the Plan 0011 boundary, define the additive named-instance add form, and update list/show terminology.
+Its reserved ADRs 0025 and 0026 and existing `provider add`, `list`, and `show` flags and safety behavior remain intact.
 
 ## Official provider policy and quota scopes
 
@@ -284,17 +286,17 @@ Official references:
 
 ## Required ADRs and earlier decisions
 
-Three proposed ADRs record the hard-to-reverse choices:
+Three accepted ADRs record the hard-to-reverse choices:
 
 1. [ADR 0028](../adr/0028-provider-instance-identity-and-config.md) defines instance identity, additive schema, legacy resolution, and compatibility.
 2. [ADR 0029](../adr/0029-quota-domains-and-routing-boundaries.md) defines quota-domain state, same-service route rejection, direct selection, and budgets.
 3. [ADR 0030](../adr/0030-provider-policy-eligibility.md) defines official-source review and fail-closed policy eligibility.
 
 ADR 0006 remains authoritative for spill-triggering failures, candidate order, cooldown handling, and the stream commit point.
-Its earlier use of “provider” as both candidate identity and service type is superseded by the instance/service distinction in proposed ADRs 0028 and 0029.
+Its earlier use of “provider” as both candidate identity and service type is superseded by the instance/service distinction in accepted ADRs 0028 and 0029.
 Its broad assumption that candidates in a virtual route are distinct providers is superseded by the explicit rule to reject a route containing multiple instances of one provider service type.
 Its direct-reference no-spill decision remains in force and means a direct instance reference selects one instance only.
-These are proposed planning updates; runtime behavior changes only after separate implementation and release approval.
+These accepted decisions guide the current implementation; runtime behavior ships only in a separately verified release.
 
 ## Security and privacy requirements
 
@@ -321,19 +323,19 @@ These are proposed planning updates; runtime behavior changes only after separat
   If a new quota-domain or instance field is persisted, use a forward migration and preserve existing rows as legacy preset instances.
 - Add DeepSeek as a usable service type only after its adapter preset and its own implementation/release scope are approved.
 
-## Implementation prerequisites after separate approval
+## Implementation completion gates
 
-1. Accept proposed ADRs 0028 through 0030 and confirm the exact additive config schema, including quota-domain labels and instance budget bounds.
-2. Revise Plan 0010's multi-instance exclusions and provider-command design while preserving its reserved ADRs and existing command flags.
-3. Recheck official terms and quota documentation for every provider service to be enabled, record review dates, and resolve any unclear policies before implementation.
-4. Decide whether existing quota state and provider usage metadata can safely use instance names without a store migration.
-5. Add parser, validation, environment expansion, legacy compatibility, and secret-redaction tests before changing provider construction.
-6. Resolve `(instance name, provider service type)` through one registry and audit model listing, pricing, capabilities, free-tier eligibility, budgets, dashboard summaries, and usage metadata.
-7. Implement shared domain cooldowns and route validation that rejects duplicate provider service types across every expanded virtual route.
-8. Add regression coverage for direct instance selection, cross-service spillover, same-service non-spill, shared parent cooldowns, per-instance budgets, and the process-wide spending ceiling.
-9. Audit config, credentials, clients, routing, logs, dashboard output, and CLI output for security and privacy regressions.
-10. Run focused tests and `make check`, then verify downgrade guidance and examples before release.
-11. Keep DeepSeek adapter/preset support as a separately approved prerequisite; the instance design does not itself approve implementing that provider.
+1. ADRs 0028 through 0030 are accepted; config retains environment references, bounded aliases, quota-domain labels, and per-instance budgets.
+2. Plan 0010's multi-instance exclusions and command wording are revised while its v1.1.0 scope and reserved ADRs remain intact.
+3. Official policy review covers Gemini, Groq, DeepSeek, OpenRouter, Ollama, and Mock; recheck policies before release.
+4. Existing provider and model fields safely retain instance aliases; no store migration is introduced.
+5. Parser, validation, legacy compatibility, and secret-redaction tests pass before provider construction changes.
+6. Construction uses configured service types, while model listing, catalog, pricing, free-tier eligibility, budgets, dashboard summaries, and usage retain instance identity.
+7. Shared cooldowns use configured, verified quota-domain labels only when scope is known; unknown scope uses a bounded service-wide cooldown.
+8. Regression coverage proves direct selection, cross-service spillover, same-service non-spill, shared domains, instance budgets, and the aggregate process ceiling.
+9. Security review covers config, credentials, endpoints, routing, logs, dashboard output, catalog, and CLI output.
+10. Focused tests and `make check` must pass; downgrade guidance and examples must be checked before release.
+11. DeepSeek adapter/preset support remains a separately approved prerequisite and is not implemented here.
 
 ## Acceptance criteria
 
@@ -351,4 +353,13 @@ These are proposed planning updates; runtime behavior changes only after separat
 - Cross-service spillover, capability filtering, zero-spend ordering, pricing, API compatibility, dashboard privacy, and usage behavior remain correct.
 - Provider policy scopes are documented with dated official sources, and uncertain policy does not enable cross-instance selection.
 - DeepSeek adapter support is not included and requires separate approval before it can be used as an instance type.
-- Implementation is not complete until the required tests, `make check`, and security review pass after separate approval.
+- Implementation is not complete until the required tests, `make check`, and security review pass.
+
+## Verification record
+
+- Focused configuration, CLI, catalog, quota, budget, store, provider, API, and end-to-end tests pass locally, including direct legacy and named model selection and offline provider CLI journeys.
+- Legacy virtual-route order and reason strings remain covered by the existing router/API regression tests and the mock binary spillover test.
+- `make check` passes on Windows 11 with Go's race detector and the dashboard browser suite; no live provider API request was made.
+- The provider-instance security review confirmed that environment references remain separate, quota-domain values are redacted, custom URL details remain hidden, and unknown quota scope is reported generically and shared service-wide.
+- Release and cross-platform CI verification remain release gates; this worktree has not been pushed, merged, or released.
+- Manual offline verification steps are recorded in [v1.2 manual verification](../v1.2-manual-verification.md).

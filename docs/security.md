@@ -1,5 +1,15 @@
 # Network destinations
 
+## Provider credential instances
+
+Each configured provider instance has its own environment-variable reference and secret-redaction boundary.
+Spillway does not inherit credentials between instances or print provider key values in CLI output, config previews, diagnostics, logs or HTTP responses.
+Use short, non-identifying aliases for instances and quota domains; do not put email addresses, project IDs, organization IDs, account IDs or other personal or provider identifiers in config labels.
+Multiple instances are for legitimate workload isolation only when provider terms permit it.
+A new key or account does not establish independent quota or authorize use beyond shared provider limits.
+Unknown quota scope is treated as provider-service-wide, and quota failures never cause automatic same-service instance rotation.
+Explicit model references select one instance, subject to the same authentication, endpoint-security, quota, budget and provider-policy checks as routed requests.
+
 Spillway has no telemetry and makes no background network requests.
 Network calls happen only when a configured provider is used, when the operator runs `spillway catalog` or `spillway eval`, when the optional local classifier is enabled, or when the operator runs `spillway doctor` (unauthenticated requests to the configured listen address only).
 When no providers are configured, `serve` makes no provider requests.
