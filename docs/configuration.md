@@ -148,4 +148,16 @@ Use `${NAME}` references for provider keys and optional local API keys. Every re
 
 `spillway check -config config.yaml` validates without starting the server. Errors name the config path and give the correction when possible; secret values are redacted. Unknown and removed fields are errors rather than silently ignored.
 
+## Manage local config files
+
+`spillway init -config NAME.yaml` creates another config without overwriting an existing file.
+The name can be extensionless.
+Run `spillway config list` to list valid Spillway configs in the current directory.
+The list prints file paths only and does not reveal config values.
+Run `spillway config open` to open `config.yaml`, or `spillway config open -config NAME.yaml` to open another file.
+The command uses `VISUAL`, then `EDITOR`, then the platform's default text editor.
+Set `VISUAL` or `EDITOR` to an executable path only; command arguments are not parsed.
+Choose a config for each operation with its existing `-config` flag, such as `spillway check -config NAME.yaml` or `spillway serve -config NAME.yaml`.
+Spillway does not remember a selected config between commands.
+
 For provider-specific credential, free-tier and data handling notes, see the [provider guides](providers/).

@@ -74,6 +74,7 @@ flags:
 		&cobra.Group{ID: "tools", Title: "Tools"},
 		&cobra.Group{ID: "experimental", Title: "Experimental"},
 	)
+	addConfigCommands(root, exitCode, ctx, stdin, stdout, stderr, lookupEnv)
 	root.SetHelpCommandGroupID("tools")
 	root.SetCompletionCommandGroupID("tools")
 	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
@@ -129,6 +130,14 @@ flags:
 		flags.String("attest-free-tier", "", "comma-separated providers attested as zero-spend")
 		flags.Bool("store", false, "enable the local usage store and dashboard key")
 		flags.Bool("yes", false, "accept defaults and run without prompts")
+	})
+	addLegacyCommand(root, exitCode, "dashboard", "watch a running gateway in a live terminal dashboard", `  spillway dashboard
+  spillway dashboard -config config.yaml -interval 5s`, func(cmd *cobra.Command, args []string) int {
+		return dashboardCommand(ctx, legacyArgs(cmd, originalArgs), stdin, stdout, stderr, lookupEnv)
+	}, func(flags *pflag.FlagSet) {
+		flags.String("config", defaultConfigPath, "path to the config file holding the dashboard key")
+		flags.String("endpoint", "http://127.0.0.1:8080", "running Spillway base URL")
+		flags.Duration("interval", 2*time.Second, "refresh interval (1s-1m)")
 	})
 	addLegacyCommand(root, exitCode, "eval", "run a paired routing evaluation (experimental)", `  spillway eval -dataset prompts.json -arms current=auto -out results`, func(cmd *cobra.Command, args []string) int {
 		return evalCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)

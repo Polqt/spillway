@@ -102,6 +102,11 @@ Keep `config.yaml` private, then open `http://127.0.0.1:8080/dashboard` after th
 Spillway does not print it.
 Run `spillway key dashboard` to print the dashboard key when prompted. Dashboard use does not require a browser extension or a separate Node installation.
 
+Create more local configs with `spillway init -config NAME.yaml`.
+Run `spillway config list` to list valid Spillway configs in the current directory.
+Run `spillway config open -config NAME.yaml` to open one in your text editor.
+Pass `-config NAME.yaml` to `check`, `serve` or `dashboard` to select the config for that command.
+
 The dashboard works without `store:`.
 Provider status and the request playground remain available, while usage and routing history require the optional local store.
 Prompts are sent to the configured provider only after you submit a playground request.

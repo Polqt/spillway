@@ -204,8 +204,8 @@ for (const build of ["embedded", "fallback"]) test(`${build} request playground 
   expect(calls.map((request) => new URL(request.url()).pathname)).toContain("/api/pricing");
 });
 
-test("request playground renders streamed content, reports errors and cancels in flight work", async ({ page }) => {
-  await connectDashboard(page, []);
+for (const build of ["embedded", "fallback"]) test(`${build} request playground renders streamed content, reports errors and cancels in flight work`, async ({ page }) => {
+  await connectDashboard(page, [], { build });
   await page.getByLabel("Prompt").fill("stream this");
   let mode = "stream";
   let release;
