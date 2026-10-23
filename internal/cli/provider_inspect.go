@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,7 +15,14 @@ import (
 )
 
 func addProviderCommands(ctx context.Context, parent *cobra.Command, options Options) {
+	//nolint:contextcheck // Cobra supplies the invocation context through cmd.Context().
 	provider := &cobra.Command{Use: "provider", Aliases: []string{"providers"}, Short: "inspect and manage configured providers", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if commandTUIEnabled(cmd, options.interactive()) {
+			if err := runProviderBrowser(cmd.Context(), defaultConfigPath, options); err != nil {
+				return commandFailure{code: 1, err: err}
+			}
+			return nil
+		}
 		_, _ = fmt.Fprint(cmd.OutOrStdout(), "usage: spillway provider <command>\n\ncommands:\n  list             list configured instances\n  show <instance>  show a configured instance\n")
 		return commandError{code: 2}
 	}}
@@ -23,6 +31,12 @@ func addProviderCommands(ctx context.Context, parent *cobra.Command, options Opt
 	provider.AddCommand(&cobra.Command{Use: "list", Short: "list configured providers", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cmd.Context()
 		path, _ := cmd.Flags().GetString("config")
+		if commandTUIEnabled(cmd, options.interactive()) {
+			if err := runProviderBrowser(ctx, path, options); err != nil {
+				return commandFailure{code: 1, err: err}
+			}
+			return nil
+		}
 		if err := writeProviderList(ctx, cmd.OutOrStdout(), path, options.LookupEnv, options.PersistentEnv); err != nil {
 			return commandFailure{code: 1, err: err}
 		}
@@ -32,6 +46,17 @@ func addProviderCommands(ctx context.Context, parent *cobra.Command, options Opt
 	show := &cobra.Command{Use: "show <instance>", Short: "show a configured provider instance", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		path, _ := cmd.Flags().GetString("config")
+		if commandTUIEnabled(cmd, options.interactive()) {
+			detail := new(bytes.Buffer)
+			if err := writeProviderShow(ctx, detail, path, args[0], options.LookupEnv, options.PersistentEnv, options.GOOS); err != nil {
+				return commandFailure{code: 1, err: err}
+			}
+			entry := helpEntry{name: args[0], group: "Provider instance", short: "Configured provider status", detail: strings.TrimSpace(detail.String())}
+			if err := runBrowser(ctx, "provider details", "Inspect provider settings and credential presence.", []helpEntry{entry}, options.Stdin, options.Stdout); err != nil {
+				return commandFailure{code: 1, err: err}
+			}
+			return nil
+		}
 		if err := writeProviderShow(ctx, cmd.OutOrStdout(), path, args[0], options.LookupEnv, options.PersistentEnv, options.GOOS); err != nil {
 			return commandFailure{code: 1, err: err}
 		}
@@ -44,6 +69,33 @@ func addProviderCommands(ctx context.Context, parent *cobra.Command, options Opt
 	}
 	provider.AddCommand(show)
 	parent.AddCommand(provider)
+}
+
+func runProviderBrowser(ctx context.Context, path string, options Options) error {
+	cfg, err := loadProviderConfig(path, options.LookupEnv)
+	if err != nil {
+		return err
+	}
+	names := sortedProviderNames(cfg.Providers)
+	tiersByProvider := providerTiers(cfg)
+	entries := make([]helpEntry, 0, len(names))
+	for _, name := range names {
+		entry := cfg.Providers[name]
+		detail := new(bytes.Buffer)
+		if err := writeProviderShow(ctx, detail, path, name, options.LookupEnv, options.PersistentEnv, options.GOOS); err != nil {
+			return err
+		}
+		tiers := tiersByProvider[name]
+		summary := configuredServiceType(name, entry)
+		if len(tiers) > 0 {
+			summary += " · tiers " + strings.Join(tiers, ", ")
+		}
+		entries = append(entries, helpEntry{name: name, group: "Provider instance", short: summary, detail: strings.TrimSpace(detail.String())})
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("no provider instances are configured in %s", path)
+	}
+	return runBrowser(ctx, "provider status", "Inspect configured providers and credential presence.", entries, options.Stdin, options.Stdout)
 }
 
 func loadProviderConfig(path string, lookupEnv func(string) (string, bool)) (config.Config, error) {

@@ -47,7 +47,8 @@ func RunWithOptions(ctx context.Context, args []string, stdin io.Reader, stdout,
 
 	exitCode := 0
 	options = options.withDefaults(stdin, stdout, stderr)
-	root := newRootCommand(ctx, args, stdin, stdout, stderr, options.LookupEnv, &exitCode)
+	interactive := options.interactive()
+	root := newRootCommand(ctx, args, stdin, stdout, stderr, options.LookupEnv, interactive, &exitCode)
 	addManagementCommands(ctx, root, options)
 	root.SetArgs(normalizeLegacyFlags(root, args))
 	if err := root.ExecuteContext(ctx); err != nil {
@@ -69,6 +70,16 @@ func RunWithOptions(ctx context.Context, args []string, stdin io.Reader, stdout,
 		return 2
 	}
 	return exitCode
+}
+
+func tuiAllowed(lookupEnv func(string) (string, bool)) bool {
+	if value, ok := lookupEnv("TERM"); ok && value == "dumb" {
+		return false
+	}
+	if value, ok := lookupEnv("SPILLWAY_ACCESSIBLE"); ok && value == "1" {
+		return false
+	}
+	return true
 }
 
 func normalizeLegacyFlags(root *cobra.Command, args []string) []string {

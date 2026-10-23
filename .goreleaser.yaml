@@ -47,6 +47,8 @@ checksum:
 
 release:
   prerelease: auto
+  replace_existing_artifacts: true
+  mode: replace
   header: |
     Built with Go {{ .Env.GO_VERSION }}.
 

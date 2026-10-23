@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/cli"
@@ -168,6 +170,126 @@ func TestRun_RootHelpShowsQuickPathAndCommandGroups(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRun_InteractiveHelpExplorerCanFilterAndInspect(t *testing.T) {
+	code, stdout, stderr := runInteractiveCLI(t, []string{"--help"}, noEnv, "command explorer", "/serve\r\rq")
+	if code != 0 {
+		t.Fatalf("interactive help exit code = %d; stderr: %q", code, stderr)
+	}
+	for _, want := range []string{"command explorer", "usage: spillway serve", "q quit"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("interactive help output does not contain %q: %q", want, stdout)
+		}
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty", stderr)
+	}
+}
+
+func runInteractiveCLI(t *testing.T, args []string, lookup func(string) (string, bool), waitFor, keys string) (int, string, string) {
+	t.Helper()
+	input, sendInput := io.Pipe()
+	var closeInput sync.Once
+	closePipe := func() {
+		closeInput.Do(func() {
+			if err := sendInput.Close(); err != nil {
+				t.Errorf("close TUI input: %v", err)
+			}
+		})
+	}
+	defer closePipe()
+	stdout := &observedWriter{updates: make(chan struct{}, 16)}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.RunWithOptions(t.Context(), args, input, stdout, &stderr, cli.Options{
+			LookupEnv:      lookup,
+			StdinTerminal:  true,
+			StdoutTerminal: true,
+		})
+	}()
+	deadline := time.After(5 * time.Second)
+	for !strings.Contains(stdout.String(), waitFor) {
+		select {
+		case <-stdout.updates:
+		case <-deadline:
+			t.Fatalf("interactive command did not render %q: %q", waitFor, stdout.String())
+		}
+	}
+	if _, err := io.WriteString(sendInput, keys); err != nil {
+		t.Fatal(err)
+	}
+	closePipe()
+	select {
+	case code := <-done:
+		return code, stdout.String(), stderr.String()
+	case <-time.After(5 * time.Second):
+		t.Fatalf("interactive command %q did not exit", args)
+	}
+	return 1, stdout.String(), stderr.String()
+}
+
+type observedWriter struct {
+	mu      sync.Mutex
+	output  bytes.Buffer
+	updates chan struct{}
+}
+
+func (w *observedWriter) Write(value []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.output.Write(value)
+	w.mu.Unlock()
+	select {
+	case w.updates <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (w *observedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.output.String()
+}
+
+func TestRun_NoTUIKeepsHelpLinearInInteractiveTerminal(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.RunWithOptions(t.Context(), []string{"--no-tui", "--help"}, nil, &stdout, &stderr, cli.Options{
+		LookupEnv:      noEnv,
+		StdinTerminal:  true,
+		StdoutTerminal: true,
+	})
+	if code != 0 {
+		t.Fatalf("linear help exit code = %d; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "usage: spillway <command>") || strings.Contains(stdout.String(), "Browse commands. Inspect help.") {
+		t.Errorf("help output should be linear: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRun_AccessibleModeKeepsHelpLinear(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	lookup := func(name string) (string, bool) {
+		if name == "SPILLWAY_ACCESSIBLE" {
+			return "1", true
+		}
+		return "", false
+	}
+	code := cli.RunWithOptions(t.Context(), []string{"--help"}, nil, &stdout, &stderr, cli.Options{
+		LookupEnv:      lookup,
+		StdinTerminal:  true,
+		StdoutTerminal: true,
+	})
+	if code != 0 {
+		t.Fatalf("accessible help exit code = %d; stderr: %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "usage: spillway <command>") || strings.Contains(stdout.String(), "Browse commands. Inspect help.") {
+		t.Errorf("accessible help should remain linear: %q", stdout.String())
 	}
 }
 

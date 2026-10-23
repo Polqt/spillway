@@ -2,6 +2,7 @@ package cli
 
 import (
 	"flag"
+	"fmt"
 	"io"
 
 	"charm.land/lipgloss/v2"
@@ -34,11 +35,11 @@ func check(args []string, stdout, stderr io.Writer, lookupEnv func(string) (stri
 		report(stderr, "spillway: write redacted config: %v\n", err)
 		return 1
 	}
-	status := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("config OK")
-	if _, err := lipgloss.Fprintln(stderr, status); err != nil {
+	status := okStyle.Bold(true).Render("config OK")
+	if _, err := lipgloss.Fprintln(styledWriter(stderr), status); err != nil {
 		return 1
 	}
-	if _, err := lipgloss.Fprintf(stderr, "Run `spillway serve -config %s` to start Spillway.\n", *configPath); err != nil {
+	if _, err := fmt.Fprintf(styledWriter(stderr), "Run `spillway serve -config %s` to start Spillway.\n", *configPath); err != nil {
 		return 1
 	}
 	return 0
