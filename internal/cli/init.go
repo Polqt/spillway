@@ -45,6 +45,9 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	inputCloser, _ := stdin.(io.Closer)
 	provided := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	if !*yes && isInitWizardTerminal(stdin, stdout) && !provided["providers"] && !provided["attest-free-tier"] && !provided["store"] {
+		return runInitWizard(ctx, *configPath, lookupEnv, stdin, stdout, stderr)
+	}
 	if !*yes {
 		if err := writeInitBanner(stdout); err != nil {
 			report(stderr, "spillway: init: write setup heading: %v\n", err)
