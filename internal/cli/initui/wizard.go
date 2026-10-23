@@ -36,9 +36,10 @@ type Prepared struct {
 type PrepareFunc func(Draft) (Prepared, error)
 
 type Options struct {
-	ConfigPath string
-	Providers  []Provider
-	Prepare    PrepareFunc
+	ConfigPath   string
+	Providers    []Provider
+	ValidatePath func(string) error
+	Prepare      PrepareFunc
 }
 
 type Result struct {
@@ -154,7 +155,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "tab" && m.step == stepModels {
-			m.search.Blur()
+			if m.search.Focused() {
+				m.search.Blur()
+			} else {
+				m.search.Focus()
+			}
 			return m, nil
 		}
 		if key == "enter" || key == "right" {
@@ -178,11 +183,18 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) updatePath(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "enter" {
-		m.draft.ConfigPath = strings.TrimSpace(m.search.Value())
-		if m.draft.ConfigPath == "" {
+		path := strings.TrimSpace(m.search.Value())
+		if m.options.ValidatePath != nil {
+			if err := m.options.ValidatePath(path); err != nil {
+				m.error = err.Error()
+				return m, nil
+			}
+		}
+		if path == "" {
 			m.error = "Choose a config file path to continue."
 			return m, nil
 		}
+		m.draft.ConfigPath = path
 		m.step = stepProviders
 		m.cursor = 0
 		return m, nil
@@ -399,74 +411,85 @@ func (m model) View() tea.View {
 	if m.step == stepSuccess && m.canceled {
 		return tea.NewView("Setup cancelled. No config file was created.\n")
 	}
-	if m.width < 60 || m.height < 18 {
-		view := fmt.Sprintf("SPILLWAY / SETUP\n\nTerminal size: %d × %d\nResize to at least 60 × 18 to continue.\n\nEsc cancels setup.", m.width, m.height)
+	if m.width < 60 || m.height < 20 {
+		view := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F3F0FF")).Render("SPILLWAY SETUP")
+		view += fmt.Sprintf("\n\nTerminal size: %d × %d\nResize to at least 60 columns and 20 rows to continue.\n\nPress Esc to cancel.", m.width, m.height)
 		t := tea.NewView(lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, view))
 		t.AltScreen = !m.canceled && !m.done
 		return t
 	}
-	accent := lipgloss.Color("#9B8CFF")
-	muted := lipgloss.Color("#9AA4B2")
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F3F0FF"))
+	accent := lipgloss.Color("#A78BFA")
+	cyan := lipgloss.Color("#68DDE0")
+	green := lipgloss.Color("#7CE6B3")
+	muted := lipgloss.Color("#A7B0C0")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF"))
 	active := lipgloss.NewStyle().Foreground(accent).Bold(true)
-	selected := lipgloss.NewStyle().Foreground(lipgloss.Color("#73E2B7"))
+	selected := lipgloss.NewStyle().Foreground(green).Bold(true)
 	mutedStyle := lipgloss.NewStyle().Foreground(muted)
-	var body strings.Builder
-	body.WriteString(title.Render("SPILLWAY"))
-	body.WriteString(mutedStyle.Render("   /   LOCAL GATEWAY SETUP"))
-	body.WriteString("\n\n")
+	cyanStyle := lipgloss.NewStyle().Foreground(cyan).Bold(true)
+
 	steps := []struct {
 		id   step
 		name string
-	}{{stepPath, "Path"}, {stepProviders, "Providers"}, {stepAttestations, "Access"}, {stepModels, "Models"}, {stepStore, "History"}, {stepReview, "Review"}, {stepSuccess, "Done"}}
-	if m.width < 104 {
-		current, total := 0, 0
-		label := "SETUP"
-		for _, item := range steps {
-			if item.id == stepModels && len(m.draft.Models) == 0 && m.step != stepModels {
-				continue
-			}
-			total++
-			if item.id == m.step {
-				current = total
-				label = strings.ToUpper(item.name)
-			}
+	}{{stepPath, "Config"}, {stepProviders, "Providers"}, {stepAttestations, "Eligibility"}, {stepModels, "Models"}, {stepStore, "History"}, {stepReview, "Review"}, {stepSuccess, "Done"}}
+	current, total, currentName := 0, 0, "Setup"
+	for _, item := range steps {
+		if item.id == stepModels && len(m.draft.Models) == 0 && m.step != stepModels {
+			continue
 		}
-		body.WriteString(active.Render(fmt.Sprintf("STEP %02d / %02d   %s", current, total, label)))
-		body.WriteString("\n\n")
-	} else {
-		visibleIndex := 0
-		for _, item := range steps {
-			if item.id == stepModels && len(m.draft.Models) == 0 && m.step != stepModels {
-				continue
-			}
-			if visibleIndex > 0 {
-				body.WriteString(mutedStyle.Render("  ─  "))
-			}
-			visibleIndex++
-			label := fmt.Sprintf("%02d %s", visibleIndex, item.name)
-			if m.step == item.id {
-				body.WriteString(active.Render("● " + label))
-			} else if m.step > item.id {
-				body.WriteString(selected.Render("✓ " + label))
-			} else {
-				body.WriteString(mutedStyle.Render("○ " + label))
-			}
+		total++
+		if item.id == m.step {
+			current, currentName = total, item.name
 		}
-		body.WriteString("\n\n")
 	}
-	width := max(44, min(m.width-8, 104))
-	panel := lipgloss.NewStyle().Width(width).Padding(1, 2).BorderLeft(true).BorderStyle(lipgloss.ThickBorder()).BorderForeground(accent)
-	var content strings.Builder
-	content.WriteString(m.renderStep(title, active, selected, mutedStyle))
+	if current == 0 {
+		current = 1
+	}
+	barWidth := min(32, max(12, (m.width-34)/3))
+	filled := (barWidth*current + total - 1) / total
+	progress := active.Render(strings.Repeat("━", filled)) + mutedStyle.Render(strings.Repeat("─", max(0, barWidth-filled)))
+	progress += fmt.Sprintf("  %02d / %02d  %s", current, total, strings.ToUpper(currentName))
+
+	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7057D9")).Padding(0, 1).Render(" SPILLWAY ")
+	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF")).Render("Local model gateway")
+	tagline := mutedStyle.Render("One setup. Your providers. Your machine.")
+	badge := lipgloss.NewStyle().Bold(true).Foreground(cyan).Background(lipgloss.Color("#172B35")).Padding(0, 1).Render(" OFFLINE SETUP ")
+	brandBlock := lipgloss.JoinVertical(lipgloss.Left, brand, tagline)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brandBlock, strings.Repeat(" ", 2), badge)
+	if m.width < 88 {
+		headerRow = lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brand),
+			mutedStyle.Render("Private setup · no provider calls"),
+		)
+	}
+	headerWidth := min(m.width-8, 124)
+	header := lipgloss.NewStyle().Width(headerWidth).Background(lipgloss.Color("#171827")).Padding(1, 2).Render(headerRow)
+	progressLine := lipgloss.NewStyle().Width(headerWidth).Padding(0, 2).Render(progress)
+
+	content := m.renderStep(title, active, selected, mutedStyle)
 	if m.error != "" {
-		content.WriteString("\n\n")
-		content.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8B8B")).Bold(true).Render(m.error))
+		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9D9D")).Bold(true)
+		errorDetail := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD2D2"))
+		content += "\n\n" + errorStyle.Render("!  ACTION NEEDED") + "\n" + errorDetail.Render(m.error)
 	}
-	body.WriteString(panel.Render(content.String()))
-	body.WriteString("\n\n")
-	body.WriteString(mutedStyle.Render(m.helpText()))
-	view := lipgloss.Place(min(m.width, width+8), m.height, lipgloss.Left, lipgloss.Top, body.String())
+	var layout string
+	if m.width >= 112 {
+		mainWidth := min(78, m.width-48)
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(accent)
+		sidePanel := lipgloss.NewStyle().Width(27).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#48516A"))
+		layout = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel.Render(content), "  ", sidePanel.Render(m.renderSummary(cyanStyle, title, mutedStyle, selected)))
+	} else {
+		mainWidth := min(92, m.width-10)
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(accent)
+		layout = mainPanel.Render(content)
+	}
+	helpText := m.helpText()
+	if m.width < 124 {
+		helpText = m.compactHelpText()
+	}
+	help := lipgloss.NewStyle().Foreground(lipgloss.Color("#D9D4EE")).Background(lipgloss.Color("#242337")).Padding(0, 1).Render(helpText)
+	body := lipgloss.JoinVertical(lipgloss.Left, header, progressLine, layout, help)
+	view := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, body)
 	v := tea.NewView(view)
 	v.AltScreen = !m.canceled && !m.done
 	if m.step == stepPath || (m.step == stepModels && m.search.Focused()) {
@@ -475,13 +498,45 @@ func (m model) View() tea.View {
 	return v
 }
 
+func (m model) renderSummary(section, title, muted, selected lipgloss.Style) string {
+	var b strings.Builder
+	b.WriteString(section.Render("YOUR SETUP"))
+	b.WriteString("\n\n")
+	b.WriteString(title.Render("Providers"))
+	_, _ = fmt.Fprintf(&b, "\n%d selected", len(m.draft.Providers))
+	if len(m.draft.Providers) == 0 {
+		b.WriteString("\n" + muted.Render("Choose at least one"))
+	} else {
+		for _, name := range m.draft.Providers {
+			b.WriteString("\n" + selected.Render("• "+name))
+		}
+	}
+	b.WriteString("\n\n" + title.Render("Auto models"))
+	if len(m.draft.Models) == 0 {
+		b.WriteString("\n" + muted.Render("None selected yet"))
+	} else {
+		for _, modelName := range m.draft.Models {
+			b.WriteString("\n" + selected.Render("• "+modelName))
+		}
+	}
+	b.WriteString("\n\n" + title.Render("Local history"))
+	if m.draft.Store {
+		b.WriteString("\n" + selected.Render("Enabled"))
+	} else {
+		b.WriteString("\n" + muted.Render("Off"))
+	}
+	b.WriteString("\n\n" + title.Render("Config file") + "\n" + muted.Render(m.draft.ConfigPath))
+	b.WriteString("\n\n" + muted.Render("Credentials stay in your environment."))
+	return b.String()
+}
+
 func (m model) renderStep(title, active, selected, muted lipgloss.Style) string {
 	var b strings.Builder
 	switch m.step {
 	case stepPath:
-		b.WriteString(title.Render("Where should we create the config?"))
+		b.WriteString(title.Render("Choose a home for your gateway config"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Existing files are never overwritten."))
+		b.WriteString(muted.Render("Use a filename such as config.yaml. The folder must already exist; existing files are never overwritten."))
 		b.WriteString("\n\n")
 		if !m.search.Focused() {
 			m.search.Focus()
@@ -490,7 +545,7 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 	case stepProviders:
 		b.WriteString(title.Render("Choose your providers"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Select one or more. Mock is ready for an offline first run."))
+		b.WriteString(muted.Render("Select every provider you already have access to. Mock is ready for an offline first run."))
 		b.WriteString("\n\n")
 		for i, item := range m.options.Providers {
 			prefix := "  "
@@ -501,14 +556,18 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 			if slices.Contains(m.draft.Providers, item.Name) {
 				mark = "●"
 			}
-			line := prefix + mark + "  " + item.Name + "  " + muted.Render(item.Hint)
+			name := item.Name
+			if slices.Contains(m.draft.Providers, item.Name) {
+				name = selected.Render(name)
+			}
+			line := prefix + mark + "  " + name + "  " + muted.Render(item.Hint)
 			b.WriteString(line + "\n")
 		}
 		b.WriteString("\n" + m.continueLabel(active, selected, len(m.options.Providers)))
 	case stepAttestations:
-		b.WriteString(title.Render("Confirm free-tier eligibility"))
+		b.WriteString(title.Render("Confirm account eligibility"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Only check providers whose account or project has no paid plan."))
+		b.WriteString(muted.Render("Check a box only when that provider account or project has no paid plan."))
 		b.WriteString("\n\n")
 		items := m.attestable()
 		if len(items) == 0 {
@@ -527,12 +586,13 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 		}
 		b.WriteString("\n" + m.continueLabel(active, selected, len(items)))
 	case stepModels:
-		b.WriteString(title.Render("Choose models for auto"))
+		b.WriteString(title.Render("Choose models for automatic routing"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Local suggestions only. Search filters this list; no provider calls are made."))
+		b.WriteString(muted.Render("These are local suggestions. Search filters the list; init never contacts providers."))
 		b.WriteString("\n\n" + m.search.View() + "\n\n")
 		items := m.filteredModels()
-		for i, provider := range m.draft.Providers {
+		groupsRendered := 0
+		for _, provider := range m.draft.Providers {
 			group := make([]string, 0, 1)
 			for _, item := range items {
 				if strings.HasPrefix(item, provider+"/") {
@@ -542,9 +602,10 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 			if len(group) == 0 {
 				continue
 			}
-			if i > 0 {
+			if groupsRendered > 0 {
 				b.WriteString("\n")
 			}
+			groupsRendered++
 			b.WriteString(active.Render(strings.ToUpper(provider)) + "\n")
 			for _, item := range group {
 				position := slices.Index(items, item)
@@ -560,9 +621,9 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 		}
 		b.WriteString("\n" + m.continueLabel(active, selected, len(items)))
 	case stepStore:
-		b.WriteString(title.Render("Local usage history"))
+		b.WriteString(title.Render("Choose local history"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Usage metadata stays in a local SQLite database."))
+		b.WriteString(muted.Render("Optional request metadata stays in a local SQLite database on this machine."))
 		b.WriteString("\n\n")
 		mark := "○"
 		if m.draft.Store {
@@ -585,7 +646,7 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 			lines = append(lines[:limit], "… preview shortened to fit terminal …")
 		}
 		b.WriteString(strings.Join(lines, "\n"))
-		b.WriteString("\n\n" + selected.Render("Save config"))
+		b.WriteString("\n\n" + selected.Render("Save this config"))
 	case stepSuccess:
 		b.WriteString(title.Render("Setup complete"))
 		b.WriteString("\n\n")
@@ -597,15 +658,36 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 
 func (m model) helpText() string {
 	if m.step == stepReview {
-		return "↑/↓ navigate   enter save   ← go back   esc cancel"
+		return "↑/↓ review   Enter save config   ← back   Esc cancel"
 	}
 	if m.step == stepPath {
-		return "type path   enter continue   esc cancel"
+		return "Type a path   Enter continue   Esc cancel"
 	}
 	if m.step == stepSuccess {
-		return "enter finish"
+		return "Enter finish"
 	}
-	return "↑/↓ move   space select   enter continue   ← back   esc cancel"
+	if m.step == stepModels {
+		return "Type to search   Tab switch search/list   ↑/↓ move   Space/Enter toggle   Enter on Continue   ← back   Esc cancel"
+	}
+	if m.step == stepStore {
+		return "↑/↓ move   Space/Enter toggle   highlight Continue, then Enter   ← back   Esc cancel"
+	}
+	return "↑/↓ move   Space/Enter toggle   highlight Continue, then Enter   ← back   Esc cancel"
+}
+
+func (m model) compactHelpText() string {
+	switch m.step {
+	case stepReview:
+		return "Enter save  ← back  Esc cancel"
+	case stepPath:
+		return "Type path  Enter next  Esc cancel"
+	case stepSuccess:
+		return "Enter finish"
+	case stepModels:
+		return "Type search  Tab list  Space select  Enter next  Esc back"
+	default:
+		return "↑↓ move  Space toggle  Enter next  ← back  Esc cancel"
+	}
 }
 
 func (m model) continueLabel(active, selected lipgloss.Style, cursor int) string {

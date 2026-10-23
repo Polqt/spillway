@@ -220,6 +220,19 @@ func TestRun_InitNeverOverwrites(t *testing.T) {
 	}
 }
 
+func TestRun_InitRejectsMissingConfigDirectory(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing", "config.yaml")
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	if code != 1 || !strings.Contains(stderr.String(), "does not exist; create it first") || !strings.Contains(stderr.String(), "choose a path in an existing folder") {
+		t.Fatalf("init = %d; stderr %q; want clear guidance for a missing config directory", code, stderr.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config stat error = %v; want no config file", err)
+	}
+}
+
 func TestRun_InitFileIsOwnerOnly(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")

@@ -63,7 +63,7 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 			},
 		}, nil
 	}
-	result, err := initui.Run(ctx, initui.Options{ConfigPath: configPath, Providers: options, Prepare: prepare}, stdin, stdout)
+	result, err := initui.Run(ctx, initui.Options{ConfigPath: configPath, Providers: options, ValidatePath: validateNewConfigPath, Prepare: prepare}, stdin, stdout)
 	if err != nil {
 		if ctx.Err() != nil || strings.Contains(err.Error(), "canceled") {
 			reportInitError(stderr, "Setup was cancelled", "No config file was created.", "Run `spillway init` when you're ready to continue.")

@@ -11,6 +11,7 @@ Replace the interactive `spillway init` questionnaire with a keyboard-first full
 - Provide path, provider, free-tier eligibility, model, local history, review, and success screens.
 - Search the local model suggestions declared by provider presets; do not call provider APIs or add a remote catalog.
 - Preview the candidate config with generated local keys redacted and provider keys represented only by environment references.
+- Validate that the selected config folder exists before showing the review screen, with a clear recovery hint when it does not.
 - Write only after explicit save confirmation, retaining exclusive file creation and validation.
 
 ## Architecture
@@ -35,6 +36,8 @@ Replace the interactive `spillway init` questionnaire with a keyboard-first full
 - Interactive TTY users get a multi-select provider screen, grouped/searchable model selection, independent attestations, a redacted final preview, and an explicit save action.
 - Back navigation preserves all selections and the current search query.
 - Resizing updates the layout without losing draft state; narrow terminals collapse to a single column.
+- The full-width layout shows the current draft summary beside the active step; compact layouts keep the same actions in a single pane.
+- A missing parent folder is reported at the path step, before provider selection or save.
 - Normal exit and cancellation restore the prior terminal screen.
 - Non-TTY, `-yes`, and existing flag paths remain covered through the public CLI interface.
 - Tests prove no file is written before confirmation, no overwrite occurs, and no secret appears in UI or errors.

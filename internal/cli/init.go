@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -293,6 +294,17 @@ func validateNewConfigPath(path string) error {
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check config path: %w", err)
+	}
+	directory := filepath.Dir(path)
+	info, err := os.Stat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("config folder %q does not exist; create it first or choose a path in an existing folder", directory)
+	}
+	if err != nil {
+		return fmt.Errorf("check config folder: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config folder %q is not a directory; choose a path in an existing folder", directory)
 	}
 	return nil
 }
