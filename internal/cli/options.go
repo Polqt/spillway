@@ -66,6 +66,10 @@ func (o Options) withDefaults(stdin io.Reader, stdout, stderr io.Writer) Options
 	return o
 }
 
+func (o Options) interactive() bool {
+	return o.StdinTerminal && o.StdoutTerminal && tuiAllowed(o.LookupEnv)
+}
+
 func defaultLookupEnv(name string) (string, bool) {
 	return lookupProcessEnv(name)
 }

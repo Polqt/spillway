@@ -24,6 +24,11 @@ Project agents live in `.claude/agents/`; the slash skills are global.
 Run `verifier`, `/code-review` and `security-auditor` in subagents so they review with fresh eyes, not the context that wrote the code.
 Fix every Critical or High security finding and every review finding that breaks a hard rule or the OpenAI contract, then re-run `verifier`.
 
+## Senior software engineering
+
+Apply the KISS, DRY, YAGNI, clean-code, engineering-judgment, and evidence rules in `AGENTS.md` to every change.
+Prefer a small, cohesive solution that preserves established contracts, avoids speculative complexity, and can be verified through user-visible behavior.
+
 ## Release documentation
 
 When publishing a release tag, update the current-version install instructions in `README.md` and `docs/install.md` to that published tag.

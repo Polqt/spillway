@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -25,9 +26,20 @@ func doctorCommand(ctx context.Context, options Options) *cobra.Command {
 		Short: "check config, environment and installation (offline)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			failed, err := runDoctor(ctx, cmd.OutOrStdout(), configPath, cmd.Flags().Changed("config"), options, noProbe)
+			out := cmd.OutOrStdout()
+			var reportBuffer bytes.Buffer
+			if commandTUIEnabled(cmd, options.interactive()) {
+				out = &reportBuffer
+			}
+			failed, err := runDoctor(ctx, out, configPath, cmd.Flags().Changed("config"), options, noProbe)
 			if err != nil {
 				return commandFailure{code: 1, err: err}
+			}
+			if commandTUIEnabled(cmd, options.interactive()) {
+				entry := helpEntry{name: "Diagnostic report", group: "Local diagnostics", short: "Config, environment, listener, store and install status", detail: strings.TrimSpace(reportBuffer.String())}
+				if err := runBrowser(ctx, "spillway doctor", "Review local diagnostics. No provider calls are made.", []helpEntry{entry}, options.Stdin, options.Stdout); err != nil {
+					return commandFailure{code: 1, err: err}
+				}
 			}
 			if failed {
 				return commandError{code: 1}
@@ -42,18 +54,28 @@ func doctorCommand(ctx context.Context, options Options) *cobra.Command {
 
 func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit bool, options Options, noProbe bool) (bool, error) {
 	failed := false
+	out = styledWriter(out)
 	write := func(format string, args ...any) error {
 		_, err := fmt.Fprintf(out, format, args...)
 		return err
 	}
 	status := func(level, format string, args ...any) error {
 		if level == "section" {
-			return write("\n%s\n", fmt.Sprintf(format, args...))
+			return write("\n%s\n", tealStyle.Bold(true).Render(fmt.Sprintf(format, args...)))
 		}
 		if level == "fail" {
 			failed = true
 		}
-		return write("  %-5s %s\n", level, fmt.Sprintf(format, args...))
+		style := mutedStyle
+		switch level {
+		case "ok":
+			style = okStyle
+		case "warn":
+			style = warnStyle
+		case "fail":
+			style = errStyle
+		}
+		return write("  %s %s\n", style.Bold(true).Render(fmt.Sprintf("%-5s", level)), fmt.Sprintf(format, args...))
 	}
 	executable, err := options.Executable()
 	if err != nil {

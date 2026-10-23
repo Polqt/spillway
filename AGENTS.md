@@ -77,6 +77,15 @@ A new deliverable is a directory under `apps/` named for the binary it builds; a
 - Keep code comments brief and precise: one short sentence where one will do, saying why, not what.
 - No restating the code, no narrating history or the ticket, no filler.
 
+## Senior engineering principles
+
+- **KISS:** Choose the simplest design that fully solves the user-visible problem.
+- **DRY:** Keep each rule and decision in one place; abstract repeated behavior only when it shares one meaning and changes together.
+- **YAGNI:** Build the requested behavior and its necessary safeguards; avoid speculative options, frameworks, and extension points.
+- **Clean code:** Use names that explain intent, keep functions cohesive, make control flow explicit, and remove dead or misleading code.
+- **Engineering judgment:** Inspect existing contracts before changing them, weigh compatibility, security, accessibility, and maintenance costs, and explain material tradeoffs.
+- **Evidence:** Test behavior through public interfaces, add regression coverage for fixes, and report only checks that actually ran.
+
 ## Testing
 
 The full rules are in `docs/CODING_STANDARDS.md`. The ones most often missed:

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
@@ -16,11 +17,21 @@ import (
 
 const maxConfigListFileSize = 1 << 20
 
-func addConfigCommands(root *cobra.Command, exitCode *int, ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) {
+func addConfigCommands(root *cobra.Command, exitCode *int, ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), interactive bool) {
 	command := &cobra.Command{
 		Use:     "config",
 		Short:   "list and open local config files",
 		GroupID: "tools",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if commandTUIEnabled(cmd, interactive) {
+				if err := runConfigBrowser(ctx, stdin, stdout); err != nil {
+					return commandFailure{code: 1, err: err}
+				}
+				return nil
+			}
+			return cmd.Help()
+		},
 	}
 	command.AddGroup(&cobra.Group{ID: "config", Title: "Config files"})
 	command.AddCommand(&cobra.Command{
@@ -28,7 +39,13 @@ func addConfigCommands(root *cobra.Command, exitCode *int, ctx context.Context, 
 		Short:   "list Spillway config files in the current directory",
 		GroupID: "config",
 		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if commandTUIEnabled(cmd, interactive) {
+				if err := runConfigBrowser(ctx, stdin, stdout); err != nil {
+					return commandFailure{code: 1, err: err}
+				}
+				return nil
+			}
 			*exitCode = configListCommand(stdout, stderr)
 			return nil
 		},
@@ -50,12 +67,32 @@ func addConfigCommands(root *cobra.Command, exitCode *int, ctx context.Context, 
 }
 
 func configListCommand(stdout, stderr io.Writer) int {
-	entries, err := os.ReadDir(".")
+	paths, err := listConfigPaths()
 	if err != nil {
 		report(stderr, "spillway: config list: read current directory: %v\n", err)
 		return 1
 	}
+	if len(paths) == 0 {
+		if _, err := fmt.Fprintln(stdout, "No Spillway config files found in the current directory."); err != nil {
+			report(stderr, "spillway: config list: write output: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	for _, path := range paths {
+		if _, err := fmt.Fprintln(stdout, path); err != nil {
+			report(stderr, "spillway: config list: write output: %v\n", err)
+			return 1
+		}
+	}
+	return 0
+}
 
+func listConfigPaths() ([]string, error) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, err
+	}
 	var paths []string
 	for _, entry := range entries {
 		if entry.IsDir() || !isConfigCandidate(entry.Name()) {
@@ -71,21 +108,28 @@ func configListCommand(stdout, stderr io.Writer) int {
 		}
 		paths = append(paths, entry.Name())
 	}
+	return paths, nil
+}
 
-	if len(paths) == 0 {
-		if _, err := fmt.Fprintln(stdout, "No Spillway config files found in the current directory."); err != nil {
-			report(stderr, "spillway: config list: write output: %v\n", err)
-			return 1
-		}
-		return 0
+func runConfigBrowser(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	paths, err := listConfigPaths()
+	if err != nil {
+		return fmt.Errorf("read current directory: %w", err)
 	}
+	entries := make([]helpEntry, 0, len(paths))
 	for _, path := range paths {
-		if _, err := fmt.Fprintln(stdout, path); err != nil {
-			report(stderr, "spillway: config list: write output: %v\n", err)
-			return 1
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("inspect config %s: %w", path, err)
 		}
+		entries = append(entries, helpEntry{
+			name:   path,
+			group:  "Config file",
+			short:  fmt.Sprintf("%d bytes", info.Size()),
+			detail: fmt.Sprintf("Path: %s\nSize: %d bytes\nModified: %s", path, info.Size(), info.ModTime().Format(time.RFC3339)),
+		})
 	}
-	return 0
+	return runBrowser(ctx, "config files", "Browse local configs. Use config open to edit one.", entries, stdin, stdout)
 }
 
 func isConfigCandidate(name string) bool {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ type commandFailure struct {
 func (e commandFailure) Error() string { return e.err.Error() }
 func (e commandFailure) Unwrap() error { return e.err }
 
-func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), exitCode *int) *cobra.Command {
+func newRootCommand(ctx context.Context, originalArgs []string, stdin io.Reader, stdout, stderr io.Writer, lookupEnv func(string) (string, bool), interactive bool, exitCode *int) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "spillway",
 		Short: "A local OpenAI-compatible LLM gateway",
@@ -74,16 +75,26 @@ flags:
 		&cobra.Group{ID: "tools", Title: "Tools"},
 		&cobra.Group{ID: "experimental", Title: "Experimental"},
 	)
-	addConfigCommands(root, exitCode, ctx, stdin, stdout, stderr, lookupEnv)
+	addConfigCommands(root, exitCode, ctx, stdin, stdout, stderr, lookupEnv, interactive)
 	root.SetHelpCommandGroupID("tools")
 	root.SetCompletionCommandGroupID("tools")
-	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
-		out := cmd.OutOrStdout()
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("Spillway")
-		if _, err := lipgloss.Fprint(out, title+"\n\n"+cmd.UsageString()); err != nil {
+	var noTUI bool
+	root.PersistentFlags().BoolVar(&noTUI, "no-tui", false, "print linear help instead of opening the interactive command explorer")
+	writeHelp := func(cmd *cobra.Command, out io.Writer) {
+		if _, err := lipgloss.Fprintln(styledWriter(out), brandHeader("help")+"\n"+cmd.UsageString()); err != nil {
 			report(cmd.ErrOrStderr(), "spillway: write help: %v\n", err)
 			*exitCode = 1
 		}
+	}
+	root.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		if cmd == root && interactive && !noTUI {
+			if err := runHelpExplorer(ctx, root, stdin, stdout); err != nil {
+				report(stderr, "spillway: help: %v\n", err)
+				*exitCode = 1
+			}
+			return
+		}
+		writeHelp(cmd, cmd.OutOrStdout())
 	})
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return err })
 	showVersion := false
@@ -96,7 +107,14 @@ flags:
 			}
 			return nil
 		}
-		_, _ = fmt.Fprint(cmd.ErrOrStderr(), cmd.UsageString())
+		if interactive && !noTUI {
+			if err := runHelpExplorer(ctx, root, stdin, stdout); err != nil {
+				report(stderr, "spillway: help: %v\n", err)
+				*exitCode = 1
+			}
+			return nil
+		}
+		writeHelp(cmd, cmd.ErrOrStderr())
 		return commandError{code: 2}
 	}
 
@@ -105,8 +123,24 @@ flags:
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
-	addLegacyCommand(root, exitCode, "check", "validate config and print it with secrets redacted", `  spillway check -config config.yaml`, func(cmd *cobra.Command, args []string) int {
-		return check(legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+	addLegacyCommand(root, exitCode, "check", "validate config and print it with secrets redacted", `  spillway check -config config.yaml`, func(cmd *cobra.Command, _ []string) int {
+		args := legacyArgs(cmd, originalArgs)
+		if !commandTUIEnabled(cmd, interactive) {
+			return check(args, stdout, stderr, lookupEnv)
+		}
+		var result, diagnostics bytes.Buffer
+		code := check(args, &result, &diagnostics, lookupEnv)
+		if code == 2 {
+			_, _ = stderr.Write(diagnostics.Bytes())
+			return code
+		}
+		detail := strings.TrimSpace(result.String() + "\n" + diagnostics.String())
+		entry := helpEntry{name: "Config validation", group: "Diagnostics", short: "Validate config with secrets redacted", detail: detail}
+		if err := runBrowser(ctx, "config check", "Review the redacted configuration and validation status.", []helpEntry{entry}, stdin, stdout); err != nil {
+			report(stderr, "spillway: check: %v\n", err)
+			return 1
+		}
+		return code
 	}, func(flags *pflag.FlagSet) {
 		flags.String("config", defaultConfigPath, "path to the config file")
 	})
@@ -208,7 +242,7 @@ flags:
 func addManagementCommands(ctx context.Context, root *cobra.Command, options Options) {
 	addProviderCommands(ctx, root, options)
 	addModelCommands(ctx, root, options)
-	addTierCommands(root, options)
+	addTierCommands(ctx, root, options)
 	install := installCommand(ctx, options)
 	install.GroupID = "manage"
 	root.AddCommand(install)
