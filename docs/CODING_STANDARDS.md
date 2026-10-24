@@ -13,6 +13,10 @@ Anything `make lint` already enforces is not repeated here.
 - Constructors validate their inputs and return an error; a constructed value is always usable.
 - Zero values should be useful or impossible to misuse. Use `New...` when they are not.
 - Give domain concepts their own types (`ModelID`, `redact.Secret`) instead of bare strings when mixing them up would be a bug.
+- Each directory is one Go package; choose a short lowercase directory name for one cohesive responsibility.
+- Split a package only at a real ownership or dependency boundary, not just to group files or command names.
+- Keep dependencies pointed toward domain packages; a child package must not import its parent package.
+- Avoid generic `common`, `helpers` and `utils` packages; place behavior with the domain that owns it.
 
 ## Errors
 

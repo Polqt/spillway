@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	evalcmd "github.com/Polqt/spillway/internal/cli/eval"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -174,7 +175,7 @@ flags:
 		flags.Duration("interval", 2*time.Second, "refresh interval (1s-1m)")
 	})
 	addLegacyCommand(root, exitCode, "eval", "run a paired routing evaluation (experimental)", `  spillway eval -dataset prompts.json -arms current=auto -out results`, func(cmd *cobra.Command, args []string) int {
-		return evalCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
+		return evalcmd.Run(ctx, legacyArgs(cmd, originalArgs), stdout, stderr, lookupEnv)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("dataset", "", "versioned prompt set JSON path")
 		flags.String("endpoint", "http://127.0.0.1:8080", "Spillway OpenAI-compatible base URL")
@@ -187,12 +188,12 @@ flags:
 		flags.String("out", "", "directory for evaluation artifacts")
 	})
 	addLegacyCommand(root, exitCode, "eval-score", "summarize a completed blinded evaluation score sheet (experimental)", `  spillway eval-score -run results`, func(cmd *cobra.Command, args []string) int {
-		return evalScoreCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
+		return evalcmd.RunScore(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("run", "", "evaluation artifact directory")
 	})
 	addLegacyCommand(root, exitCode, "eval-report", "compare run artifacts and rater sheets against ADR 0014 gates (experimental)", `  spillway eval-report -run results -baseline current`, func(cmd *cobra.Command, args []string) int {
-		return evalReportCommand(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
+		return evalcmd.RunReport(ctx, legacyArgs(cmd, originalArgs), stdout, stderr)
 	}, func(flags *pflag.FlagSet) {
 		flags.String("run", "", "evaluation artifact directory")
 		flags.String("scores", "", "comma-separated completed rater CSV sheets")

@@ -28,6 +28,8 @@ Fix every Critical or High security finding and every review finding that breaks
 
 Apply the KISS, DRY, YAGNI, clean-code, engineering-judgment, and evidence rules in `AGENTS.md` to every change.
 Prefer a small, cohesive solution that preserves established contracts, avoids speculative complexity, and can be verified through user-visible behavior.
+For Go, treat each directory as a package boundary and name it for one cohesive responsibility.
+Keep CLI subpackages small, keep dependencies pointed toward domain packages, and do not create folders solely to file commands or reduce the number of source files.
 
 ## Release documentation
 

@@ -49,7 +49,10 @@ Deliverables live under `apps/<name>/` and all tests under `tests/` (ADR 0004).
 ```
 apps/spillway/                   binary entry point; main.go only calls cli.Run          v0.1
 apps/spillway/web/               embedded dashboard package (go:embed), part of the binary v0.4
-internal/cli/                    subcommands serve, check, version (v0.1), init (v1.0); wiring  v0.1
+internal/cli/                    Cobra composition, shared options, and tightly coupled handlers
+internal/cli/eval/               experimental evaluation command family
+internal/cli/initui/             interactive init wizard
+internal/cli/provideraddui/      interactive provider-add wizard
 internal/api/                    OpenAI-compatible handlers, SSE, local auth             v0.1
 internal/config/                 YAML config, ${ENV} expansion, validation               v0.1
 internal/redact/                 secret type and scrubbing helpers                       v0.1
@@ -71,6 +74,16 @@ docs/adr/                        architecture decision records
 
 A new provider that speaks the OpenAI API is a preset in `openaicompat`, not a new package.
 A new deliverable is a directory under `apps/` named for the binary it builds; anything it shares with other apps goes in `internal/`.
+
+### Go package layout
+
+- A directory is a Go package boundary; files in different directories cannot share unexported identifiers.
+- Name folders for one cohesive responsibility with a short, lowercase Go package name, such as `eval`, `initui` or `provideraddui`.
+- Keep `internal/cli` as the command composition layer for Cobra wiring and handlers that share CLI-private behavior.
+- Extract a child package when its behavior has a stable responsibility and a small API; child packages must not import their parent package.
+- Follow dependencies inward from the CLI toward domain packages, and do not introduce import cycles.
+- Do not create folders only to reduce file counts, one folder per command wrapper, or generic `common`, `helpers` and `utils` packages.
+- Before moving files, inspect unexported references and preserve public entry points with a small facade when needed.
 
 ## Comments
 

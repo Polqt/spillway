@@ -3,6 +3,7 @@ package initui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"io"
 	"slices"
 	"strings"
@@ -47,6 +48,97 @@ type Options struct {
 type Result struct {
 	Draft   Draft
 	Success string
+}
+
+// Styles contains the colors and text treatments used by interactive commands.
+type Styles struct {
+	Accent    color.Color
+	Cyan      color.Color
+	Green     color.Color
+	Muted     color.Color
+	Title     lipgloss.Style
+	Active    lipgloss.Style
+	Selected  lipgloss.Style
+	MutedText lipgloss.Style
+	CyanText  lipgloss.Style
+}
+
+// Frame describes a screen rendered with Spillway's interactive terminal design.
+type Frame struct {
+	Width, Height  int
+	Current, Total int
+	Step           string
+	Content        string
+	Summary        string
+	Help           string
+	Badge          string
+}
+
+// NewStyles returns the shared Spillway interactive color palette.
+func NewStyles() Styles {
+	accent := lipgloss.Color("#A78BFA")
+	cyan := lipgloss.Color("#68DDE0")
+	green := lipgloss.Color("#7CE6B3")
+	muted := lipgloss.Color("#A7B0C0")
+	return Styles{
+		Accent: accent, Cyan: cyan, Green: green, Muted: muted,
+		Title:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF")),
+		Active:    lipgloss.NewStyle().Foreground(accent).Bold(true),
+		Selected:  lipgloss.NewStyle().Foreground(green).Bold(true),
+		MutedText: lipgloss.NewStyle().Foreground(muted),
+		CyanText:  lipgloss.NewStyle().Foreground(cyan).Bold(true),
+	}
+}
+
+// RenderFrame places command content in the shared setup header, progress bar,
+// summary panel and keyboard bar.
+func RenderFrame(frame Frame) string {
+	width := max(1, frame.Width)
+	if frame.Height == 0 {
+		frame.Height = 24
+	}
+	styles := NewStyles()
+	muted := styles.MutedText
+	barWidth := min(32, max(12, (width-34)/3))
+	current := max(1, frame.Current)
+	total := max(current, frame.Total)
+	filled := (barWidth*current + total - 1) / total
+	progress := styles.Active.Render(strings.Repeat("━", filled)) + muted.Render(strings.Repeat("─", max(0, barWidth-filled)))
+	progress += fmt.Sprintf("  %02d / %02d  %s", current, total, strings.ToUpper(frame.Step))
+
+	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7057D9")).Padding(0, 1).Render(" SPILLWAY ")
+	brand := styles.Title.Render("Local model gateway")
+	tagline := muted.Render("One setup. Your providers. Your machine.")
+	if frame.Badge == "" {
+		frame.Badge = "PRIVATE BY DEFAULT"
+	}
+	badge := lipgloss.NewStyle().Bold(true).Foreground(styles.Cyan).Background(lipgloss.Color("#172B35")).Padding(0, 1).Render(" " + frame.Badge + " ")
+	brandBlock := lipgloss.JoinVertical(lipgloss.Left, brand, tagline)
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brandBlock, "  ", badge)
+	if width < 88 {
+		headerRow = lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brand),
+			muted.Render("Private setup · no provider calls"),
+		)
+	}
+	headerWidth := min(width-8, 124)
+	header := lipgloss.NewStyle().Width(headerWidth).Background(lipgloss.Color("#171827")).Padding(1, 2).Render(headerRow)
+	progressLine := lipgloss.NewStyle().Width(headerWidth).Padding(0, 2).Render(progress)
+
+	var layout string
+	if width >= 112 {
+		mainWidth := min(78, width-48)
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(styles.Accent)
+		sidePanel := lipgloss.NewStyle().Width(27).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#48516A"))
+		layout = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel.Render(frame.Content), "  ", sidePanel.Render(frame.Summary))
+	} else {
+		mainWidth := min(92, width-10)
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(styles.Accent)
+		layout = mainPanel.Render(frame.Content)
+	}
+	help := lipgloss.NewStyle().Foreground(lipgloss.Color("#D9D4EE")).Background(lipgloss.Color("#242337")).Padding(0, 1).Render(frame.Help)
+	body := lipgloss.JoinVertical(lipgloss.Left, header, progressLine, layout, help)
+	return lipgloss.Place(width, frame.Height, lipgloss.Center, lipgloss.Top, body)
 }
 
 // GeminiAliasKeyEnv returns the environment variable name for a Gemini alias.
@@ -506,15 +598,7 @@ func (m model) View() tea.View {
 		t.AltScreen = !m.canceled && !m.done
 		return t
 	}
-	accent := lipgloss.Color("#A78BFA")
-	cyan := lipgloss.Color("#68DDE0")
-	green := lipgloss.Color("#7CE6B3")
-	muted := lipgloss.Color("#A7B0C0")
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF"))
-	active := lipgloss.NewStyle().Foreground(accent).Bold(true)
-	selected := lipgloss.NewStyle().Foreground(green).Bold(true)
-	mutedStyle := lipgloss.NewStyle().Foreground(muted)
-	cyanStyle := lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	styles := NewStyles()
 
 	steps := []struct {
 		id   step
@@ -533,51 +617,23 @@ func (m model) View() tea.View {
 	if current == 0 {
 		current = 1
 	}
-	barWidth := min(32, max(12, (m.width-34)/3))
-	filled := (barWidth*current + total - 1) / total
-	progress := active.Render(strings.Repeat("━", filled)) + mutedStyle.Render(strings.Repeat("─", max(0, barWidth-filled)))
-	progress += fmt.Sprintf("  %02d / %02d  %s", current, total, strings.ToUpper(currentName))
-
-	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7057D9")).Padding(0, 1).Render(" SPILLWAY ")
-	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF")).Render("Local model gateway")
-	tagline := mutedStyle.Render("One setup. Your providers. Your machine.")
-	badge := lipgloss.NewStyle().Bold(true).Foreground(cyan).Background(lipgloss.Color("#172B35")).Padding(0, 1).Render(" OFFLINE SETUP ")
-	brandBlock := lipgloss.JoinVertical(lipgloss.Left, brand, tagline)
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brandBlock, strings.Repeat(" ", 2), badge)
-	if m.width < 88 {
-		headerRow = lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brand),
-			mutedStyle.Render("Private setup · no provider calls"),
-		)
-	}
-	headerWidth := min(m.width-8, 124)
-	header := lipgloss.NewStyle().Width(headerWidth).Background(lipgloss.Color("#171827")).Padding(1, 2).Render(headerRow)
-	progressLine := lipgloss.NewStyle().Width(headerWidth).Padding(0, 2).Render(progress)
-
-	content := m.renderStep(title, active, selected, mutedStyle)
+	content := m.renderStep(styles.Title, styles.Active, styles.Selected, styles.MutedText)
 	if m.error != "" {
 		errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9D9D")).Bold(true)
 		errorDetail := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD2D2"))
 		content += "\n\n" + errorStyle.Render("!  ACTION NEEDED") + "\n" + errorDetail.Render(m.error)
 	}
-	var layout string
-	if m.width >= 112 {
-		mainWidth := min(78, m.width-48)
-		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(accent)
-		sidePanel := lipgloss.NewStyle().Width(27).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#48516A"))
-		layout = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel.Render(content), "  ", sidePanel.Render(m.renderSummary(cyanStyle, title, mutedStyle, selected)))
-	} else {
-		mainWidth := min(92, m.width-10)
-		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(accent)
-		layout = mainPanel.Render(content)
-	}
 	helpText := m.helpText()
 	if m.width < 124 {
 		helpText = m.compactHelpText()
 	}
-	help := lipgloss.NewStyle().Foreground(lipgloss.Color("#D9D4EE")).Background(lipgloss.Color("#242337")).Padding(0, 1).Render(helpText)
-	body := lipgloss.JoinVertical(lipgloss.Left, header, progressLine, layout, help)
-	view := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, body)
+	view := RenderFrame(Frame{
+		Width: m.width, Height: m.height, Current: current, Total: total, Step: currentName,
+		Content: content,
+		Summary: m.renderSummary(styles.CyanText, styles.Title, styles.MutedText, styles.Selected),
+		Help:    helpText,
+		Badge:   "OFFLINE SETUP",
+	})
 	v := tea.NewView(view)
 	v.AltScreen = !m.canceled && !m.done
 	if m.step == stepProviders && m.editingAlias {
