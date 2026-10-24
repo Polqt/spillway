@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/spf13/cobra"
@@ -112,27 +110,7 @@ func currentVersion() string {
 }
 
 func versionLine() string {
-	fields := []string{"spillway", currentVersion()}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		settings := make(map[string]string, len(info.Settings))
-		for _, setting := range info.Settings {
-			settings[setting.Key] = setting.Value
-		}
-		if revision := settings["vcs.revision"]; revision != "" {
-			if len(revision) > 7 {
-				revision = revision[:7]
-			}
-			fields = append(fields, "commit", revision)
-		}
-		if built, err := time.Parse(time.RFC3339, settings["vcs.time"]); err == nil {
-			fields = append(fields, "built", built.Format(time.RFC3339))
-		}
-		if settings["vcs.modified"] == "true" {
-			fields = append(fields, "[modified]")
-		}
-	}
-	fields = append(fields, runtime.Version(), runtime.GOOS+"/"+runtime.GOARCH)
-	return strings.Join(fields, " ")
+	return currentVersion()
 }
 
 // versionDetails returns one "key: value" line each for the executable, the

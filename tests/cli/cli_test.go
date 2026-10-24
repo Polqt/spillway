@@ -28,8 +28,8 @@ func TestRun_Version(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %q", code, stderr.String())
 	}
-	if !strings.HasPrefix(stdout.String(), "spillway dev ") {
-		t.Errorf("stdout = %q, want prefix %q", stdout.String(), "spillway dev ")
+	if got, want := stdout.String(), "dev\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want empty", stderr.String())

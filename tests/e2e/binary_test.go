@@ -118,7 +118,7 @@ func TestBinary_MockSpilloverMatchesDocs(t *testing.T) {
 	}
 }
 
-func TestBinary_VersionShowsCommit(t *testing.T) {
+func TestBinary_VersionShowsOnlyVersionByDefault(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -130,21 +130,8 @@ func TestBinary_VersionShowsCommit(t *testing.T) {
 		t.Fatalf("spillway version: %v\n%s", err, output)
 	}
 	line := strings.TrimSpace(string(output))
-	commit := exec.CommandContext(t.Context(), "git", "rev-parse", "--short", "HEAD") //nolint:gosec // The git arguments are fixed.
-	commit.Dir = root
-	shortSHA, gitErr := commit.Output()
-	if gitErr == nil {
-		if !strings.Contains(line, " commit "+strings.TrimSpace(string(shortSHA))+" ") {
-			t.Errorf("version output = %q, want current commit %q", line, strings.TrimSpace(string(shortSHA)))
-		}
-	}
-	format := `^spillway \S+`
-	if gitErr == nil {
-		format += ` commit [0-9a-f]+ built \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ(?: \[modified\])?`
-	}
-	format += ` ` + regexp.QuoteMeta(runtime.Version()+" "+runtime.GOOS+"/"+runtime.GOARCH) + `$`
-	if !regexp.MustCompile(format).MatchString(line) {
-		t.Fatalf("version output = %q, want ticket 06 version field format", line)
+	if want := binaryVersion; line != want {
+		t.Fatalf("version output = %q, want %q", line, want)
 	}
 }
 
@@ -153,8 +140,8 @@ func TestBinary_LdflagsVersionIsPrinted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spillway version: %v\n%s", err, output)
 	}
-	if !strings.HasPrefix(string(output), "spillway "+binaryVersion+" ") {
-		t.Errorf("version output = %q, want prefix %q", output, "spillway "+binaryVersion+" ")
+	if got, want := strings.TrimSpace(string(output)), binaryVersion; got != want {
+		t.Errorf("version output = %q, want %q", got, want)
 	}
 }
 
