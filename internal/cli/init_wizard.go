@@ -10,6 +10,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/Polqt/spillway/internal/cli/initui"
+	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 )
 
@@ -39,7 +40,7 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 		for _, name := range draft.Attested {
 			attested[name] = true
 		}
-		generated, envStatuses, err := buildInitConfig(draft.Providers, attested, draft.Models, draft.Store, lookupEnv)
+		generated, envStatuses, err := buildInitConfigWithGeminiAliases(draft.Providers, attested, draft.Models, draft.Store, draft.GeminiAliases, lookupEnv)
 		if err != nil {
 			return initui.Prepared{}, err
 		}
@@ -55,6 +56,9 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 		} else {
 			success += "\nDashboard: disabled. Rerun init with `-store` to enable local history and login."
 		}
+		if len(draft.GeminiAliases) > 0 {
+			success += "\nAdditional Gemini projects are configured for direct model selection only; they are not Gemini fallbacks in `auto`."
+		}
 		return initui.Prepared{
 			Preview: preview,
 			Success: success,
@@ -63,7 +67,13 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 			},
 		}, nil
 	}
-	result, err := initui.Run(ctx, initui.Options{ConfigPath: configPath, Providers: options, ValidatePath: validateNewConfigPath, Prepare: prepare}, stdin, stdout)
+	result, err := initui.Run(ctx, initui.Options{
+		ConfigPath:          configPath,
+		Providers:           options,
+		ValidatePath:        validateNewConfigPath,
+		ValidateGeminiAlias: validateGeminiAlias,
+		Prepare:             prepare,
+	}, stdin, stdout)
 	if err != nil {
 		if ctx.Err() != nil || strings.Contains(err.Error(), "canceled") {
 			reportInitError(stderr, "Setup was cancelled", "No config file was created.", "Run `spillway init` when you're ready to continue.")
@@ -83,6 +93,13 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 		return 1
 	}
 	return 0
+}
+
+func validateGeminiAlias(alias string) error {
+	if !config.ValidProviderInstanceName(alias) || alias == "free" {
+		return fmt.Errorf("use a short alias matching [a-z][a-z0-9-]{0,31}, except reserved names such as free; do not use a Gmail address or project identifier")
+	}
+	return nil
 }
 
 func isInitWizardTerminal(stdin io.Reader, stdout io.Writer) bool {

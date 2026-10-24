@@ -3,8 +3,10 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,5 +70,40 @@ func TestInitWizardCancellationDoesNotSave(t *testing.T) {
 	}
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("config exists after cancel: %v", statErr)
+	}
+}
+
+func TestInitWizardAddsNamedGeminiProject(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	var draft initui.Draft
+	prepare := func(value initui.Draft) (initui.Prepared, error) {
+		draft = value
+		return initui.Prepared{
+			Preview: "providers:\n  research:\n    api_key: \"${GEMINI_RESEARCH_API_KEY}\"",
+			Success: "Setup complete",
+			Save:    func(context.Context) error { return nil },
+		}, nil
+	}
+	keys := "\r j\rresearch\rj\r j\rj\rj\rj\r\r\r"
+	_, err := initui.Run(context.Background(), initui.Options{
+		ConfigPath: path,
+		Providers:  []initui.Provider{{Name: "gemini", SuggestedModel: "gemini-2.5-flash", FreeTierAttestable: true}},
+		ValidateGeminiAlias: func(alias string) error {
+			if alias != "research" {
+				return fmt.Errorf("unexpected alias %q", alias)
+			}
+			return nil
+		},
+		Prepare: prepare,
+	}, strings.NewReader(keys), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !slices.Contains(draft.GeminiAliases, "research") {
+		t.Fatalf("Draft.GeminiAliases = %v; want research", draft.GeminiAliases)
+	}
+	if got := initui.GeminiAliasKeyEnv(draft.GeminiAliases[0]); got != "GEMINI_RESEARCH_API_KEY" {
+		t.Errorf("GeminiAliasKeyEnv() = %q", got)
 	}
 }

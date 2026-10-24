@@ -18,6 +18,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	charmLog "charm.land/log/v2"
+	"github.com/Polqt/spillway/internal/cli/initui"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	glowui "github.com/charmbracelet/glow/v2/ui"
@@ -643,6 +644,29 @@ func eligibleModels(selected []string, attested map[string]bool) []string {
 }
 
 func buildInitConfig(selected []string, attested map[string]bool, models []string, storeEnabled bool, lookupEnv func(string) (string, bool)) ([]byte, []string, error) {
+	return buildInitConfigWithGeminiAliases(selected, attested, models, storeEnabled, nil, lookupEnv)
+}
+
+func buildInitConfigWithGeminiAliases(selected []string, attested map[string]bool, models []string, storeEnabled bool, aliases []string, lookupEnv func(string) (string, bool)) ([]byte, []string, error) {
+	if len(aliases) > 0 && !slices.Contains(selected, "gemini") {
+		return nil, nil, fmt.Errorf("additional Gemini projects require the gemini provider")
+	}
+	if len(aliases) > 0 && len(models) == 0 {
+		return nil, nil, fmt.Errorf("select at least one automatic model before adding direct Gemini projects")
+	}
+	seenAliases := make(map[string]bool, len(aliases))
+	for _, alias := range aliases {
+		if !config.ValidProviderInstanceName(alias) || alias == "free" || slices.Contains(selected, alias) || seenAliases[alias] {
+			return nil, nil, fmt.Errorf("invalid or duplicate Gemini project alias %q", alias)
+		}
+		seenAliases[alias] = true
+	}
+	for _, model := range models {
+		instance, _, _ := strings.Cut(model, "/")
+		if seenAliases[instance] {
+			return nil, nil, fmt.Errorf("additional Gemini project %q cannot be added to automatic routing", instance)
+		}
+	}
 	localKey, err := generateLocalKey()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate local key: %w", err)
@@ -691,6 +715,23 @@ func buildInitConfig(selected []string, attested map[string]bool, models []strin
 			out.WriteString(": {}\n")
 		}
 	}
+	for _, alias := range aliases {
+		keyEnv := initui.GeminiAliasKeyEnv(alias)
+		out.WriteString("  ")
+		out.WriteString(alias)
+		out.WriteString(":\n    type: gemini\n    api_key: \"${")
+		out.WriteString(keyEnv)
+		out.WriteString("}\"\n")
+		ok := false
+		if lookupEnv != nil {
+			_, ok = lookupEnv(keyEnv)
+		}
+		label := "not set"
+		if ok {
+			label = "set"
+		}
+		statuses = append(statuses, keyEnv+": "+label)
+	}
 	if len(models) > 0 {
 		out.WriteString("# Suggested model IDs may be outdated; check current provider documentation.\n")
 		out.WriteString("tiers:\n  free:\n    models:\n")
@@ -698,6 +739,18 @@ func buildInitConfig(selected []string, attested map[string]bool, models []strin
 			out.WriteString("      - ")
 			out.WriteString(model)
 			out.WriteString("\n")
+		}
+		if len(aliases) > 0 {
+			preset, _ := providers.LookupPreset("gemini")
+			for _, alias := range aliases {
+				out.WriteString("  ")
+				out.WriteString(alias)
+				out.WriteString(":\n    allow_spend: true\n    models:\n      - ")
+				out.WriteString(alias)
+				out.WriteString("/")
+				out.WriteString(preset.SuggestedModel)
+				out.WriteString("\n")
+			}
 		}
 		out.WriteString("router:\n  auto:\n    - free\n")
 	}

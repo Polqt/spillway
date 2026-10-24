@@ -20,11 +20,12 @@ type Provider struct {
 }
 
 type Draft struct {
-	ConfigPath string
-	Providers  []string
-	Attested   []string
-	Models     []string
-	Store      bool
+	ConfigPath    string
+	Providers     []string
+	GeminiAliases []string
+	Attested      []string
+	Models        []string
+	Store         bool
 }
 
 type Prepared struct {
@@ -36,15 +37,21 @@ type Prepared struct {
 type PrepareFunc func(Draft) (Prepared, error)
 
 type Options struct {
-	ConfigPath   string
-	Providers    []Provider
-	ValidatePath func(string) error
-	Prepare      PrepareFunc
+	ConfigPath          string
+	Providers           []Provider
+	ValidatePath        func(string) error
+	ValidateGeminiAlias func(string) error
+	Prepare             PrepareFunc
 }
 
 type Result struct {
 	Draft   Draft
 	Success string
+}
+
+// GeminiAliasKeyEnv returns the environment variable name for a Gemini alias.
+func GeminiAliasKeyEnv(alias string) string {
+	return "GEMINI_" + strings.ToUpper(strings.ReplaceAll(alias, "-", "_")) + "_API_KEY"
 }
 
 type step int
@@ -68,6 +75,8 @@ type model struct {
 	height        int
 	cursor        int
 	search        textinput.Model
+	aliasInput    textinput.Model
+	editingAlias  bool
 	prepared      Prepared
 	error         string
 	modelsVisited bool
@@ -87,8 +96,12 @@ func Run(ctx context.Context, options Options, input io.Reader, output io.Writer
 	search.Prompt = "/ "
 	search.SetValue(options.ConfigPath)
 	search.Focus()
+	aliasInput := textinput.New()
+	aliasInput.Placeholder = "gemini-work"
+	aliasInput.Prompt = "Project alias: "
+	aliasInput.CharLimit = 32
 	draft := Draft{ConfigPath: options.ConfigPath, Providers: []string{"mock"}}
-	m := model{ctx: ctx, options: options, draft: draft, step: stepPath, search: search}
+	m := model{ctx: ctx, options: options, draft: draft, step: stepPath, search: search, aliasInput: aliasInput}
 	program := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output))
 	done := make(chan struct{})
 	defer close(done)
@@ -120,10 +133,14 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.search.SetWidth(max(10, m.width-22))
+		m.aliasInput.SetWidth(max(10, m.width-22))
 		return m, nil
 	case tea.KeyPressMsg:
 		m.error = ""
 		key := msg.String()
+		if m.step == stepProviders && m.editingAlias {
+			return m.updateGeminiAlias(msg)
+		}
 		if key == "ctrl+c" || key == "esc" {
 			if m.step == stepSuccess {
 				m.done = true
@@ -210,6 +227,15 @@ func (m *model) activate() {
 		if m.cursor < len(m.options.Providers) {
 			name := m.options.Providers[m.cursor].Name
 			m.draft.Providers = toggle(m.draft.Providers, name)
+			if !m.hasGeminiAliasAction() {
+				m.draft.GeminiAliases = nil
+			}
+			return
+		}
+		if m.hasGeminiAliasAction() && m.cursor == m.geminiAliasActionIndex() {
+			m.editingAlias = true
+			m.aliasInput.SetValue("")
+			m.aliasInput.Focus()
 			return
 		}
 		if len(m.draft.Providers) == 0 {
@@ -286,6 +312,61 @@ func (m *model) setModels() {
 	m.draft.Models = models
 }
 
+func (m model) hasGeminiAliasAction() bool {
+	return slices.Contains(m.draft.Providers, "gemini")
+}
+
+func (m model) geminiAliasActionIndex() int {
+	return len(m.options.Providers)
+}
+
+func (m model) providerContinueIndex() int {
+	index := len(m.options.Providers)
+	if m.hasGeminiAliasAction() {
+		index++
+	}
+	return index
+}
+
+func (m model) updateGeminiAlias(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
+		m.editingAlias = false
+		m.aliasInput.Blur()
+		return m, nil
+	case "enter":
+		alias := strings.TrimSpace(m.aliasInput.Value())
+		if alias == "" {
+			m.error = "Enter a short alias for the Gemini project."
+			return m, nil
+		}
+		if m.options.ValidateGeminiAlias != nil {
+			if err := m.options.ValidateGeminiAlias(alias); err != nil {
+				m.error = err.Error()
+				return m, nil
+			}
+		}
+		for _, provider := range m.options.Providers {
+			if alias == provider.Name {
+				m.error = "That alias is reserved for a provider name. Choose another alias."
+				return m, nil
+			}
+		}
+		if slices.Contains(m.draft.GeminiAliases, alias) {
+			m.error = "That Gemini project alias is already in use. Choose another alias."
+			return m, nil
+		}
+		m.draft.GeminiAliases = append(m.draft.GeminiAliases, alias)
+		m.editingAlias = false
+		m.aliasInput.Blur()
+		m.cursor = m.geminiAliasActionIndex()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.aliasInput, cmd = m.aliasInput.Update(msg)
+	return m, cmd
+}
+
 func (m model) save() (tea.Model, tea.Cmd) {
 	if m.prepared.Save == nil {
 		m.error = "The config could not be prepared. Go back and check your selections."
@@ -334,7 +415,7 @@ func (m *model) back() {
 	m.cursor = 0
 }
 
-func (m model) toggle() {
+func (m *model) toggle() {
 	if m.cursor >= m.itemCount() {
 		return
 	}
@@ -343,6 +424,9 @@ func (m model) toggle() {
 		if m.cursor < len(m.options.Providers) {
 			name := m.options.Providers[m.cursor].Name
 			m.draft.Providers = toggle(m.draft.Providers, name)
+			if !m.hasGeminiAliasAction() {
+				m.draft.GeminiAliases = nil
+			}
 		}
 	case stepAttestations:
 		items := m.attestable()
@@ -362,7 +446,11 @@ func (m model) toggle() {
 func (m model) itemCount() int {
 	switch m.step {
 	case stepProviders:
-		return len(m.options.Providers)
+		count := len(m.options.Providers)
+		if m.hasGeminiAliasAction() {
+			count++
+		}
+		return count
 	case stepAttestations:
 		return len(m.attestable())
 	case stepModels:
@@ -492,7 +580,9 @@ func (m model) View() tea.View {
 	view := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, body)
 	v := tea.NewView(view)
 	v.AltScreen = !m.canceled && !m.done
-	if m.step == stepPath || (m.step == stepModels && m.search.Focused()) {
+	if m.step == stepProviders && m.editingAlias {
+		v.Cursor = m.aliasInput.Cursor()
+	} else if m.step == stepPath || (m.step == stepModels && m.search.Focused()) {
 		v.Cursor = m.search.Cursor()
 	}
 	return v
@@ -509,6 +599,12 @@ func (m model) renderSummary(section, title, muted, selected lipgloss.Style) str
 	} else {
 		for _, name := range m.draft.Providers {
 			b.WriteString("\n" + selected.Render("• "+name))
+		}
+	}
+	if len(m.draft.GeminiAliases) > 0 {
+		b.WriteString("\n\n" + title.Render("Direct Gemini projects"))
+		for _, alias := range m.draft.GeminiAliases {
+			b.WriteString("\n" + selected.Render("• "+alias))
 		}
 	}
 	b.WriteString("\n\n" + title.Render("Auto models"))
@@ -545,7 +641,7 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 	case stepProviders:
 		b.WriteString(title.Render("Choose your providers"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Select every provider you already have access to. Mock is ready for an offline first run."))
+		b.WriteString(muted.Render("Select providers you already use. Mock works offline; keys stay in environment variables."))
 		b.WriteString("\n\n")
 		for i, item := range m.options.Providers {
 			prefix := "  "
@@ -563,7 +659,25 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 			line := prefix + mark + "  " + name + "  " + muted.Render(item.Hint)
 			b.WriteString(line + "\n")
 		}
-		b.WriteString("\n" + m.continueLabel(active, selected, len(m.options.Providers)))
+		if m.hasGeminiAliasAction() {
+			b.WriteString("\n")
+			if m.editingAlias {
+				b.WriteString(m.aliasInput.View())
+			} else {
+				prefix := "  "
+				if m.cursor == m.geminiAliasActionIndex() {
+					prefix = active.Render("› ")
+				}
+				b.WriteString(prefix + "+ Add a named Gemini project\n")
+				for _, alias := range m.draft.GeminiAliases {
+					b.WriteString("    " + alias + " → " + GeminiAliasKeyEnv(alias) + " · direct only, may incur charges\n")
+				}
+				if len(m.draft.GeminiAliases) > 0 {
+					b.WriteString(muted.Render("    Direct models are excluded from automatic routing."))
+				}
+			}
+		}
+		b.WriteString("\n" + m.continueLabel(active, selected, m.providerContinueIndex()))
 	case stepAttestations:
 		b.WriteString(title.Render("Confirm account eligibility"))
 		b.WriteString("\n")
@@ -663,6 +777,9 @@ func (m model) helpText() string {
 	if m.step == stepPath {
 		return "Type a path   Enter continue   Esc cancel"
 	}
+	if m.step == stepProviders && m.editingAlias {
+		return "Type a short alias   Enter add   ←/Esc back   Ctrl+C cancel setup"
+	}
 	if m.step == stepSuccess {
 		return "Enter finish"
 	}
@@ -681,6 +798,11 @@ func (m model) compactHelpText() string {
 		return "Enter save  ← back  Esc cancel"
 	case stepPath:
 		return "Type path  Enter next  Esc cancel"
+	case stepProviders:
+		if m.editingAlias {
+			return "Type alias  Enter add  ←/Esc back  Ctrl+C cancel"
+		}
+		return "↑↓ move  Space toggle provider  Enter choose  ← back  Esc cancel"
 	case stepSuccess:
 		return "Enter finish"
 	case stepModels:

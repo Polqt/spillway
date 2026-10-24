@@ -24,6 +24,24 @@ Use an explicit model reference such as `gemini-research/gemini-2.5-flash` to se
 Virtual routes reject two distinct instances of one provider service, and no failure automatically rotates to another instance of that service.
 The gateway reads configuration at startup; restart it after a config change.
 
+During `spillway init`, select Gemini and choose `Add a named Gemini project` to configure extra project aliases.
+Init makes each alias directly selectable as `<alias>/gemini-2.5-flash`.
+It is excluded from automatic routing and its tier allows spending, so an explicit request may incur provider charges.
+This is for separately authorized workload isolation, never quota or rate-limit evasion.
+A Gmail address is not an API key or a safe alias.
+
+Spillway does not accept provider keys as command-line arguments such as `spillway groq="..."`; argument text may be stored in shell history or exposed to process inspection.
+In PowerShell, enter a key into a hidden prompt and keep it in the current terminal session:
+
+```powershell
+$env:GROQ_API_KEY = [Net.NetworkCredential]::new("", (Read-Host "Groq API key" -AsSecureString)).Password
+$env:GEMINI_API_KEY = [Net.NetworkCredential]::new("", (Read-Host "Gemini API key" -AsSecureString)).Password
+$env:GEMINI_RESEARCH_API_KEY = [Net.NetworkCredential]::new("", (Read-Host "Gemini research project API key" -AsSecureString)).Password
+```
+
+Set only the variables used by your config.
+Then run `spillway check -config <path>` and `spillway serve -config <path>` in that same PowerShell session.
+
 ## Named provider instances
 
 Each `providers.<instance>` entry can use `type` to identify a supported provider service.
