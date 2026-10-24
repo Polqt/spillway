@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "tui-design": {
+      "source": "gfargo/tui-design-skill",
+      "sourceType": "github",
+      "skillPath": "plugins/tui-design/skills/tui-design/SKILL.md",
+      "computedHash": "1547d2c2feda7f502148a671cb532f12079af10cbfd88703711824096a88b3ba"
+    }
+  }
+}
