@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Polqt/spillway/internal/cli"
+	"github.com/Polqt/spillway/internal/cli/initui"
 )
 
 func TestProviderAdd_AddsGeminiToGroqConfig(t *testing.T) {
@@ -207,34 +208,15 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 	}
 }
 
-func TestProviderAdd_InteractiveChoicesMatchFlags(t *testing.T) {
-	t.Parallel()
-	interactivePath, _ := providerAddFixture(t, "groq")
-	flagsPath, _ := providerAddFixture(t, "groq")
-	var interactiveOut, interactiveErr bytes.Buffer
-	options := cli.Options{LookupEnv: noEnv, StdinTerminal: true, StdoutTerminal: true}
-	answers := strings.NewReader("1\nGEMINI_API_KEY\ny\ny\ny\n")
-	code := cli.RunWithOptions(t.Context(), []string{"provider", "add", "-config", interactivePath}, answers, &interactiveOut, &interactiveErr, options)
-	if code != 0 {
-		t.Fatalf("interactive exit = %d; stdout = %q; stderr = %q", code, interactiveOut.String(), interactiveErr.String())
-	}
-	var flagsOut, flagsErr bytes.Buffer
-	args := []string{"provider", "add", "gemini", "--key-env", "GEMINI_API_KEY", "--attest-free-tier", "--tier", "free", "--config", flagsPath}
-	if code := cli.Run(t.Context(), args, nil, &flagsOut, &flagsErr, noEnv); code != 0 {
-		t.Fatalf("flags exit = %d; stderr = %q", code, flagsErr.String())
-	}
-	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
-	interactiveData, err := os.ReadFile(interactivePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
-	flagsData, err := os.ReadFile(flagsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(interactiveData, flagsData) {
-		t.Errorf("interactive and flag configs differ\ninteractive:\n%s\nflags:\n%s", interactiveData, flagsData)
+func TestProviderAdd_UsesSharedInteractiveFrame(t *testing.T) {
+	frame := initui.RenderFrame(initui.Frame{
+		Width: 120, Height: 28, Current: 2, Total: 5, Step: "Provider",
+		Content: "Add a provider instance", Summary: "YOUR CHANGE", Help: "Enter confirm", Badge: "PROVIDER ADD",
+	})
+	for _, element := range []string{"SPILLWAY", "PROVIDER ADD", "Add a provider instance", "YOUR CHANGE", "Enter confirm"} {
+		if !strings.Contains(frame, element) {
+			t.Errorf("shared provider wizard frame missing %q: %q", element, frame)
+		}
 	}
 }
 

@@ -1,4 +1,4 @@
-package cli
+package eval
 
 import (
 	"bufio"
@@ -19,7 +19,8 @@ import (
 	"github.com/Polqt/spillway/internal/store"
 )
 
-func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
+// Run executes a paired routing evaluation.
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	datasetPath := fs.String("dataset", "", "versioned prompt set JSON path")
@@ -111,7 +112,8 @@ func evalCommand(ctx context.Context, args []string, stdout, stderr io.Writer, l
 	return 0
 }
 
-func evalScoreCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// RunScore summarizes a completed blinded evaluation score sheet.
+func RunScore(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval-score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
@@ -240,7 +242,8 @@ func writeQualitySummary(ctx context.Context, directory, path string, metrics []
 	return nil
 }
 
-func evalReportCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// RunReport compares evaluation artifacts and score sheets against the routing gates.
+func RunReport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval-report", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runDir := fs.String("run", "", "evaluation artifact directory")
@@ -525,4 +528,8 @@ func loadEvaluationPrices(ctx context.Context, path string) (map[string]evaluati
 		return nil, errors.New("prices must be a JSON object")
 	}
 	return prices, nil
+}
+
+func report(stderr io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(stderr, format, args...)
 }
