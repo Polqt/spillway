@@ -112,6 +112,7 @@ func responseInputMessages(raw json.RawMessage) ([]map[string]any, error) {
 	for _, item := range items {
 		var entry struct {
 			Type      string          `json:"type"`
+			ID        string          `json:"id"` // Responses item IDs are not used by the stateless chat adapter.
 			Role      string          `json:"role"`
 			Content   json.RawMessage `json:"content"`
 			CallID    string          `json:"call_id"`
