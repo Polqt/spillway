@@ -22,6 +22,7 @@ type responseCreateRequest struct {
 	Reasoning       json.RawMessage   `json:"reasoning"`
 	Text            json.RawMessage   `json:"text"`
 	Metadata        json.RawMessage   `json:"metadata"`
+	Include         json.RawMessage   `json:"include"` // Accepted for client compatibility; unsupported extra fields are omitted.
 	Background      bool              `json:"background"`
 	Store           *bool             `json:"store"` // Accepted for client compatibility; Spillway does not retain Responses objects.
 }
