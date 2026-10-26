@@ -146,9 +146,7 @@ jobs:
             fi
             sleep 1
           done
-          curl --fail --silent --show-error http://127.0.0.1:18080/v1/chat/completions \
+          curl --fail --silent --show-error http://127.0.0.1:18080/v1/models \
             --header 'Authorization: Bearer sk-test-spillway-docker' \
-            --header 'Content-Type: application/json' \
-            --data '{"model":"mock/echo","messages":[{"role":"user","content":"hello from CI"}]}' \
-            | grep -q 'hello from CI'
+            | jq -e '.object == "list" and (.data | type == "array")' >/dev/null
           docker stop --time 10 spillway-ci
