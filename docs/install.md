@@ -17,7 +17,7 @@ macOS does not include `sha256sum` by default. Use `shasum -a 256 <archive>` and
 On Windows PowerShell, compare the archive's hash with its line in `checksums.txt`:
 
 ```powershell
-Get-FileHash .\spillway_1.1.0_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\spillway_1.0.0_windows_amd64.zip -Algorithm SHA256
 ```
 
 The hash must match exactly. A checksum detects a damaged or substituted download only when `checksums.txt` itself came from a trusted release page.
@@ -25,10 +25,10 @@ The hash must match exactly. A checksum detects a damaged or substituted downloa
 GitHub CLI can verify the artifact's provenance attestation against this repository:
 
 ```sh
-gh attestation verify spillway_1.1.0_linux_amd64.tar.gz -R Polqt/spillway
+gh attestation verify spillway_1.0.0_linux_amd64.tar.gz -R Polqt/spillway
 ```
 
-Use the actual archive filename for your platform. Verification requires a supported GitHub CLI version and network access. Release provenance attestations cover release archives and the image; v1.1.0 does not produce cosign signatures or SBOMs.
+Use the actual archive filename for your platform. Verification requires a supported GitHub CLI version and network access. Release provenance attestations cover release archives and the image; v1.0.0 does not produce cosign signatures or SBOMs.
 
 Extract the archive, place `spillway` on your `PATH`, and run `spillway version`.
 In PowerShell before adding it to `PATH`, run the binary from the extracted folder, for example `.\spillway.exe version`.
@@ -38,12 +38,12 @@ In PowerShell before adding it to `PATH`, run the binary from the extracted fold
 With Go 1.26 or later, clone the release tag and run `go install` from the repository root:
 
 ```sh
-git clone --branch v1.1.0 --depth 1 https://github.com/Polqt/spillway.git
+git clone --branch v1.0.0 --depth 1 https://github.com/Polqt/spillway.git
 cd spillway
 go install ./apps/spillway
 ```
 
-The version-suffixed package form `go install github.com/Polqt/spillway/apps/spillway@v1.1.0` does not work with this repository layout because Go looks for a module and tag rooted at `apps/spillway`.
+The version-suffixed package form `go install github.com/Polqt/spillway/apps/spillway@v1.0.0` does not work with this repository layout because Go looks for a module and tag rooted at `apps/spillway`.
 Cloning the root module tag avoids that lookup and installs the binary into `GOBIN` or `GOPATH/bin`.
 Check the version with `spillway version`.
 Because `go install` does not run the dashboard asset build, it serves the supported fallback dashboard included in the source.
@@ -51,7 +51,7 @@ The fallback dashboard supports onboarding, provider status, the playground and 
 
 ## Install with Docker
 
-The current stable image is `ghcr.io/polqt/spillway:1.1.0`; use a versioned image tag. See [Docker](docker.md) for loopback-only publishing, persistent data and container restrictions.
+The current stable image is `ghcr.io/polqt/spillway:1.0.0`; use a versioned image tag. See [Docker](docker.md) for loopback-only publishing, persistent data and container restrictions.
 
 ## Upgrade and find older copies
 

@@ -14,7 +14,7 @@ docker run --rm --read-only --stop-timeout 10 \
   -p 127.0.0.1:8080:8080 \
   -v "$(pwd)/config.docker.yaml:/etc/spillway/config.yaml:ro" \
   -v spillway-data:/var/lib/spillway \
-  ghcr.io/polqt/spillway:1.1.1
+  ghcr.io/polqt/spillway:1.0.0
 ```
 
 The example config stores the optional SQLite database under `/var/lib/spillway`. The named volume keeps usage history across container replacement. If store and budgets are not enabled, the data volume is not needed. Mount the config read-only and keep the root filesystem read-only. The default graceful shutdown period is 10 seconds; Docker's stop timeout should be at least as long as `server.shutdown_timeout` if you change that setting.
