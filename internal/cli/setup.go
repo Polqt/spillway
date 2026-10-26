@@ -63,7 +63,7 @@ func configureClient(ctx context.Context, client, configPath string, options Opt
 		target = filepath.Join(setup.home, ".claude", "settings.json")
 		err = configureClaude(ctx, setup, target, options)
 	case "codex":
-		dir := setup.home
+		dir := filepath.Join(setup.home, ".codex")
 		if codexHome, ok := options.LookupEnv("CODEX_HOME"); ok && strings.TrimSpace(codexHome) != "" {
 			dir = codexHome
 		}

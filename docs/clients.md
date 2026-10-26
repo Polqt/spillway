@@ -36,6 +36,7 @@ Each setup command updates the client's global configuration and preserves unrel
 Existing files are backed up before an update.
 Then start the gateway with `spillway serve -config <path>` and open the client.
 For example, Codex uses its isolated profile with `codex --profile spillway`.
+The profile is saved under `CODEX_HOME`, or `~/.codex` when that variable is unset.
 
 OpenCode reads its local key from a separate `spillway.key` file in its private config directory.
 Claude Code and Codex invoke `spillway key` when they need the local key.
