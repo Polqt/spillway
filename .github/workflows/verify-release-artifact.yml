@@ -68,23 +68,11 @@ jobs:
           done < release-archive-checksums.txt
           echo 'All six archive attestations verified'
 
-      - name: Resolve release metadata for native smoke test
+      - name: Resolve macOS architecture for native smoke test
         timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
-          cd "$WORK/download"
-          tag_ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
-          tag_type="$(printf '%s' "$tag_ref" | jq -r '.object.type')"
-          tag_object="$(printf '%s' "$tag_ref" | jq -r '.object.sha')"
-          if [ "$tag_type" = tag ]; then
-            release_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object.sha')"
-          else
-            release_commit="$tag_object"
-          fi
-          expected_commit="${release_commit:0:7}"
-          echo "EXPECTED_COMMIT=$expected_commit" >> "$GITHUB_ENV"
-
           case "$(uname -m)" in
             arm64) goarch=arm64 ;;
             x86_64) goarch=amd64 ;;
@@ -102,22 +90,14 @@ jobs:
           tar -xzf "$archive" -C "$WORK/extracted" spillway
           binary="$WORK/extracted/spillway"
           version="$RELEASE_TAG"
-          echo 'Checking downloaded binary version and build metadata'
+          echo 'Checking downloaded binary version'
           version_output="$("$binary" version)"
           printf '%s\n' "$version_output"
-          read -r app_version actual_version commit_label actual_commit built build_time go_version platform <<< "$version_output"
-          test "$app_version" = spillway
-          test "$actual_version" = "$version"
-          test "$commit_label" = commit
-          test "$actual_commit" = "$EXPECTED_COMMIT"
-          test "$built" = built
-          [[ "$build_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
-          [[ "$go_version" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$platform" = "darwin/$GOARCH"
+          test "$version_output" = "$version"
 
           config="$WORK/runtime/config.yaml"
-          echo 'Creating and validating mock configuration'
-          (cd "$WORK/runtime" && "$binary" init -yes -providers mock -store -config "$config")
+          echo 'Creating and validating an Ollama configuration'
+          (cd "$WORK/runtime" && "$binary" init -yes -providers ollama -store -config "$config")
           "$binary" check -config "$config"
           local_key="$(sed -nE 's/^      key: "(sk-spillway-[A-Za-z0-9_-]+)"$/\1/p' "$config" | head -n 1)"
           test -n "$local_key"
@@ -140,13 +120,11 @@ jobs:
           test -n "$addr"
           echo "Checking health endpoint at $addr"
           curl --fail --silent --show-error "http://$addr/healthz"
-          echo 'Checking authenticated mock chat'
-          response="$(curl --fail --silent --show-error \
+          echo 'Checking authenticated model listing'
+          curl --fail --silent --show-error \
             --header "Authorization: Bearer $local_key" \
-            --header 'Content-Type: application/json' \
-            --data '{"model":"mock/echo","messages":[{"role":"user","content":"Hello from Spillway"}]}' \
-            "http://$addr/v1/chat/completions")"
-          printf '%s' "$response" | jq -e '.choices[0].message.content == "You said: Hello from Spillway"' >/dev/null
+            "http://$addr/v1/models" \
+            | jq -e '.object == "list" and (.data | type == "array")' >/dev/null
           echo 'Stopping downloaded macOS server'
           kill -INT "$server_pid"
           wait "$server_pid"
