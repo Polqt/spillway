@@ -236,7 +236,7 @@ func (m helpModel) render() string {
 	}
 	return initui.RenderFrame(initui.Frame{
 		Width: m.width, Height: m.height, Current: current, Total: total,
-		Step: m.title, Content: content, Summary: detail, Help: m.footer(), Badge: "SPILLWAY / TUI",
+		Step: m.title, Content: content, Summary: detail, Help: m.footer(), Badge: "EXPLORER",
 	})
 }
 

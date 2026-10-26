@@ -107,37 +107,35 @@ func RenderFrame(frame Frame) string {
 	progress := styles.Active.Render(strings.Repeat("━", filled)) + muted.Render(strings.Repeat("─", max(0, barWidth-filled)))
 	progress += fmt.Sprintf("  %02d / %02d  %s", current, total, strings.ToUpper(frame.Step))
 
-	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7057D9")).Padding(0, 1).Render(" SPILLWAY ")
-	brand := styles.Title.Render("Local model gateway")
+	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F4F1FF")).Render("∿ spillway")
 	tagline := muted.Render("Your providers. Your machine.")
 	if frame.Badge == "" {
-		frame.Badge = "PRIVATE BY DEFAULT"
+		frame.Badge = "LOCAL · PRIVATE"
 	}
-	badge := lipgloss.NewStyle().Bold(true).Foreground(styles.Cyan).Background(lipgloss.Color("#172B35")).Padding(0, 1).Render(" " + frame.Badge + " ")
-	brandBlock := lipgloss.JoinVertical(lipgloss.Left, brand, tagline)
-	headerRow := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brandBlock, "  ", badge)
+	badge := lipgloss.NewStyle().Bold(true).Foreground(styles.Cyan).Render(strings.ToUpper(frame.Badge))
+	headerRow := lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", tagline, "  ", badge)
 	if width < 88 {
 		headerRow = lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brand),
-			muted.Render("Private by default · local control"),
+			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", badge),
+			tagline,
 		)
 	}
 	headerWidth := min(width-8, 124)
-	header := lipgloss.NewStyle().Width(headerWidth).Background(lipgloss.Color("#171827")).Padding(1, 2).Render(headerRow)
+	header := lipgloss.NewStyle().Width(headerWidth).Padding(1, 2).BorderBottom(true).BorderForeground(lipgloss.Color("#303345")).Render(headerRow)
 	progressLine := lipgloss.NewStyle().Width(headerWidth).Padding(0, 2).Render(progress)
 
 	var layout string
 	if width >= 112 {
 		mainWidth := min(78, width-48)
-		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(styles.Accent)
-		sidePanel := lipgloss.NewStyle().Width(27).Padding(1, 1).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#48516A"))
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).BorderLeft(true).BorderForeground(styles.Accent)
+		sidePanel := lipgloss.NewStyle().Width(27).Padding(1, 1)
 		layout = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel.Render(frame.Content), "  ", sidePanel.Render(frame.Summary))
 	} else {
 		mainWidth := min(92, width-10)
-		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderForeground(styles.Accent)
+		mainPanel := lipgloss.NewStyle().Width(mainWidth).Padding(1, 2).BorderLeft(true).BorderForeground(styles.Accent)
 		layout = mainPanel.Render(frame.Content)
 	}
-	help := lipgloss.NewStyle().Foreground(lipgloss.Color("#D9D4EE")).Background(lipgloss.Color("#242337")).Padding(0, 1).Render(frame.Help)
+	help := lipgloss.NewStyle().Foreground(lipgloss.Color("#D9D4EE")).Padding(0, 1).Render(frame.Help)
 	body := lipgloss.JoinVertical(lipgloss.Left, header, progressLine, layout, help)
 	return lipgloss.Place(width, frame.Height, lipgloss.Center, lipgloss.Top, body)
 }

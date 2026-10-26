@@ -217,9 +217,21 @@ func TestProviderAdd_UsesSharedInteractiveFrame(t *testing.T) {
 		Width: 120, Height: 28, Current: 2, Total: 5, Step: "Provider",
 		Content: "Add a provider instance", Summary: "YOUR CHANGE", Help: "Enter confirm", Badge: "PROVIDER ADD",
 	})
-	for _, element := range []string{"SPILLWAY", "PROVIDER ADD", "Add a provider instance", "YOUR CHANGE", "Enter confirm"} {
+	for _, element := range []string{"spillway", "PROVIDER ADD", "Add a provider instance", "YOUR CHANGE", "Enter confirm"} {
 		if !strings.Contains(frame, element) {
 			t.Errorf("shared provider wizard frame missing %q: %q", element, frame)
+		}
+	}
+}
+
+func TestProviderAdd_FrameUsesSingleColumnOnStandardTerminals(t *testing.T) {
+	for _, width := range []int{80, 60} {
+		frame := initui.RenderFrame(initui.Frame{
+			Width: width, Height: 24, Current: 1, Total: 2, Step: "Provider",
+			Content: "Add a provider instance", Summary: "DETAILS SHOULD MOVE TO DRILL-IN", Help: "Enter confirm",
+		})
+		if !strings.Contains(frame, "Add a provider instance") || strings.Contains(frame, "DETAILS SHOULD MOVE TO DRILL-IN") {
+			t.Errorf("frame at %d columns did not collapse to one pane: %q", width, frame)
 		}
 	}
 }
