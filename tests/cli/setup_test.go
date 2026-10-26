@@ -100,6 +100,35 @@ func TestSetupClientsPreserveSettingsAndAvoidPrintingLocalKey(t *testing.T) {
 	}
 }
 
+func TestSetupCodexUsesDefaultCodexHomeWhenEnvironmentIsUnset(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("server:\n  listen: 127.0.0.1:9099\n  api_keys:\n    - name: default\n      key: sk-test-local\nproviders: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	options := cli.Options{
+		LookupEnv: func(name string) (string, bool) {
+			if name == "USERPROFILE" || name == "HOME" {
+				return home, true
+			}
+			return "", false
+		},
+		Executable: func() (string, error) { return filepath.Join(t.TempDir(), "spillway.exe"), nil },
+	}
+	if code := cli.RunWithOptions(context.Background(), []string{"setup", "codex", "-config", configPath}, nil, &stdout, &stderr, options); code != 0 {
+		t.Fatalf("setup exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	profilePath := filepath.Join(home, ".codex", "spillway.config.toml")
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatalf("Codex profile was not written to its default CODEX_HOME %s: %v", profilePath, err)
+	}
+	if !strings.Contains(stdout.String(), profilePath) {
+		t.Fatalf("setup output does not show Codex profile path %q: %s", profilePath, stdout.String())
+	}
+}
+
 func TestSetupRejectsNonLoopbackServerAddress(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()

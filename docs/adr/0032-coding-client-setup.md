@@ -14,7 +14,7 @@ OpenCode supports file substitution for provider API keys, while Claude Code and
 - `spillway setup opencode`, `spillway setup claude`, and `spillway setup codex` write global, user-level client configuration.
 - OpenCode reads the existing local `default` key from a separate `spillway.key` file in its private configuration directory.
 - Claude Code and Codex call `spillway key -config <path> default` when they need the key.
-- Codex uses an isolated `spillway.config.toml` profile, selected with `codex --profile spillway`, so its main config is not rewritten.
+- Codex uses an isolated `spillway.config.toml` profile under `$CODEX_HOME` (default `~/.codex`), selected with `codex --profile spillway`, so its main config is not rewritten.
 - Setup supports only loopback gateway endpoints and reuses the existing local key; it creates no provider credentials.
 - Existing JSON client settings are merged and backed up before updates.
 
