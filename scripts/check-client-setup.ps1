@@ -5,7 +5,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $configPath = (Resolve-Path -LiteralPath $Config).Path
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) "spillway-client-check-$([guid]::NewGuid().ToString('N'))"
+$tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$tempRoot = [IO.Path]::GetFullPath((Join-Path $tempBase "spillway-client-check-$([guid]::NewGuid().ToString('N'))"))
+if (-not $tempRoot.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The isolated test directory is outside the system temporary directory.'
+}
 $tempHome = Join-Path $tempRoot 'home'
 $spillway = Join-Path $tempRoot 'spillway.exe'
 $oldUserProfile = $env:USERPROFILE
@@ -21,7 +25,7 @@ function Restore-EnvironmentVariable([string]$Name, [AllowNull()][string]$Value)
 }
 
 try {
-    New-Item -ItemType Directory -Path $tempHome -Force | Out-Null
+    New-Item -ItemType Directory -Path $tempHome | Out-Null
 
     Push-Location $repo
     try {
@@ -31,7 +35,7 @@ try {
         & $spillway check -config $configPath *> $null
         if ($LASTEXITCODE -ne 0) { throw 'The selected config did not pass `spillway check`. No config contents were printed.' }
 
-        go test -tags dashboardassets ./tests/cli ./tests/e2e -run 'Test(SetupClientsPreserveSettingsAndAvoidPrintingLocalKey|Binary_(ResponsesAndAnthropicClientsReachFakeProvider|SetupCodingClientsWritesPrivateGlobalConfig))' -count=1
+        go test -tags dashboardassets ./tests/api ./tests/cli ./tests/e2e -run 'Test(Responses_UsesChatExecutionAndReturnsResponsesShape|SetupClientsPreserveSettingsAndAvoidPrintingLocalKey|Binary_(ResponsesAndAnthropicClientsReachFakeProvider|SetupCodingClientsWritesPrivateGlobalConfig))' -count=1
         if ($LASTEXITCODE -ne 0) { throw "Client protocol and setup E2E tests failed (exit $LASTEXITCODE)." }
 
         $env:USERPROFILE = $tempHome
@@ -74,6 +78,10 @@ try {
     Restore-EnvironmentVariable 'HOME' $oldHome
     Restore-EnvironmentVariable 'CODEX_HOME' $oldCodexHome
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        $resolvedTempRoot = [IO.Path]::GetFullPath($tempRoot)
+        if (-not $resolvedTempRoot.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing to remove an isolated test directory outside the system temporary directory.'
+        }
+        Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force
     }
 }

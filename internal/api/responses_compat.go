@@ -22,7 +22,10 @@ type responseCreateRequest struct {
 	Reasoning       json.RawMessage   `json:"reasoning"`
 	Text            json.RawMessage   `json:"text"`
 	Metadata        json.RawMessage   `json:"metadata"`
-	Include         json.RawMessage   `json:"include"` // Accepted for client compatibility; unsupported extra fields are omitted.
+	Include         json.RawMessage   `json:"include"`          // Accepted for client compatibility; unsupported extra fields are omitted.
+	ClientMetadata  json.RawMessage   `json:"client_metadata"`  // Client-specific metadata; not forwarded to providers.
+	PromptCacheKey  string            `json:"prompt_cache_key"` // OpenAI-specific cache hint; not forwarded to providers.
+	ServiceTier     string            `json:"service_tier"`     // OpenAI-specific service tier; not applied to providers.
 	Background      bool              `json:"background"`
 	Store           *bool             `json:"store"` // Accepted for client compatibility; Spillway does not retain Responses objects.
 }
@@ -70,7 +73,8 @@ func responsesRequest(raw []byte) ([]byte, bool, error) {
 	copyRawField(chat, "metadata", request.Metadata)
 	if len(request.Reasoning) > 0 {
 		var reasoning struct {
-			Effort string `json:"effort"`
+			Effort  string `json:"effort"`
+			Summary string `json:"summary"`
 		}
 		if err := decodeClientJSON(request.Reasoning, &reasoning); err != nil {
 			return nil, false, fmt.Errorf("reasoning is invalid: %w", err)
@@ -259,7 +263,8 @@ func responseToolChoice(raw json.RawMessage) (any, error) {
 
 func responseTextFormat(raw json.RawMessage) (map[string]any, error) {
 	var text struct {
-		Format json.RawMessage `json:"format"`
+		Format    json.RawMessage `json:"format"`
+		Verbosity string          `json:"verbosity"`
 	}
 	if err := decodeClientJSON(raw, &text); err != nil {
 		return nil, fmt.Errorf("text is invalid: %w", err)

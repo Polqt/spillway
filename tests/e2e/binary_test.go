@@ -492,7 +492,7 @@ func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
 	baseURL := "http://" + addr
 	waitForBinaryServer(t, baseURL, wait)
 
-	responses := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Say hello"}`, localKey, http.StatusOK, `"object":"response"`)
+	responses := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Say hello","store":false,"include":["reasoning.encrypted_content"],"client_metadata":{"app":"codex"},"prompt_cache_key":"codex-session","service_tier":"priority","parallel_tool_calls":true,"reasoning":{"effort":"medium","summary":"auto"},"text":{"verbosity":"medium"},"tool_choice":"auto"}`, localKey, http.StatusOK, `"object":"response"`)
 	if !strings.Contains(responses, "Hello from the fake provider.") {
 		t.Fatalf("Responses API response = %s", responses)
 	}
