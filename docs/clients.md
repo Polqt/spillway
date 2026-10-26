@@ -18,7 +18,8 @@ spillway model replace gemini/old-model gemini/new-model -config config.yaml -dr
 
 Spillway supports OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Responses at `/v1/responses`, Anthropic Messages at `/v1/messages`, and model listing at `/v1/models`.
 Text, images, tool calls, and streaming are translated to the existing Chat Completions routing path.
-Background Responses, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
+The Responses `store` field is accepted for client compatibility, but Spillway does not retain or retrieve Responses objects.
+Background Responses, `previous_response_id`, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
 
 ## One-command coding client setup
 
