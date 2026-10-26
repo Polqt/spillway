@@ -20,7 +20,7 @@ func TestResponses_UsesChatExecutionAndReturnsResponsesShape(t *testing.T) {
 		got = req
 		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"docs\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)}, nil
 	}
-	body := `{"model":"fake/model","instructions":"Be concise.","store":false,"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use a tool."}]}],"tools":[{"type":"function","name":"lookup","description":"Search docs","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}]}`
+	body := `{"model":"fake/model","instructions":"Be concise.","store":false,"include":["reasoning.encrypted_content"],"client_metadata":{"app":"codex"},"prompt_cache_key":"codex-session","service_tier":"priority","parallel_tool_calls":true,"reasoning":{"effort":"medium","summary":"auto"},"text":{"verbosity":"medium"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use a tool."}]}],"tools":[{"type":"function","name":"lookup","description":"Search docs","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}],"tool_choice":"auto"}`
 	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
