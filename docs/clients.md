@@ -18,7 +18,7 @@ spillway model replace gemini/old-model gemini/new-model -config config.yaml -dr
 
 Spillway supports OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Responses at `/v1/responses`, Anthropic Messages at `/v1/messages`, and model listing at `/v1/models`.
 Text, images, tool calls, and streaming are translated to the existing Chat Completions routing path.
-The Responses `store`, `include`, `client_metadata`, `prompt_cache_key`, `service_tier`, `reasoning.summary`, and `text.verbosity` fields are accepted for client compatibility. Spillway does not retain Responses objects, return provider-specific included fields, or apply client metadata, cache, service-tier, summary, or verbosity hints.
+The Responses `store`, `include`, `client_metadata`, `prompt_cache_key`, `service_tier`, `reasoning.summary`, `text.verbosity`, and input-item `id` fields are accepted for client compatibility. Spillway does not retain Responses objects, return provider-specific included fields, or apply client metadata, cache, service-tier, summary, or verbosity hints; input-item IDs are ignored by the stateless chat adapter.
 Background Responses, `previous_response_id`, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
 
 ## One-command coding client setup
