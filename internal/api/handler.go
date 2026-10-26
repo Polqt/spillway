@@ -169,20 +169,25 @@ func NewHandler(o Options) (http.Handler, error) {
 		providers: o.Providers, logger: o.Logger, timeout: o.ModelsTimeout,
 		virtualModels: planner.VirtualModels(), allowedModels: allowedModels,
 	})
-	mux.Handle("POST /v1/chat/completions", &chatHandler{
+	chat := &chatHandler{
 		providers: o.Providers, bodyReadTimeout: o.BodyReadTimeout,
 		chunkWriteTimeout: o.ChunkWriteTimeout, logger: o.Logger, router: planner,
 		allowedModels: allowedModels,
 		tracker:       o.Tracker, now: o.Now, captureStreamUsage: o.UsageRecorder != nil, pricer: o.CostEstimator, gate: o.BudgetGate,
 		exactCache: o.ExactCache,
-	})
+	}
+	mux.Handle("POST /v1/chat/completions", chat)
+	mux.Handle("POST /v1/messages", &clientCompatibilityHandler{chat: chat, protocol: protocolAnthropic})
+	mux.Handle("POST /v1/responses", &clientCompatibilityHandler{chat: chat, protocol: protocolResponses})
 	// Patterns without a method catch the wrong-method case, because the
 	// stock mux would answer it in plain text.
 	mux.Handle("/healthz", methodNotAllowed("GET, HEAD"))
 	mux.Handle("/v1/models", methodNotAllowed("GET"))
 	mux.Handle("/v1/chat/completions", methodNotAllowed("POST"))
+	mux.Handle("/v1/messages", methodNotAllowed("POST"))
+	mux.Handle("/v1/responses", methodNotAllowed("POST"))
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, "Not found. Spillway serves POST /v1/chat/completions.", typeInvalidRequest, "not_found")
+		writeError(w, http.StatusNotFound, "Not found. See the API documentation for supported endpoints.", typeInvalidRequest, "not_found")
 	})
 
 	var h http.Handler = mux

@@ -1,62 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 const fallbackHTML = await readFile(new URL("../dashboard.html", import.meta.url), "utf8");
 const fallbackCSS = await readFile(new URL("../dashboard.css", import.meta.url), "utf8");
 const fallbackJS = await readFile(new URL("../dashboard_fallback.js", import.meta.url), "utf8");
-
-async function startMockSpillway() {
-  const root = fileURLToPath(new URL("../../../../", import.meta.url));
-  const tempDir = await mkdtemp(join(tmpdir(), "spillway-playground-"));
-  const portListener = createServer();
-  await new Promise((resolve, reject) => {
-    portListener.once("error", reject);
-    portListener.listen(0, "127.0.0.1", resolve);
-  });
-  const { port } = portListener.address();
-  await new Promise((resolve, reject) => portListener.close((error) => error ? reject(error) : resolve()));
-
-  const example = await readFile(join(root, "examples", "config.mock.yaml"), "utf8");
-  const databasePath = join(tempDir, "usage.db").replaceAll("\\", "/");
-  const configPath = join(tempDir, "config.yaml");
-  await writeFile(configPath, example
-    .replace('listen: "127.0.0.1:8080"', `listen: "127.0.0.1:${port}"`)
-    .replace("path: ./spillway-mock.db", `path: ${databasePath}`), "utf8");
-
-  const binaryPath = join(tempDir, process.platform === "win32" ? "spillway.exe" : "spillway");
-  execFileSync("go", ["build", "-o", binaryPath, "./apps/spillway"], {
-    cwd: root,
-    env: { ...process.env, CGO_ENABLED: "0" },
-    stdio: "pipe",
-  });
-  const processHandle = spawn(binaryPath, ["serve", "-config", configPath], { cwd: tempDir, stdio: "ignore" });
-  const baseURL = `http://127.0.0.1:${port}`;
-  await expect.poll(async () => {
-    try {
-      return (await fetch(`${baseURL}/healthz`)).status;
-    } catch {
-      return 0;
-    }
-  }, { timeout: 30000 }).toBe(200);
-
-  return {
-    baseURL,
-    async close() {
-      if (processHandle.exitCode === null) {
-        await new Promise((resolve) => {
-          processHandle.once("exit", resolve);
-          processHandle.kill();
-        });
-      }
-      await rm(tempDir, { recursive: true, force: true });
-    },
-  };
-}
 
 async function connectDashboard(page, calls, { build = "embedded", models = [{ id: "mock/paid" }, { id: "mock/echo" }], dashboardKey = "sk-test-dashboard" } = {}) {
   if (build === "fallback") {
@@ -128,37 +75,6 @@ for (const build of ["embedded", "fallback"]) {
     expect(curl).not.toContain("sk-test-dashboard");
   });
 }
-
-test("mock dead tier exhaustion reaches both playground builds with candidate reasons", async ({ browser }) => {
-  const mock = await startMockSpillway();
-  try {
-    for (const build of ["embedded", "fallback"]) {
-      const page = await browser.newPage();
-      await page.route("**/v1/**", async (route) => {
-        const response = await route.fetch({
-          url: `${mock.baseURL}${new URL(route.request().url()).pathname}`,
-        });
-        await route.fulfill({ response });
-      });
-      await connectDashboard(page, [], {
-        build,
-        models: null,
-        dashboardKey: "sk-test-spillway-dashboard",
-      });
-      await page.getByLabel("Model").selectOption("spillway/dead");
-      await page.getByLabel("Prompt").fill("real mock dead tier exhaustion");
-      await page.getByRole("button", { name: "Send request" }).click();
-      await expect(page.getByRole("alert")).toContainText('No candidate in tier "dead" can serve this request');
-      const candidates = page.getByRole("list", { name: "Exhausted candidates" });
-      await expect(candidates.getByRole("listitem").filter({ hasText: "mock/rate-limited" })).toContainText("rate limited");
-      await expect(candidates.getByRole("listitem").filter({ hasText: "mock/unavailable" })).toContainText("unavailable");
-      await expect(page.getByLabel("Routing explanation")).toContainText("tier dead; exhausted (2 eligible)");
-      await page.close();
-    }
-  } finally {
-    await mock.close();
-  }
-});
 
 for (const build of ["embedded", "fallback"]) test(`${build} request playground sends an explicit non-streaming mock request and keeps its text private`, async ({ page }) => {
   const calls = [];

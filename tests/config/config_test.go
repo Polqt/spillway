@@ -26,7 +26,7 @@ server:
     - name: demo
       key: sk-test-local-ci
 providers:
-  mock: {}
+  ollama: {}
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -37,8 +37,8 @@ providers:
 	if len(cfg.Server.APIKeys) != 1 || cfg.Server.APIKeys[0].Name != "demo" || cfg.Server.APIKeys[0].Key.Reveal() != localKeyCI {
 		t.Errorf("APIKeys = %+v, want one key named demo", cfg.Server.APIKeys)
 	}
-	if _, ok := cfg.Providers["mock"]; !ok || len(cfg.Providers) != 1 {
-		t.Errorf("Providers = %v, want only mock", cfg.Providers)
+	if _, ok := cfg.Providers["ollama"]; !ok || len(cfg.Providers) != 1 {
+		t.Errorf("Providers = %v, want only ollama", cfg.Providers)
 	}
 }
 
@@ -310,7 +310,7 @@ func errString(err error) string {
 
 func TestParse_DashboardLocalKey(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: true}]\nproviders:\n  mock: {}\n"))
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: true}]\nproviders:\n  ollama: {}\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestParse_DashboardLocalKey(t *testing.T) {
 
 func TestParse_DashboardFlagMustBeBoolean(t *testing.T) {
 	t.Parallel()
-	_, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: yes}]\nproviders:\n  mock: {}\n"))
+	_, err := config.Parse([]byte("server:\n  api_keys: [{name: admin, key: sk-test-local-ci, dashboard: yes}]\nproviders:\n  ollama: {}\n"))
 	if err == nil || !strings.Contains(err.Error(), "server.api_keys[0].dashboard") {
 		t.Fatalf("Parse error = %v, want dashboard boolean validation", err)
 	}
@@ -340,7 +340,7 @@ func TestParse_DashboardFlagMustBeBoolean(t *testing.T) {
 func TestParse_StoreConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "usage.db")
-	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: " + path + "\n"))
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\nstore:\n  path: " + path + "\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestParse_StoreConfig(t *testing.T) {
 
 func TestParse_ShutdownTimeoutBounds(t *testing.T) {
 	t.Parallel()
-	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n"
 	cfg, err := config.Parse([]byte(base))
 	if err != nil {
 		t.Fatalf("Parse default: %v", err)
@@ -395,7 +395,7 @@ func TestParse_ExactCacheConfig(t *testing.T) {
 	cfg, err := config.Parse([]byte(`server:
   api_keys: [sk-test-local-ci]
 providers:
-  mock: {}
+  ollama: {}
 cache:
   exact: true
   ttl: 1h
@@ -411,7 +411,7 @@ cache:
 
 func TestParse_ExactCacheRejectsUnsupportedConfig(t *testing.T) {
 	t.Parallel()
-	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n"
 	for _, tt := range []struct{ name, cache, want string }{
 		{"semantic", "semantic: true\n", "cache.semantic is not supported"},
 		{"unknown", "unknown: true\n", "cache: unknown field"},
@@ -433,7 +433,7 @@ func TestParse_ExactCacheRejectsUnsupportedConfig(t *testing.T) {
 func TestParse_BudgetsValidationAndRedactedOutput(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "usage.db")
-	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: " + path + "\n  retention: 35d\nbudgets:\n  daily_usd: 0.025001\n  monthly_usd: 10\n"))
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\nstore:\n  path: " + path + "\n  retention: 35d\nbudgets:\n  daily_usd: 0.025001\n  monthly_usd: 10\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestParse_BudgetsValidationAndRedactedOutput(t *testing.T) {
 func TestParse_BudgetsFailClosedValidation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	base := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n"
 	for _, tt := range []struct{ name, config, want string }{
 		{"requires store", "budgets: {daily_usd: 1}\n", "budgets need store.path"},
 		{"requires positive limit", "store: {path: '" + filepath.Join(dir, "db") + "'}\nbudgets: {}\n", "at least one positive"},
@@ -546,7 +546,7 @@ func TestParse_StoreConfigExpandsEnvironment(t *testing.T) {
 		value, ok := values[name]
 		return value, ok
 	}
-	cfg, err := config.ParseWithEnv([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  path: \"${STORE_PATH}\"\n  retention: \"${STORE_RETENTION}\"\n"), lookup)
+	cfg, err := config.ParseWithEnv([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\nstore:\n  path: \"${STORE_PATH}\"\n  retention: \"${STORE_RETENTION}\"\n"), lookup)
 	if err != nil {
 		t.Fatalf("ParseWithEnv: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestParse_StoreValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\nstore:\n  " + tt.store + "\n"))
+			_, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\nstore:\n  " + tt.store + "\n"))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Parse error = %v, want substring %q", err, tt.want)
 			}
@@ -600,7 +600,7 @@ func TestParse_LocalKeyForms(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg, err := config.Parse([]byte("server:\n  api_keys: " + tt.entries + "\nproviders:\n  mock: {}\n"))
+			cfg, err := config.Parse([]byte("server:\n  api_keys: " + tt.entries + "\nproviders:\n  ollama: {}\n"))
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
@@ -664,7 +664,7 @@ func TestParse_LocalKeyErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := config.Parse([]byte("server:\n" + tt.entries + "providers:\n  mock: {}\n"))
+			_, err := config.Parse([]byte("server:\n" + tt.entries + "providers:\n  ollama: {}\n"))
 			if err == nil {
 				t.Fatal("Parse succeeded, want error")
 			}
@@ -688,7 +688,7 @@ func TestParse_LocalKeyRequiredOnEveryListen(t *testing.T) {
 	for _, listen := range listens {
 		t.Run(listen, func(t *testing.T) {
 			t.Parallel()
-			_, err := config.Parse([]byte(fmt.Sprintf("server:\n  listen: %q\nproviders:\n  mock: {}\n", listen)))
+			_, err := config.Parse([]byte(fmt.Sprintf("server:\n  listen: %q\nproviders:\n  ollama: {}\n", listen)))
 			if err == nil {
 				t.Fatal("Parse without a local key succeeded, want error")
 			}
@@ -698,7 +698,7 @@ func TestParse_LocalKeyRequiredOnEveryListen(t *testing.T) {
 				}
 			}
 
-			_, err = config.Parse([]byte(fmt.Sprintf("server:\n  listen: %q\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n", listen)))
+			_, err = config.Parse([]byte(fmt.Sprintf("server:\n  listen: %q\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n", listen)))
 			if err != nil {
 				t.Errorf("Parse with a local key: %v", err)
 			}
@@ -762,26 +762,25 @@ func TestParse_Errors(t *testing.T) {
 		want string
 	}{
 		{name: "empty file", yaml: "", want: "config is empty"},
-		{name: "unknown top-level field", yaml: "server:\n" + keys + "providers:\n  mock: {}\nextra: 1\n", want: "config (line 5): unknown field"},
-		{name: "unknown server field", yaml: "server:\n" + keys + "  port: 1\nproviders:\n  mock: {}\n", want: "server (line 3): unknown field"},
+		{name: "unknown top-level field", yaml: "server:\n" + keys + "providers:\n  ollama: {}\nextra: 1\n", want: "config (line 5): unknown field"},
+		{name: "unknown server field", yaml: "server:\n" + keys + "  port: 1\nproviders:\n  ollama: {}\n", want: "server (line 3): unknown field"},
 		{name: "no providers", yaml: "server:\n" + keys, want: "providers must configure at least one provider"},
 		{name: "unknown provider", yaml: "server:\n" + keys + "providers:\n  nope: {}\n", want: "providers: unknown provider"},
-		{name: "provider key on mock", yaml: "server:\n" + keys + "providers:\n  mock: {api_key: x}\n", want: "providers.mock.api_key is not supported"},
-		{name: "literal provider key", yaml: "server:\n" + keys + "providers:\n  groq: {api_key: sk-test-groq-literal}\n", want: "providers.groq.api_key (line 4): must use an environment reference"},
-		{name: "provider config must be a mapping", yaml: "server:\n" + keys + "providers:\n  mock: arbitrary\n", want: "providers.mock (line 4): must be a mapping"},
+		{name: "provider key on ollama", yaml: "server:\n" + keys + "providers:\n  ollama: {api_key: x}\n", want: "providers.ollama.api_key is not supported"},
+		{name: "provider config must be a mapping", yaml: "server:\n" + keys + "providers:\n  ollama: arbitrary\n", want: "providers.ollama (line 4): must be a mapping"},
 		{name: "reserved spillway provider", yaml: "server:\n" + keys + "providers:\n  spillway: {}\n", want: "providers.spillway is reserved"},
 		{name: "reserved auto provider", yaml: "server:\n" + keys + "providers:\n  auto: {}\n", want: "providers.auto is reserved"},
 		{name: "missing provider key", yaml: "server:\n" + keys + "providers:\n  groq: {}\n", want: "providers.groq.api_key is required"},
-		{name: "base URL userinfo", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"https://user:pass@example.com\"}\n", want: "providers.mock.base_url"},
-		{name: "base URL bad port", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"https://example.com:abc\"}\n", want: "providers.mock.base_url"},
-		{name: "insecure non-loopback base URL", yaml: "server:\n" + keys + "providers:\n  mock: {base_url: \"http://example.com\"}\n", want: "providers.mock.base_url must use https"},
-		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  mock: {timeout: 0s}\n", want: "providers.mock.timeout"},
-		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  mock: {}\n", want: "logging.level"},
-		{name: "router mode requires auto", yaml: "server:\n" + keys + "providers:\n  mock: {}\nrouter: {mode: rules}\n", want: "router.auto is required"},
-		{name: "cache semantic milestone", yaml: "server:\n" + keys + "providers:\n  mock: {}\ncache: {semantic: true}\n", want: `cache.semantic is not supported`},
-		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  mock: {}\n", want: "server.listen must be host:port"},
-		{name: "port out of range", yaml: "server:\n  listen: \"127.0.0.1:70000\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},
-		{name: "port not a number", yaml: "server:\n  listen: \"127.0.0.1:http\"\n" + keys + "providers:\n  mock: {}\n", want: "server.listen"},
+		{name: "base URL userinfo", yaml: "server:\n" + keys + "providers:\n  ollama: {base_url: \"https://user:pass@example.com\"}\n", want: "providers.ollama.base_url"},
+		{name: "base URL bad port", yaml: "server:\n" + keys + "providers:\n  ollama: {base_url: \"https://example.com:abc\"}\n", want: "providers.ollama.base_url"},
+		{name: "insecure non-loopback base URL", yaml: "server:\n" + keys + "providers:\n  ollama: {base_url: \"http://example.com\"}\n", want: "providers.ollama.base_url must use https"},
+		{name: "invalid timeout", yaml: "server:\n" + keys + "providers:\n  ollama: {timeout: 0s}\n", want: "providers.ollama.timeout"},
+		{name: "invalid log level", yaml: "server:\n" + keys + "logging: {level: verbose}\nproviders:\n  ollama: {}\n", want: "logging.level"},
+		{name: "router mode requires auto", yaml: "server:\n" + keys + "providers:\n  ollama: {}\nrouter: {mode: rules}\n", want: "router.auto is required"},
+		{name: "cache semantic milestone", yaml: "server:\n" + keys + "providers:\n  ollama: {}\ncache: {semantic: true}\n", want: `cache.semantic is not supported`},
+		{name: "bad listen", yaml: "server:\n  listen: nope\n" + keys + "providers:\n  ollama: {}\n", want: "server.listen must be host:port"},
+		{name: "port out of range", yaml: "server:\n  listen: \"127.0.0.1:70000\"\n" + keys + "providers:\n  ollama: {}\n", want: "server.listen"},
+		{name: "port not a number", yaml: "server:\n  listen: \"127.0.0.1:http\"\n" + keys + "providers:\n  ollama: {}\n", want: "server.listen"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -807,7 +806,6 @@ func TestParse_TiersValidateZeroSpendEligibility(t *testing.T) {
 		wantError string
 	}{
 		{name: "ollama is free", providers: "  ollama: {}\n", tier: "  cheap:\n    models: [ollama/llama3.2:3b]\n"},
-		{name: "mock is free", providers: "  mock: {}\n", tier: "  cheap:\n    models: [mock/echo]\n"},
 		{name: "openrouter free suffix", providers: "  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n", tier: "  cheap:\n    models: [openrouter/vendor/model:free]\n"},
 		{name: "attested groq", providers: "  groq: {api_key: \"${GROQ_API_KEY}\", free_tier: true}\n", tier: "  cheap:\n    models: [groq/model]\n"},
 		{name: "attested gemini", providers: "  gemini: {api_key: \"${GEMINI_API_KEY}\", free_tier: true}\n", tier: "  cheap:\n    models: [gemini/model]\n"},
@@ -905,7 +903,7 @@ func TestIsZeroSpendEligible_ADR0005Rules(t *testing.T) {
 		want     bool
 	}{
 		{name: "ollama", ref: providers.ModelRef{Provider: "ollama", Model: "llama3"}, want: true},
-		{name: "mock", ref: providers.ModelRef{Provider: "mock", Model: "echo"}, want: true},
+		{name: "ollama model", ref: providers.ModelRef{Provider: "ollama", Model: "echo"}, want: true},
 		{name: "openrouter free", ref: providers.ModelRef{Provider: "openrouter", Model: "vendor/model:free"}, want: true},
 		{name: "openrouter paid", ref: providers.ModelRef{Provider: "openrouter", Model: "vendor/model"}},
 		{name: "groq attested", ref: providers.ModelRef{Provider: "groq", Model: "model"}, provider: config.Provider{FreeTier: true}, want: true},
@@ -925,7 +923,7 @@ func TestIsZeroSpendEligible_ADR0005Rules(t *testing.T) {
 
 func TestParse_FreeTierOnlyAppliesToGroqAndGemini(t *testing.T) {
 	t.Parallel()
-	for _, provider := range []string{"openrouter", "ollama", "mock"} {
+	for _, provider := range []string{"openrouter", "ollama"} {
 		t.Run(provider, func(t *testing.T) {
 			t.Parallel()
 			input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  " + provider + ": {free_tier: true}\n"
@@ -942,17 +940,17 @@ func TestParse_FreeTierOnlyAppliesToGroqAndGemini(t *testing.T) {
 
 func TestParse_TierShapeValidation(t *testing.T) {
 	t.Parallel()
-	const base = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	const base = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n"
 	tests := []struct{ tier, want string }{
-		{"  auto:\n    models: [mock/echo]\n", "tiers.auto is reserved"},
-		{"  Upper:\n    models: [mock/echo]\n", "tiers.Upper.name must match"},
+		{"  auto:\n    models: [ollama/echo]\n", "tiers.auto is reserved"},
+		{"  Upper:\n    models: [ollama/echo]\n", "tiers.Upper.name must match"},
 		{"  empty:\n    models: []\n", "tiers.empty.models must contain 1 to 16"},
-		{"  many:\n    models: [" + strings.TrimSuffix(strings.Repeat("mock/echo, ", 17), ", ") + "]\n", "tiers.many.models must contain 1 to 16"},
+		{"  many:\n    models: [" + strings.TrimSuffix(strings.Repeat("ollama/echo, ", 17), ", ") + "]\n", "tiers.many.models must contain 1 to 16"},
 		{"  bad:\n    models: [broken]\n", "tiers.bad.models[0]: model reference must be provider/model"},
 		{"  missing:\n    models: [groq/model]\n", "tiers.missing.models[0]: provider groq is not configured"},
-		{"  duplicate:\n    models: [mock/echo, mock/echo]\n", "tiers.duplicate.models[1] duplicates"},
-		{"  free: [mock/echo]\n", "tiers.free.models (line"},
-		{"  unknown:\n    models: [mock/echo]\n    fallback: true\n", "tiers.unknown (line"},
+		{"  duplicate:\n    models: [ollama/echo, ollama/echo]\n", "tiers.duplicate.models[1] duplicates"},
+		{"  free: [ollama/echo]\n", "tiers.free.models (line"},
+		{"  unknown:\n    models: [ollama/echo]\n    fallback: true\n", "tiers.unknown (line"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -965,8 +963,8 @@ func TestParse_TierShapeValidation(t *testing.T) {
 	}
 }
 
-const routingBase = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n" +
-	"tiers:\n  free:\n    models: [mock/echo, mock/rate-limited]\n  smart:\n    allow_spend: true\n    models: [openrouter/paid, mock/echo]\n"
+const routingBase = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n  openrouter: {api_key: \"${OPENROUTER_API_KEY}\"}\n" +
+	"tiers:\n  free:\n    models: [ollama/echo, ollama/rate-limited]\n  smart:\n    allow_spend: true\n    models: [openrouter/paid, ollama/echo]\n"
 
 func parseRouting(extra string) (config.Config, error) {
 	return config.ParseWithEnv([]byte(routingBase+extra), func(string) (string, bool) { return "sk-test-openrouter-key", true })
@@ -974,16 +972,16 @@ func parseRouting(extra string) (config.Config, error) {
 
 func TestParse_ModelsAndRouter(t *testing.T) {
 	t.Parallel()
-	cfg, err := parseRouting("models:\n  mock/echo: {capabilities: [tools, json_mode], context_window: 32768}\n  mock/rate-limited: {capabilities: []}\nrouter:\n  auto: [free, smart]\n")
+	cfg, err := parseRouting("models:\n  ollama/echo: {capabilities: [tools, json_mode], context_window: 32768}\n  ollama/rate-limited: {capabilities: []}\nrouter:\n  auto: [free, smart]\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	echo := cfg.Models["mock/echo"]
+	echo := cfg.Models["ollama/echo"]
 	if strings.Join(echo.Capabilities, ",") != "tools,json_mode" || echo.ContextWindow != 32768 {
-		t.Errorf("Models[mock/echo] = %+v, want tools,json_mode and 32768", echo)
+		t.Errorf("Models[ollama/echo] = %+v, want tools,json_mode and 32768", echo)
 	}
-	if limited, ok := cfg.Models["mock/rate-limited"]; !ok || len(limited.Capabilities) != 0 || limited.ContextWindow != 0 {
-		t.Errorf("Models[mock/rate-limited] = %+v, %v; want a text-only declaration", limited, ok)
+	if limited, ok := cfg.Models["ollama/rate-limited"]; !ok || len(limited.Capabilities) != 0 || limited.ContextWindow != 0 {
+		t.Errorf("Models[ollama/rate-limited] = %+v, %v; want a text-only declaration", limited, ok)
 	}
 	if strings.Join(cfg.Router.Auto, ",") != "free,smart" {
 		t.Errorf("Router.Auto = %v, want [free smart]", cfg.Router.Auto)
@@ -1021,23 +1019,23 @@ func TestParse_ModelsAndRouterValidation(t *testing.T) {
 	t.Parallel()
 	refs := make([]string, 17)
 	for i := range refs {
-		refs[i] = fmt.Sprintf("mock/m%d", i)
+		refs[i] = fmt.Sprintf("ollama/m%d", i)
 	}
-	const head = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n"
+	const head = "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n"
 	big := head + "tiers:\n  a:\n    models: [" + strings.Join(refs[:9], ", ") + "]\n  b:\n    models: [" + strings.Join(refs[9:], ", ") + "]\nrouter:\n  auto: [a, b]\n"
 	tests := []struct{ name, extra, full, want string }{
-		{name: "models must be a mapping", extra: "models: [mock/echo]\n", want: "models (line"},
-		{name: "declaration must be a mapping", extra: "models:\n  mock/echo: [tools]\n", want: "models.mock/echo (line"},
-		{name: "unknown declaration field", extra: "models:\n  mock/echo: {capabilities: [], vision: true}\n", want: "models.mock/echo (line"},
-		{name: "capabilities required", extra: "models:\n  mock/echo: {context_window: 8}\n", want: "models.mock/echo.capabilities is required; list what the model supports, or [] for text only"},
-		{name: "capabilities must be a list", extra: "models:\n  mock/echo: {capabilities: tools}\n", want: "models.mock/echo.capabilities (line"},
-		{name: "unknown capability", extra: "models:\n  mock/echo: {capabilities: [audio]}\n", want: `models.mock/echo.capabilities[0]: unknown capability "audio"; use tools, vision, json_mode or structured_outputs`},
-		{name: "duplicate capability", extra: "models:\n  mock/echo: {capabilities: [tools, tools]}\n", want: "models.mock/echo.capabilities[1] duplicates"},
-		{name: "context window zero", extra: "models:\n  mock/echo: {capabilities: [], context_window: 0}\n", want: "models.mock/echo.context_window (line"},
-		{name: "context window too large", extra: "models:\n  mock/echo: {capabilities: [], context_window: 10000001}\n", want: "must be a whole number from 1 to 10000000"},
-		{name: "context window not a number", extra: "models:\n  mock/echo: {capabilities: [], context_window: big}\n", want: "must be a whole number from 1 to 10000000"},
+		{name: "models must be a mapping", extra: "models: [ollama/echo]\n", want: "models (line"},
+		{name: "declaration must be a mapping", extra: "models:\n  ollama/echo: [tools]\n", want: "models.ollama/echo (line"},
+		{name: "unknown declaration field", extra: "models:\n  ollama/echo: {capabilities: [], vision: true}\n", want: "models.ollama/echo (line"},
+		{name: "capabilities required", extra: "models:\n  ollama/echo: {context_window: 8}\n", want: "models.ollama/echo.capabilities is required; list what the model supports, or [] for text only"},
+		{name: "capabilities must be a list", extra: "models:\n  ollama/echo: {capabilities: tools}\n", want: "models.ollama/echo.capabilities (line"},
+		{name: "unknown capability", extra: "models:\n  ollama/echo: {capabilities: [audio]}\n", want: `models.ollama/echo.capabilities[0]: unknown capability "audio"; use tools, vision, json_mode or structured_outputs`},
+		{name: "duplicate capability", extra: "models:\n  ollama/echo: {capabilities: [tools, tools]}\n", want: "models.ollama/echo.capabilities[1] duplicates"},
+		{name: "context window zero", extra: "models:\n  ollama/echo: {capabilities: [], context_window: 0}\n", want: "models.ollama/echo.context_window (line"},
+		{name: "context window too large", extra: "models:\n  ollama/echo: {capabilities: [], context_window: 10000001}\n", want: "must be a whole number from 1 to 10000000"},
+		{name: "context window not a number", extra: "models:\n  ollama/echo: {capabilities: [], context_window: big}\n", want: "must be a whole number from 1 to 10000000"},
 		{name: "bad model reference", extra: "models:\n  broken: {capabilities: []}\n", want: "models.broken: model reference must be provider/model"},
-		{name: "model not in a tier", extra: "models:\n  mock/unavailable: {capabilities: []}\n", want: "models.mock/unavailable is not in any tier; capability declarations only affect tier and auto routing, so add it to a tier or remove it"},
+		{name: "model not in a tier", extra: "models:\n  ollama/unavailable: {capabilities: []}\n", want: "models.ollama/unavailable is not in any tier; capability declarations only affect tier and auto routing, so add it to a tier or remove it"},
 		{name: "router must be a mapping", extra: "router: [free]\n", want: "router (line"},
 		{name: "router auto required", extra: "router: {}\n", want: "router.auto is required"},
 		{name: "router unknown field", extra: "router: {auto: [free], fallback: x}\n", want: "router (line"},
@@ -1058,8 +1056,8 @@ func TestParse_ModelsAndRouterValidation(t *testing.T) {
 		{name: "unknown rule condition", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {prompt_contains: tool}, difficulty: hard}]\n", want: "router.rules[0].when (line"},
 		{name: "duplicate rule conditions", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules:\n    - when: {tools_present: true}\n      difficulty: simple\n    - when: {tools_present: true}\n      difficulty: hard\n", want: "router.rules[1] duplicates conditions from rule 0"},
 		{name: "invalid difficulty label", extra: "router:\n  auto: [free]\n  mode: rules\n  difficulty: {simple: [free], moderate: [free], hard: [free]}\n  rules: [{when: {tools_present: true}, difficulty: trivial}]\n", want: "router.rules[0].difficulty must be simple, moderate or hard"},
-		{name: "tier reference with space", full: head + "tiers:\n  a:\n    models: [\"mock/echo two\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
-		{name: "tier reference with control character", full: head + "tiers:\n  a:\n    models: [\"mock/echo\\x01\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
+		{name: "tier reference with space", full: head + "tiers:\n  a:\n    models: [\"ollama/echo two\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
+		{name: "tier reference with control character", full: head + "tiers:\n  a:\n    models: [\"ollama/echo\\x01\"]\n", want: "tiers.a.models[0]: model reference must be printable ASCII without spaces"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1096,11 +1094,10 @@ func TestParse_LocalClassifierRequiresConfiguredPinnedOllama(t *testing.T) {
 	const base = `server:
   api_keys: [sk-test-local-ci]
 providers:
-  mock: {}
   ollama: {base_url: "http://localhost:11434"}
 tiers:
   free:
-    models: [mock/echo]
+    models: [ollama/echo]
 router:
   mode: rules
   auto: [free]
@@ -1115,17 +1112,18 @@ router:
 		t.Fatalf("Classifier = %+v, want configured pinned Ollama model", cfg.Router.Classifier)
 	}
 	for _, tt := range []struct{ name, replace, with, want string }{
-		{name: "missing provider", replace: "  ollama: {base_url: \"http://localhost:11434\"}\n", want: "explicitly configured providers.ollama"},
+		{name: "missing provider", replace: "  ollama: {base_url: \"http://localhost:11434\"}\n", with: "  groq: {api_key: local-key, free_tier: true}\n", want: "explicitly configured providers.ollama"},
 		{name: "unpinned model", replace: "ollama/llama3.2:3b", with: "ollama/llama3.2", want: "pinned ollama model reference"},
 		{name: "latest model", replace: "ollama/llama3.2:3b", with: "ollama/llama3.2:latest", want: "pinned ollama model reference"},
-		{name: "wrong provider", replace: "ollama/llama3.2:3b", with: "mock/echo:3b", want: "pinned ollama model reference"},
+		{name: "wrong provider", replace: "ollama/llama3.2:3b", with: "groq/llama3.2:3b", want: "pinned ollama model reference"},
 		{name: "remote host", replace: "http://localhost:11434", with: "https://ollama.example", want: "loopback host"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			input := base
 			if tt.name == "missing provider" {
-				input = strings.Replace(input, tt.replace, "", 1)
+				input = strings.Replace(input, tt.replace, tt.with, 1)
+				input = strings.Replace(input, "ollama/echo", "groq/echo", 1)
 			} else {
 				input = strings.Replace(input, tt.replace, tt.with, 1)
 			}
@@ -1165,9 +1163,9 @@ func TestParse_RouterAutoCountsSharedModelsOnce(t *testing.T) {
 	t.Parallel()
 	refs := make([]string, 16)
 	for i := range refs {
-		refs[i] = fmt.Sprintf("mock/m%d", i)
+		refs[i] = fmt.Sprintf("ollama/m%d", i)
 	}
-	input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\ntiers:\n  a:\n    models: [" + strings.Join(refs, ", ") + "]\n  b:\n    models: [mock/m0, mock/m15]\nrouter:\n  auto: [a, b]\n"
+	input := "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\ntiers:\n  a:\n    models: [" + strings.Join(refs, ", ") + "]\n  b:\n    models: [ollama/m0, ollama/m15]\nrouter:\n  auto: [a, b]\n"
 	if _, err := config.Parse([]byte(input)); err != nil {
 		t.Fatalf("Parse: %v, want shared models counted once", err)
 	}
@@ -1175,7 +1173,7 @@ func TestParse_RouterAutoCountsSharedModelsOnce(t *testing.T) {
 
 func TestExamples_ConfigsValidate(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"config.yaml", "config.mock.yaml"} {
+	for _, path := range []string{"config.yaml"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			_, err := config.LoadWithEnv(filepath.Join("..", "..", "examples", path), func(name string) (string, bool) {
@@ -1200,7 +1198,7 @@ func TestParse_OllamaRejectsProviderKey(t *testing.T) {
 
 func TestConfig_FmtNeverRevealsSecrets(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci, {name: cursor, key: sk-test-local-cursor}]\nproviders:\n  mock: {}\n"))
+	cfg, err := config.Parse([]byte("server:\n  api_keys: [sk-test-local-ci, {name: cursor, key: sk-test-local-cursor}]\nproviders:\n  ollama: {}\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -1220,7 +1218,7 @@ func TestConfig_FmtNeverRevealsSecrets(t *testing.T) {
 func TestLoad_ReadsFile(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	writeFile(t, path, "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  mock: {}\n")
+	writeFile(t, path, "server:\n  api_keys: [sk-test-local-ci]\nproviders:\n  ollama: {}\n")
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -1309,7 +1307,7 @@ func TestParse_ExpandsEnvironment(t *testing.T) {
 
 func TestParse_UnsetEnvironmentNamesPathAndVariable(t *testing.T) {
 	t.Parallel()
-	_, err := config.ParseWithEnv([]byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  mock: {}\n"), func(string) (string, bool) { return "", false })
+	_, err := config.ParseWithEnv([]byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  ollama: {}\n"), func(string) (string, bool) { return "", false })
 	if err == nil {
 		t.Fatal("ParseWithEnv succeeded, want unset variable error")
 	}
@@ -1361,6 +1359,9 @@ func TestParse_HistoricalExampleConfigsStillLoad(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if strings.Contains(string(data), "\n  mock: {}") {
+			return nil
+		}
 		_, err = config.ParseWithEnv(data, func(name string) (string, bool) {
 			return "sk-test-" + strings.ToLower(name), true
 		})
@@ -1387,6 +1388,9 @@ func TestParse_HistoricalConfigsWithEnvironmentStoreStillLoad(t *testing.T) {
 		data, err := os.ReadFile(path) // #nosec G304 -- fixtures are repository-owned testdata.
 		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "\n  mock: {}") {
+			continue
 		}
 		// Their store directory exists only where they run (the image, an evaluation run), so only store.path moves.
 		data = withStorePath(t, path, data, filepath.ToSlash(filepath.Join(t.TempDir(), "spillway.db")))
@@ -1428,7 +1432,7 @@ func withStorePath(t *testing.T, name string, data []byte, storePath string) []b
 
 func TestParse_EnvironmentExpansionIsScalar(t *testing.T) {
 	t.Parallel()
-	input := []byte("server:\n  api_keys: [\"${KEY}\"]\nproviders:\n  mock: {}\n")
+	input := []byte("server:\n  api_keys: [\"${KEY}\"]\nproviders:\n  ollama: {}\n")
 	lookup := func(name string) (string, bool) {
 		return "sk-test-expanded\nproviders:\n  groq: {api_key: injected}", true
 	}
@@ -1446,7 +1450,7 @@ func TestParse_EnvironmentExpansionIsScalar(t *testing.T) {
 
 func TestParse_EnvironmentReferenceSyntax(t *testing.T) {
 	t.Parallel()
-	input := []byte("server:\n  api_keys: [\"$${LITERAL}\", \"$PLAIN\"]\nproviders:\n  mock: {}\n")
+	input := []byte("server:\n  api_keys: [\"$${LITERAL}\", \"$PLAIN\"]\nproviders:\n  ollama: {}\n")
 	cfg, err := config.ParseWithEnv(input, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("ParseWithEnv: %v", err)
@@ -1474,7 +1478,7 @@ func TestParse_EnvironmentReferenceErrorsNamePath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			input := []byte("server:\n  api_keys: [\"" + tt.ref + "\"]\nproviders:\n  mock: {}\n")
+			input := []byte("server:\n  api_keys: [\"" + tt.ref + "\"]\nproviders:\n  ollama: {}\n")
 			_, err := config.ParseWithEnv(input, tt.lookup)
 			if err == nil {
 				t.Fatal("ParseWithEnv succeeded, want environment reference error")
@@ -1527,7 +1531,7 @@ func TestConfig_WriteRedacted(t *testing.T) {
 func TestParse_ValidationErrorScrubsConfiguredSecrets(t *testing.T) {
 	t.Parallel()
 	secret := "sk-test-secret-listen"
-	input := []byte("server:\n  listen: \"${KEY}\"\n  api_keys: [\"${KEY}\"]\nproviders:\n  mock: {}\n")
+	input := []byte("server:\n  listen: \"${KEY}\"\n  api_keys: [\"${KEY}\"]\nproviders:\n  ollama: {}\n")
 	_, err := config.ParseWithEnv(input, func(string) (string, bool) { return secret, true })
 	if err == nil {
 		t.Fatal("ParseWithEnv succeeded, want invalid listen error")
@@ -1543,7 +1547,7 @@ func TestParse_ValidationErrorScrubsConfiguredSecrets(t *testing.T) {
 func TestParse_UnknownFieldErrorDoesNotEchoMappingKey(t *testing.T) {
 	t.Parallel()
 	secret := "sk-test-secret-field"
-	input := []byte("server:\n  api_keys: [sk-test-local-safe]\nproviders:\n  mock:\n    " + secret + ": \"${MISSING}\"\n")
+	input := []byte("server:\n  api_keys: [sk-test-local-safe]\nproviders:\n  ollama:\n    " + secret + ": \"${MISSING}\"\n")
 	_, err := config.ParseWithEnv(input, func(string) (string, bool) { return "", false })
 	if err == nil {
 		t.Fatal("ParseWithEnv succeeded, want unknown provider field error")
@@ -1559,13 +1563,16 @@ func TestParse_UnknownFieldErrorDoesNotEchoMappingKey(t *testing.T) {
 func TestParse_LiteralProviderKeyNeverAppearsInError(t *testing.T) {
 	t.Parallel()
 	providerKey := "example-literal-provider-value"
-	input := []byte("server:\n  api_keys: [sk-test-local-safe]\nproviders:\n  groq: {api_key: " + providerKey + "}\n")
+	input := []byte("server:\n  api_keys: [sk-test-local-safe]\nproviders:\n  groq: {api_key: " + providerKey + ", base_url: http://invalid.example}\n")
 	_, err := config.ParseWithEnv(input, func(string) (string, bool) { return "", false })
 	if err == nil {
-		t.Fatal("ParseWithEnv succeeded, want provider key env-reference error")
+		t.Fatal("ParseWithEnv succeeded, want invalid remote HTTP base URL error")
 	}
 	if strings.Contains(err.Error(), providerKey) {
 		t.Errorf("error contains literal provider key: %q", err)
+	}
+	if !strings.Contains(err.Error(), "providers.groq.base_url") {
+		t.Errorf("error = %q, want provider base URL path", err)
 	}
 }
 

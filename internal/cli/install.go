@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -32,14 +33,13 @@ func installCommand(ctx context.Context, options Options) *cobra.Command {
 				return commandFailure{code: 1, err: err}
 			}
 			if !found {
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), "No Spillway executable was found on PATH; no changes made.")
-				return err
+				return writeCommandResult(ctx, cmd, "spillway install", "No Spillway executable was found on PATH; no changes made.\n", options.interactive(), options.Stdin, cmd.OutOrStdout())
 			}
 			if sameExecutable(source, target, options.GOOS) {
-				_, err := fmt.Fprintf(cmd.OutOrStdout(), "This executable is already at %s.\n", target)
-				return err
+				return writeCommandResult(ctx, cmd, "spillway install", fmt.Sprintf("This executable is already at %s.\n", target), options.interactive(), options.Stdin, cmd.OutOrStdout())
 			}
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Replace the Spillway executable at %s with spillway %s? [y/N] ", target, currentVersion()); err != nil {
+			prompt := fmt.Sprintf("%s\n\n%s\n%s", brandHeader("install"), warnStyle.Bold(true).Render("Replace the PATH executable?"), mutedStyle.Render(target+"  ←  spillway "+currentVersion()))
+			if _, err := fmt.Fprint(styledWriter(cmd.OutOrStdout()), lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorViolet).Padding(1, 2).Render(prompt)+"\n\n[y/N] "); err != nil {
 				return commandFailure{code: 1, err: err}
 			}
 			answer, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
@@ -47,14 +47,12 @@ func installCommand(ctx context.Context, options Options) *cobra.Command {
 				return commandFailure{code: 1, err: fmt.Errorf("read confirmation: %w", err)}
 			}
 			if !strings.EqualFold(strings.TrimSpace(answer), "y") && !strings.EqualFold(strings.TrimSpace(answer), "yes") {
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), "No changes made.")
-				return err
+				return writeCommandResult(ctx, cmd, "spillway install", "No changes made.\n", options.interactive(), options.Stdin, cmd.OutOrStdout())
 			}
 			if err := replaceExecutable(ctx, source, target); err != nil {
 				return commandFailure{code: 1, err: err}
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Installed this version at %s.\n", target)
-			return err
+			return writeCommandResult(ctx, cmd, "spillway install", fmt.Sprintf("Installed this version at %s.\n", target), options.interactive(), options.Stdin, cmd.OutOrStdout())
 		},
 	}
 }

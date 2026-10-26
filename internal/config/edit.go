@@ -120,6 +120,36 @@ func (e *Edit) AddProvider(p ProviderEntry) error {
 	return nil
 }
 
+// SetProviderAPIKey replaces one provider instance's credential with a local key.
+func (e *Edit) SetProviderAPIKey(name, key string) error {
+	if !validProviderInstanceName(name) {
+		if _, legacy := providers.LookupPreset(name); !legacy {
+			return errors.New("config: provider name must be a supported provider or safe instance alias")
+		}
+	}
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(key) != key || strings.ContainsFunc(key, isControl) {
+		return errors.New("config: provider key must be non-empty and contain no leading, trailing or control whitespace")
+	}
+	root, _, err := parseDocument(e.doc.body())
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	entry := mappingValue(mappingValue(root.Content[0], "providers"), name)
+	if entry == nil || entry.Kind != yaml.MappingNode {
+		return fmt.Errorf("config: providers.%s is not configured", name)
+	}
+	serviceType := name
+	if typeNode := mappingValue(entry, "type"); typeNode != nil {
+		serviceType = typeNode.Value
+	}
+	preset, ok := providers.LookupPreset(serviceType)
+	if !ok || !preset.AcceptsKey {
+		return fmt.Errorf("config: providers.%s does not accept an API key", name)
+	}
+	e.ops = append(e.ops, setProviderAPIKeyOp{name: name, key: key})
+	return nil
+}
+
 // AppendTierModel appends a model reference to an existing tier's models list.
 func (e *Edit) AppendTierModel(tier, modelRef string) error {
 	if !configName.MatchString(tier) {
@@ -261,6 +291,84 @@ func (c Change) scrub(line string) string {
 
 type addProviderOp struct {
 	entry ProviderEntry
+}
+
+type setProviderAPIKeyOp struct {
+	name string
+	key  string
+}
+
+func (op setProviderAPIKeyOp) apply(root *yaml.Node, lines []string, newline string) ([]string, hunk, error) {
+	providersNode := mappingValue(root, "providers")
+	entry := mappingValue(providersNode, op.name)
+	if entry == nil || entry.Kind != yaml.MappingNode {
+		return nil, hunk{}, fmt.Errorf("config: providers.%s is not configured", op.name)
+	}
+	encoded, err := yaml.Marshal(escapeEnvironmentReferences(op.key))
+	if err != nil {
+		return nil, hunk{}, errors.New("config: could not encode provider key")
+	}
+	value := strings.TrimSpace(string(encoded))
+	if existing := mappingValue(entry, "api_key"); existing != nil {
+		fieldIndex := mappingIndex(entry, "api_key")
+		if fieldIndex < 0 {
+			return nil, hunk{}, errors.New("config: could not locate provider key field")
+		}
+		field := entry.Content[fieldIndex]
+		if field.Line < 1 || field.Line > len(lines) {
+			return nil, hunk{}, errors.New("config: could not locate provider key line")
+		}
+		old := lines[field.Line-1]
+		indent := strings.Repeat(" ", field.Column-1)
+		line := indent + "api_key: " + value
+		lines[field.Line-1] = line + newline
+		if !strings.HasSuffix(old, "\n") && field.Line == len(lines) {
+			lines[field.Line-1] = line
+		}
+		return lines, hunk{path: "providers." + op.name + ".api_key", context: []string{lineText(old)}, added: []string{line}}, nil
+	}
+	providerLine := 0
+	for i := 0; i+1 < len(providersNode.Content); i += 2 {
+		if providersNode.Content[i].Value == op.name {
+			providerLine = providersNode.Content[i].Line
+			break
+		}
+	}
+	if providerLine < 1 || providerLine > len(lines) {
+		return nil, hunk{}, errors.New("config: could not locate provider entry")
+	}
+	aliasColumn := providersNode.Content[0].Column
+	for i := 0; i+1 < len(providersNode.Content); i += 2 {
+		if providersNode.Content[i].Value == op.name {
+			aliasColumn = providersNode.Content[i].Column
+			break
+		}
+	}
+	indent := strings.Repeat(" ", aliasColumn-1) + childIndent(providersNode)
+	line := indent + "api_key: " + value
+	return splice(lines, providerLine, []string{line}, newline, "providers."+op.name+".api_key")
+}
+
+func (op setProviderAPIKeyOp) intend(tree map[string]any) error {
+	providersMap, ok := tree["providers"].(map[string]any)
+	if !ok {
+		return errors.New("config: internal error: providers is not a mapping")
+	}
+	entry, ok := providersMap[op.name].(map[string]any)
+	if !ok {
+		return fmt.Errorf("config: providers.%s is not configured", op.name)
+	}
+	entry["api_key"] = escapeEnvironmentReferences(op.key)
+	return nil
+}
+
+func escapeEnvironmentReferences(value string) string {
+	return strings.ReplaceAll(value, "${", "$${")
+}
+
+func (op setProviderAPIKeyOp) layout(line int, reason string) *LayoutError {
+	snippet := fmt.Sprintf("providers:\n  %s:\n    api_key: \"[REDACTED]\"\n", op.name)
+	return &LayoutError{Path: "providers." + op.name + ".api_key", Line: line, Reason: reason, Snippet: snippet}
 }
 
 func (op addProviderOp) apply(root *yaml.Node, lines []string, newline string) ([]string, hunk, error) {

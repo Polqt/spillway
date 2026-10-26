@@ -22,10 +22,10 @@ import (
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/fakenet"
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
+	fakeprovider "github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 const (
@@ -108,7 +108,7 @@ func newEnv(t *testing.T, hosts []string) env {
 
 func newEnvWithTimeouts(t *testing.T, hosts []string, bodyReadTimeout, chunkWriteTimeout time.Duration) env {
 	t.Helper()
-	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	m, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestChat_VirtualModelNotFoundPointsToRouterVersion(t *testing.T) {
 
 func TestChat_TierSpillsInConfiguredOrder(t *testing.T) {
 	t.Parallel()
-	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	m, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +897,7 @@ func TestChat_TierCooldownExhaustionUsesEarliestRetryAfter(t *testing.T) {
 
 func TestChat_MockDeadTierOpensCircuitAfterThreeCalls(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		m, err := mock.New(mock.Options{Now: time.Now})
+		m, err := fakeprovider.New(fakeprovider.Options{Now: time.Now})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1048,7 +1048,7 @@ func TestChat_TierGroqQuotaHintSkipsUntilReset(t *testing.T) {
 
 func TestChat_TierUnknownNamesConfiguredTiersAndAutoStaysUnavailable(t *testing.T) {
 	t.Parallel()
-	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	m, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1238,7 +1238,7 @@ func TestChat_RejectsDirectModelOutsideConfiguredTiers(t *testing.T) {
 
 func TestModels_ListsSortedVirtualTiers(t *testing.T) {
 	t.Parallel()
-	m, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	m, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}

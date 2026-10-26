@@ -722,7 +722,7 @@ func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (
 		return chatBody{}, false
 	}
 	if body.Model == nil || *body.Model == "" {
-		writeError(w, http.StatusBadRequest, `"model" is required, as provider/model such as mock/echo.`, typeInvalidRequest, "invalid_request")
+		writeError(w, http.StatusBadRequest, `"model" is required, as provider/model such as gemini/gemini-2.5-flash.`, typeInvalidRequest, "invalid_request")
 		return chatBody{}, false
 	}
 	if len(body.Messages) == 0 {
@@ -736,7 +736,7 @@ func decodeChat(w http.ResponseWriter, r *http.Request, timeout time.Duration) (
 func (h *chatHandler) resolve(w http.ResponseWriter, model string) (providers.ModelRef, providers.Provider, bool) {
 	ref, err := providers.ParseModelRef(model)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found. Send a model reference as provider/model, such as mock/echo, or see GET /v1/models.", model), typeInvalidRequest, "model_not_found")
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Model %q not found. Send a model reference as provider/model, such as gemini/gemini-2.5-flash, or see GET /v1/models.", model), typeInvalidRequest, "model_not_found")
 		return providers.ModelRef{}, nil, false
 	}
 	p, ok := h.providers.Lookup(ref.Provider)

@@ -17,10 +17,10 @@ import (
 
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
+	fakeprovider "github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 func newRouterHandler(t *testing.T, ps []providers.Provider, tiers map[string][]providers.ModelRef, auto []string, declarations map[providers.ModelRef]router.Declaration, tracker *quota.Tracker, now func() time.Time) http.Handler {
@@ -187,7 +187,7 @@ func TestChat_AutoSelectsFirstDeclaredCapableCandidate(t *testing.T) {
 	textOnly := &countingProvider{name: "textonly", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
 		return providers.ChatResponse{}, errors.New("text-only candidate was called")
 	}}
-	mockProvider, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	mockProvider, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestChat_AutoSelectsFirstDeclaredCapableCandidate(t *testing.T) {
 
 func TestChat_AutoAccessLog(t *testing.T) {
 	t.Parallel()
-	provider, err := mock.New(mock.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
+	provider, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return time.Unix(1760400000, 0) }})
 	if err != nil {
 		t.Fatal(err)
 	}

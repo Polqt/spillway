@@ -40,8 +40,8 @@ func TestExamples_DockerConfigValidates(t *testing.T) {
 	if len(cfg.Server.APIKeys) != 1 || !strings.HasPrefix(cfg.Server.APIKeys[0].Key.Reveal(), "sk-test-") {
 		t.Errorf("api_keys = %v, want one fake local key", cfg.Server.APIKeys)
 	}
-	if _, ok := cfg.Providers["mock"]; !ok || len(cfg.Providers) != 1 {
-		t.Errorf("providers = %v, want only mock", cfg.Providers)
+	if _, ok := cfg.Providers["ollama"]; !ok || len(cfg.Providers) != 1 {
+		t.Errorf("providers = %v, want only ollama", cfg.Providers)
 	}
 	if cfg.Store == nil || filepath.Dir(cfg.Store.Path) != storeDir {
 		t.Errorf("store = %+v, want a file under %q", cfg.Store, storeDir)

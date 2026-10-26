@@ -184,7 +184,7 @@ func accessLog(logger *slog.Logger, recorder interface {
 			// net/http sends 200 for a handler that writes nothing.
 			sw.status = http.StatusOK
 		}
-		if recorder != nil && r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions" {
+		if recorder != nil && r.Method == http.MethodPost && isChatAPIPath(r.URL.Path) {
 			usage := rec.usage
 			if rec.totalUsageSource != "" {
 				usage.UsageSource = rec.totalUsageSource
@@ -244,6 +244,15 @@ func accessLog(logger *slog.Logger, recorder interface {
 		}
 		logger.Log(r.Context(), level, "request", attrs...)
 	})
+}
+
+func isChatAPIPath(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/v1/messages", "/v1/responses":
+		return true
+	default:
+		return false
+	}
 }
 
 // recoverPanics turns a handler panic into an OpenAI 500 so one bad request

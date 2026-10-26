@@ -13,7 +13,6 @@ Explicit model references select one instance, subject to the same authenticatio
 Spillway has no telemetry and makes no background network requests.
 Network calls happen only when a configured provider is used, when the operator runs `spillway catalog` or `spillway eval`, when the optional local classifier is enabled, or when the operator runs `spillway doctor` (unauthenticated requests to the configured listen address only).
 When no providers are configured, `serve` makes no provider requests.
-The `mock` provider is offline.
 
 ## Provider destinations
 
@@ -28,7 +27,7 @@ The configured provider URL replaces the preset URL when `base_url` is set.
 | Ollama | `http://localhost:11434` | `serve` chat and model requests; `catalog` requests `/api/show` for configured models |
 
 `spillway catalog` is explicit and contacts only configured OpenRouter, Groq and Ollama providers.
-It skips Gemini and mock.
+It skips Gemini.
 The command writes suggestions to standard output and does not change routing or configuration.
 
 ## Local classifier

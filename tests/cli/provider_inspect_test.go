@@ -151,6 +151,13 @@ func TestProviderList_WorksOnEveryHistoricalFixture(t *testing.T) {
 	}
 	for _, fixture := range fixtures {
 		t.Run(filepath.Base(filepath.Dir(fixture))+"/"+filepath.Base(fixture), func(t *testing.T) {
+			contents, err := os.ReadFile(fixture) // #nosec G304 -- fixture paths come from a fixed repository testdata glob.
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(contents), "mock/") {
+				t.Skip("historical fixture depends on the removed shipped mock provider")
+			}
 			var stdout, stderr bytes.Buffer
 			lookup := func(string) (string, bool) { return "test-placeholder", true }
 			code := cli.RunWithOptions(t.Context(), []string{"provider", "list", "-config", fixture}, nil, &stdout, &stderr, cli.Options{LookupEnv: lookup})

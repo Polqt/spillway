@@ -46,9 +46,8 @@ func TestDiscover_ProvidesSuggestionsAndDiff(t *testing.T) {
 			"groq":       {APIKey: redact.NewSecret("sk-test-groq"), BaseURL: server.URL, Timeout: time.Second},
 			"ollama":     {BaseURL: server.URL, Timeout: time.Second},
 			"gemini":     {APIKey: redact.NewSecret("sk-test-gemini"), Timeout: time.Second},
-			"mock":       {Timeout: time.Second},
 		},
-		Tiers:   map[string]config.Tier{"free": {Models: []string{"openrouter/vendor/vision:free", "groq/llama-3.3-70b-versatile", "ollama/llama3.2:3b", "gemini/gemini-2.5-flash", "mock/echo"}}},
+		Tiers:   map[string]config.Tier{"free": {Models: []string{"openrouter/vendor/vision:free", "groq/llama-3.3-70b-versatile", "ollama/llama3.2:3b", "gemini/gemini-2.5-flash"}}},
 		Models:  map[string]config.ModelDeclaration{"openrouter/vendor/vision:free": {Capabilities: []string{"tools"}}},
 		Pricing: map[string]config.Price{"openrouter/vendor/vision:free": {InputMicroUSDPerMillion: 500_000, OutputMicroUSDPerMillion: 1_000_000}},
 	}
@@ -58,7 +57,7 @@ func TestDiscover_ProvidesSuggestionsAndDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"models:", "pricing:", "input_usd_per_mtok: 0.02", "output_usd_per_mtok: 2", "input_usd_per_mtok: 0 # source: Ollama /api/show", "declared input_usd_per_mtok: 0.5", "context_window: 131072", "catalog adds", "vision", "Gemini skipped", "mock skipped", "WARNING: openrouter/vendor/vision:free has non-zero catalog price"} {
+	for _, want := range []string{"models:", "pricing:", "input_usd_per_mtok: 0.02", "output_usd_per_mtok: 2", "input_usd_per_mtok: 0 # source: Ollama /api/show", "declared input_usd_per_mtok: 0.5", "context_window: 131072", "catalog adds", "vision", "Gemini skipped", "WARNING: openrouter/vendor/vision:free has non-zero catalog price"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("catalog output missing %q:\n%s", want, text)
 		}
@@ -117,8 +116,8 @@ func TestDiscover_SkipsProvidersWithoutCatalogSupport(t *testing.T) {
 		return nil, nil
 	})}
 	cfg := config.Config{
-		Providers: map[string]config.Provider{"gemini": {APIKey: redact.NewSecret("sk-test-gemini")}, "mock": {}},
-		Tiers:     map[string]config.Tier{"free": {Models: []string{"gemini/model", "mock/echo"}}},
+		Providers: map[string]config.Provider{"gemini": {APIKey: redact.NewSecret("sk-test-gemini")}},
+		Tiers:     map[string]config.Tier{"free": {Models: []string{"gemini/model"}}},
 	}
 	var out bytes.Buffer
 	if err := catalog.Discover(t.Context(), cfg, &out, catalog.Options{HTTPClient: client}); err != nil {
@@ -127,7 +126,7 @@ func TestDiscover_SkipsProvidersWithoutCatalogSupport(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("HTTP calls = %d, want 0", calls)
 	}
-	for _, note := range []string{"Gemini skipped", "mock skipped"} {
+	for _, note := range []string{"Gemini skipped"} {
 		if !strings.Contains(out.String(), note) {
 			t.Errorf("output missing skip note %q: %s", note, out.String())
 		}

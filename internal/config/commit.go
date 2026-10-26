@@ -32,6 +32,54 @@ type CommitResult struct {
 	ModeTightened bool   // ModeTightened reports whether the replacement restricted file permissions.
 }
 
+// ReplaceContents atomically replaces an existing regular config file after
+// saving its current bytes as a private backup.
+func ReplaceContents(ctx context.Context, path string, content []byte, options CommitOptions) (CommitResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CommitResult{}, err
+	}
+	if len(content) > maxFileBytes {
+		return CommitResult{}, fmt.Errorf("config: replacement is larger than 1 MiB")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("config: inspect replacement target: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return CommitResult{}, fmt.Errorf("config: replacement target must be a regular file, not a symlink")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("config: resolve replacement target: %w", err)
+	}
+	file, err := os.Open(absolute) // #nosec G304 -- path is the user's explicit init destination.
+	if err != nil {
+		return CommitResult{}, fmt.Errorf("config: read replacement target: %w", err)
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(info, opened) {
+		_ = file.Close()
+		if statErr != nil {
+			return CommitResult{}, fmt.Errorf("config: stat replacement target: %w", statErr)
+		}
+		return CommitResult{}, fmt.Errorf("config: replacement target changed while opening it")
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return CommitResult{}, fmt.Errorf("config: read replacement target: %w", readErr)
+	}
+	if closeErr != nil {
+		return CommitResult{}, fmt.Errorf("config: close replacement target: %w", closeErr)
+	}
+	if len(data) > maxFileBytes {
+		return CommitResult{}, fmt.Errorf("config: replacement target is larger than 1 MiB")
+	}
+	document := &Document{path: absolute, data: data, digest: sha256.Sum256(data), mode: opened.Mode().Perm()}
+	change := Change{after: append([]byte(nil), content...), beforePath: absolute, beforeDigest: document.digest}
+	return document.Commit(ctx, change, options)
+}
+
 // Commit backs up the current file and atomically replaces it with c.
 func (d *Document) Commit(ctx context.Context, c Change, options CommitOptions) (CommitResult, error) {
 	if err := ctx.Err(); err != nil {

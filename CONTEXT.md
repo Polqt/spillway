@@ -64,7 +64,7 @@ client app (OpenAI SDK)
 │ Spillover       ordered candidates per tier, circuit breakers       │
 │ Cache           opt-in in-memory exact response cache               │
 │ Budgets         local daily and monthly spend caps                  │
-│ Adapters        gemini, groq, openrouter, ollama and mock           │
+│ Adapters        gemini, groq, openrouter and ollama                 │
 │ Store           SQLite: usage metadata, attempts and decisions     │
 │ Dashboard       embedded UI: usage, cost, routing explanations      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -184,7 +184,6 @@ Unpriced direct paid models fail closed while a budget is enabled.
 `on_exceed` is removed: reached budgets stop paid models and continue serving free models.
 The exact cache is opt-in, in memory, per client app, and bounded by `cache.max_mb`; temperature is ignored for identical request bodies.
 Semantic caching is not supported.
-The mock provider is always treated as free, even when a price is declared for its model.
 Catalog output is partial: Gemini has no supported catalog fields, and Groq publishes only context length.
 Provider catalog discovery is advisory and does not change runtime routing or pricing.
 Rules mode is opt-in; existing configurations without `router.mode` continue to use the legacy auto chain.
@@ -219,7 +218,7 @@ Supported bounded conditions are `estimated_input_tokens_gte`, `requested_output
 - Dashboard data APIs require a key marked `dashboard: true`.
 - `spillway catalog`: explicit advisory provider catalog suggestions; it writes no config and changes no routing.
 
-The v1.0 provider presets are Gemini, Groq, OpenRouter, Ollama and mock. Other providers may be reachable through OpenRouter where available.
+The built-in provider presets are Gemini, Groq, OpenRouter and Ollama. Other providers may be reachable through OpenRouter where available.
 
 Response headers: `x-spillway-provider`, `x-spillway-model`, `x-spillway-route`, `x-spillway-cache`.
 
@@ -249,13 +248,12 @@ spillway/
 │   ├── providers/              # Provider interface, shared types, registry
 │   │   ├── openaicompat/       # one client for OpenAI-compatible APIs (Groq, OpenRouter, Ollama presets)
 │   │   ├── gemini/
-│   │   └── mock/               # deterministic offline provider for tests and demos
 │   ├── cache/
 │   ├── budget/
 │   ├── store/                  # SQLite access + migrations
 │   ├── config/
 │   └── cli/                    # subcommands serve, init, check, version; wiring
-├── tests/                      # all tests, mirroring internal/ (ADR 0004), plus e2e/
+├── tests/                      # tests, shared test fakes and e2e/ (ADR 0004)
 ├── examples/                   # config samples, client snippets
 └── .goreleaser.yaml
 ```

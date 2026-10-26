@@ -14,7 +14,7 @@ import (
 const fuzzEnvMarker = "spillway-fuzz-secret-73b5f1c2"
 
 func FuzzParseWithEnv(f *testing.F) {
-	f.Add([]byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  mock: {}\n"))
+	f.Add([]byte("server:\n  api_keys: [\"${SPILLWAY_KEY}\"]\nproviders:\n  ollama: {}\n"))
 	f.Add([]byte("server:\n  api_keys: [sk-test-local]\nproviders:\n  gemini-research:\n    type: gemini\n    api_key: \"${GEMINI_RESEARCH_API_KEY}\"\n    quota_domains: {project: research-project}\n"))
 	f.Add([]byte("server: [malformed"))
 	f.Fuzz(func(t *testing.T, data []byte) {

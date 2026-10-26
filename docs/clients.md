@@ -16,8 +16,33 @@ spillway model replace gemini/old-model gemini/new-model -config config.yaml -dr
 `model replace` shows a preview and saves a backup before writing. Restart the server after a change.
 `model list` reports zero-spend eligibility from your config; Gemini model quotas must be checked against Google's current pricing and rate limits.
 
-Spillway supports OpenAI Chat Completions at `/v1/chat/completions` and model listing at `/v1/models`.
-It does not implement the OpenAI Responses API at `/v1/responses`; use a client configured for Chat Completions.
+Spillway supports OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Responses at `/v1/responses`, Anthropic Messages at `/v1/messages`, and model listing at `/v1/models`.
+Text, images, tool calls, and streaming are translated to the existing Chat Completions routing path.
+Background Responses, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
+
+## One-command coding client setup
+
+Start with the config that contains your local `default` key.
+If `config.yaml` is in the current directory or your home directory, setup finds it automatically.
+Otherwise, pass `-config <path>`.
+
+```powershell
+spillway setup opencode
+spillway setup claude
+spillway setup codex
+```
+
+Each setup command updates the client's global configuration and preserves unrelated settings.
+Existing files are backed up before an update.
+Then start the gateway with `spillway serve -config <path>` and open the client.
+For example, Codex uses its isolated profile with `codex --profile spillway`.
+
+OpenCode reads its local key from a separate `spillway.key` file in its private config directory.
+Claude Code and Codex invoke `spillway key` when they need the local key.
+Keep the OpenCode key file and the Spillway config private.
+
+The `setup` command supports loopback servers only.
+It maps wildcard listen addresses to `127.0.0.1` for the coding client.
 
 The local OpenAI-compatible endpoint is `http://127.0.0.1:8080/v1`. Examples request model `auto`, so Spillway can spill over across eligible configured providers.
 Only models configured in tiers are listed or accepted as direct model requests.
@@ -68,18 +93,8 @@ $env:OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
 $env:OPENAI_API_KEY = '<LOCAL_APP_KEY>'
 ```
 
-## See spillover offline
+## Use a local Ollama provider
 
-Run the shipped mock config, which needs no provider account or provider key:
-
-```sh
-spillway serve -config examples/config.mock.yaml
-```
-
-The mock config includes a local `demo` key for loopback-only testing. In another terminal, send the same `auto` request from any example with `sk-test-spillway-mock` as the temporary local key. The first two mock candidates simulate rate limiting and unavailability; the third answers. The response header is:
-
-```text
-x-spillway-route: auto; tier demo; candidate 3/3
-```
-
-This fake key is only for the checked-in mock config. Do not use it with another config or expose it on a network. Python and Node examples can be run unchanged by setting `OPENAI_API_KEY=sk-test-spillway-mock` in the environment before invoking them.
+Start Ollama, configure it with `spillway init -providers ollama`, then run the generated config.
+Ollama needs no provider key, but it must be installed and running locally.
+Use `spillway key default` to print the generated local Spillway key for the client examples.

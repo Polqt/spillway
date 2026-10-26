@@ -56,11 +56,13 @@ Use `spillway doctor --no-probe -config <path>` to skip network checks.
 It never prints key characters and does not verify a key with Google.
 Check the value in your secret manager and set `GEMINI_API_KEY` in the current shell.
 
-## A client requires the Responses API
+## A coding client cannot connect
 
-Spillway serves Chat Completions at `/v1/chat/completions` and model listing at `/v1/models`; it does not serve `/v1/responses`.
-`spillway doctor` prints this limitation.
-Configure the client to use Chat Completions or choose a client that supports it.
+Spillway supports Chat Completions, Responses, and Anthropic Messages.
+Run `spillway setup opencode`, `spillway setup claude`, or `spillway setup codex` to write the global client configuration.
+Keep `spillway serve -config <path>` running while you use the client.
+For Codex, start it with `codex --profile spillway`.
+Check the client-specific details and supported protocol features in [Connect a client app](clients.md).
 
 ## `spillway serve` cannot use the configured address
 

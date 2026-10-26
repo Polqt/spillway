@@ -6,10 +6,10 @@ server:
     - name: evaluation
       key: "sk-test-spillway-evaluation"
 providers:
-  mock: {}
+  ollama: {}
 tiers:
   demo:
-    models: [mock/echo]
+    models: [ollama/llama3.2:3b]
 router:
   mode: rules
   auto: [demo]

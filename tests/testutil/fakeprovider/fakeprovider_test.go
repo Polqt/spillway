@@ -1,4 +1,4 @@
-package mock_test
+package fakeprovider_test
 
 import (
 	"context"
@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
+	"github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 var fixedNow = func() time.Time { return time.Unix(1760400000, 0) }
 
-func newMock(t *testing.T) *mock.Provider {
+func newFakeProvider(t *testing.T) *fakeprovider.Provider {
 	t.Helper()
-	p, err := mock.New(mock.Options{Now: fixedNow})
+	p, err := fakeprovider.New(fakeprovider.Options{Now: fixedNow})
 	if err != nil {
-		t.Fatalf("mock.New: %v", err)
+		t.Fatalf("fakeprovider.New: %v", err)
 	}
 	return p
 }
@@ -37,23 +37,23 @@ func userRequest(model, text string) providers.ChatRequest {
 	}
 }
 
-func TestMock_Name(t *testing.T) {
+func TestFakeProvider_Name(t *testing.T) {
 	t.Parallel()
-	if got := newMock(t).Name(); got != "mock" {
+	if got := newFakeProvider(t).Name(); got != "mock" {
 		t.Errorf("Name() = %q, want mock", got)
 	}
 }
 
 func TestNew_RequiresClock(t *testing.T) {
 	t.Parallel()
-	if _, err := mock.New(mock.Options{}); err == nil {
+	if _, err := fakeprovider.New(fakeprovider.Options{}); err == nil {
 		t.Error("New without Now succeeded, want error")
 	}
 }
 
-func TestMock_Models(t *testing.T) {
+func TestFakeProvider_Models(t *testing.T) {
 	t.Parallel()
-	models, err := newMock(t).Models(t.Context())
+	models, err := newFakeProvider(t).Models(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestMock_Models(t *testing.T) {
 	}
 }
 
-func TestMock_ErrorModels(t *testing.T) {
+func TestFakeProvider_ErrorModels(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		model string
@@ -80,7 +80,7 @@ func TestMock_ErrorModels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
 			t.Parallel()
-			p := newMock(t)
+			p := newFakeProvider(t)
 			_, err := p.Chat(t.Context(), userRequest(tt.model, "hi"))
 			if !errors.Is(err, tt.kind) {
 				t.Errorf("Chat() error = %v, want %v", err, tt.kind)
@@ -105,9 +105,9 @@ func TestMock_ErrorModels(t *testing.T) {
 	}
 }
 
-func TestMock_EchoChat(t *testing.T) {
+func TestFakeProvider_EchoChat(t *testing.T) {
 	t.Parallel()
-	p := newMock(t)
+	p := newFakeProvider(t)
 
 	resp, err := p.Chat(t.Context(), userRequest("echo", "hello spillway"))
 	if err != nil {
@@ -119,8 +119,8 @@ func TestMock_EchoChat(t *testing.T) {
 		t.Fatalf("body is not JSON: %v", err)
 	}
 	id, _ := body["id"].(string)
-	if !regexp.MustCompile(`^chatcmpl-mock-[0-9a-f]{12}$`).MatchString(id) {
-		t.Errorf("id = %q, want chatcmpl-mock-<12 hex>", id)
+	if !regexp.MustCompile(`^chatcmpl-test-[0-9a-f]{12}$`).MatchString(id) {
+		t.Errorf("id = %q, want chatcmpl-test-<12 hex>", id)
 	}
 	body["id"] = "ID"
 	got, _ := json.Marshal(body)
@@ -131,9 +131,9 @@ func TestMock_EchoChat(t *testing.T) {
 	}
 }
 
-func TestMock_EchoIDIsDeterministic(t *testing.T) {
+func TestFakeProvider_EchoIDIsDeterministic(t *testing.T) {
 	t.Parallel()
-	p := newMock(t)
+	p := newFakeProvider(t)
 	id := func(text string) string {
 		resp, err := p.Chat(t.Context(), userRequest("echo", text))
 		if err != nil {
@@ -154,19 +154,19 @@ func TestMock_EchoIDIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestMock_UnknownModel(t *testing.T) {
+func TestFakeProvider_UnknownModel(t *testing.T) {
 	t.Parallel()
-	_, err := newMock(t).Chat(t.Context(), userRequest("nope", "hi"))
+	_, err := newFakeProvider(t).Chat(t.Context(), userRequest("nope", "hi"))
 	if !errors.Is(err, providers.ErrModelNotFound) {
 		t.Errorf("error = %v, want ErrModelNotFound", err)
 	}
 }
 
-func TestMock_HonoursContext(t *testing.T) {
+func TestFakeProvider_HonoursContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := newMock(t).Chat(ctx, userRequest("echo", "hi"))
+	_, err := newFakeProvider(t).Chat(ctx, userRequest("echo", "hi"))
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
 	}
@@ -193,9 +193,9 @@ func drain(t *testing.T, s providers.Stream) ([]string, error) {
 	}
 }
 
-func TestMock_EchoStream(t *testing.T) {
+func TestFakeProvider_EchoStream(t *testing.T) {
 	t.Parallel()
-	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
+	s, err := newFakeProvider(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestMock_EchoStream(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("stream ended with %v, want io.EOF", err)
 	}
-	id := regexp.MustCompile(`chatcmpl-mock-[0-9a-f]{12}`)
+	id := regexp.MustCompile(`chatcmpl-test-[0-9a-f]{12}`)
 	const head = `{"id":"ID","object":"chat.completion.chunk","created":1760400000,"model":"echo","choices":[{"index":0,"delta":`
 	want := []string{
 		head + `{"role":"assistant","content":"You"},"logprobs":null,"finish_reason":null}]}`,
@@ -224,9 +224,9 @@ func TestMock_EchoStream(t *testing.T) {
 	}
 }
 
-func TestMock_EchoStreamReportsUsage(t *testing.T) {
+func TestFakeProvider_EchoStreamReportsUsage(t *testing.T) {
 	t.Parallel()
-	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
+	s, err := newFakeProvider(t).ChatStream(t.Context(), userRequest("echo", "hello spillway"))
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -251,9 +251,9 @@ func TestMock_EchoStreamReportsUsage(t *testing.T) {
 	}
 }
 
-func TestMock_StreamErrorMidStream(t *testing.T) {
+func TestFakeProvider_StreamErrorMidStream(t *testing.T) {
 	t.Parallel()
-	s, err := newMock(t).ChatStream(t.Context(), userRequest("stream-error", "hello spillway"))
+	s, err := newFakeProvider(t).ChatStream(t.Context(), userRequest("stream-error", "hello spillway"))
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -268,26 +268,26 @@ func TestMock_StreamErrorMidStream(t *testing.T) {
 	}
 }
 
-func TestMock_StreamErrorModelFailsChat(t *testing.T) {
+func TestFakeProvider_StreamErrorModelFailsChat(t *testing.T) {
 	t.Parallel()
-	_, err := newMock(t).Chat(t.Context(), userRequest("stream-error", "hi"))
+	_, err := newFakeProvider(t).Chat(t.Context(), userRequest("stream-error", "hi"))
 	if !errors.Is(err, providers.ErrUpstreamUnavailable) {
 		t.Errorf("error = %v, want ErrUpstreamUnavailable", err)
 	}
 }
 
-func TestMock_StreamUnknownModel(t *testing.T) {
+func TestFakeProvider_StreamUnknownModel(t *testing.T) {
 	t.Parallel()
-	_, err := newMock(t).ChatStream(t.Context(), userRequest("nope", "hi"))
+	_, err := newFakeProvider(t).ChatStream(t.Context(), userRequest("nope", "hi"))
 	if !errors.Is(err, providers.ErrModelNotFound) {
 		t.Errorf("error = %v, want ErrModelNotFound", err)
 	}
 }
 
-func TestMock_StreamHonoursContext(t *testing.T) {
+func TestFakeProvider_StreamHonoursContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
-	s, err := newMock(t).ChatStream(ctx, userRequest("echo", "hello spillway"))
+	s, err := newFakeProvider(t).ChatStream(ctx, userRequest("echo", "hello spillway"))
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}
@@ -301,9 +301,9 @@ func TestMock_StreamHonoursContext(t *testing.T) {
 	}
 }
 
-func TestMock_StreamClose(t *testing.T) {
+func TestFakeProvider_StreamClose(t *testing.T) {
 	t.Parallel()
-	s, err := newMock(t).ChatStream(t.Context(), userRequest("echo", "hi"))
+	s, err := newFakeProvider(t).ChatStream(t.Context(), userRequest("echo", "hi"))
 	if err != nil {
 		t.Fatalf("ChatStream: %v", err)
 	}

@@ -458,7 +458,7 @@ func IsZeroSpendEligible(ref providers.ModelRef, provider Provider) bool {
 		serviceType = ref.Provider
 	}
 	switch serviceType {
-	case "ollama", "mock":
+	case "ollama":
 		return true
 	case "openrouter":
 		return strings.HasSuffix(ref.Model, ":free")
@@ -535,7 +535,7 @@ func validateLocalKeys(keys LocalKeys) error {
 
 func validateProviders(ps map[string]Provider) error {
 	if len(ps) == 0 {
-		return errors.New(`providers must configure at least one provider; add "mock: {}" to try Spillway without provider keys`)
+		return errors.New(`providers must configure at least one provider; configure Gemini, Groq, Ollama or OpenRouter`)
 	}
 	if len(ps) > maxProviderInstances {
 		return fmt.Errorf("providers may configure at most %d instances", maxProviderInstances)
@@ -570,7 +570,7 @@ func validateProviders(ps map[string]Provider) error {
 			preset = servicePreset
 		}
 		if preset.RequiresKey && provider.APIKey.IsZero() {
-			return fmt.Errorf("providers.%s.api_key is required; set it to an environment reference such as \"${%s}\"", name, preset.KeyEnv)
+			return fmt.Errorf("providers.%s.api_key is required; run `spillway provider key set %s` or configure an environment reference", name, name)
 		}
 		if !preset.AcceptsKey && !provider.APIKey.IsZero() {
 			return fmt.Errorf("providers.%s.api_key is not supported; remove it", name)

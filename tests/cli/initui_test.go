@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Polqt/spillway/internal/cli/initui"
 )
@@ -16,6 +17,8 @@ import (
 func TestInitWizardSavesOnlyAfterReviewConfirmation(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	var saved bool
 	var output bytes.Buffer
 	prepare := func(draft initui.Draft) (initui.Prepared, error) {
@@ -28,17 +31,17 @@ func TestInitWizardSavesOnlyAfterReviewConfirmation(t *testing.T) {
 			},
 		}, nil
 	}
-	keys := "\r" + strings.Repeat("j", 5) + "\r\rtabj\r j\r\r\r"
-	result, err := initui.Run(context.Background(), initui.Options{
+	keys := "\rj j\r\r\tj\rj\r\r\r"
+	result, err := initui.Run(ctx, initui.Options{
 		ConfigPath: path,
 		Providers: []initui.Provider{
 			{Name: "gemini", Hint: "key from GEMINI_API_KEY", SuggestedModel: "flash", FreeTierAttestable: true},
-			{Name: "mock", Hint: "local", SuggestedModel: "echo"},
+			{Name: "ollama", Hint: "local", SuggestedModel: "echo"},
 		},
 		Prepare: prepare,
 	}, strings.NewReader(keys), &output)
 	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+		t.Fatalf("Run() error = %v; last screen: %q", err, output.String())
 	}
 	if !saved {
 		t.Fatal("wizard returned without saving after review confirmation")
@@ -60,7 +63,7 @@ func TestInitWizardCancellationDoesNotSave(t *testing.T) {
 	saved := false
 	_, err := initui.Run(context.Background(), initui.Options{
 		ConfigPath: path,
-		Providers:  []initui.Provider{{Name: "mock", SuggestedModel: "echo"}},
+		Providers:  []initui.Provider{{Name: "ollama", SuggestedModel: "echo"}},
 		Prepare: func(initui.Draft) (initui.Prepared, error) {
 			return initui.Prepared{Save: func(context.Context) error { saved = true; return nil }}, nil
 		},

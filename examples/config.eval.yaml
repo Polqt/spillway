@@ -1,4 +1,4 @@
-# Evaluation-only server config. It uses the offline fake provider and keeps
+# Evaluation-only server config using a local Ollama service. It keeps
 # evaluation metadata out of a usage database by omitting store:.
 server:
   listen: "127.0.0.1:8080"
@@ -6,9 +6,9 @@ server:
     - name: evaluation
       key: "sk-test-spillway-evaluation"
 providers:
-  mock: {}
+  ollama: {}
 tiers:
   demo:
-    models: [mock/echo]
+    models: [ollama/llama3.2:3b]
 router:
   auto: [demo]

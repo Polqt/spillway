@@ -208,9 +208,6 @@ func servePricing(w http.ResponseWriter, o Options) {
 	}
 	prices := make(map[string]price, len(o.DashboardPricing))
 	for model, configured := range o.DashboardPricing {
-		if strings.HasPrefix(model, "mock/") {
-			continue
-		}
 		prices[model] = price{configured.InputMicroUSDPerMillion, configured.OutputMicroUSDPerMillion}
 	}
 	writeJSON(w, http.StatusOK, struct {

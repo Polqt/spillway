@@ -62,9 +62,22 @@ func (a *authenticator) middleware(next http.Handler) http.Handler {
 			return
 		}
 		scheme, token, hasToken := strings.Cut(r.Header.Get("Authorization"), " ")
+		if r.URL.Path == "/v1/messages" {
+			if apiKey := r.Header.Get("x-api-key"); apiKey != "" {
+				if hasToken && (!strings.EqualFold(scheme, "Bearer") || token != apiKey) {
+					writeClientError(w, protocolAnthropic, http.StatusUnauthorized, "Invalid API key.", "invalid_api_key")
+					return
+				}
+				token, scheme, hasToken = apiKey, "Bearer", true
+			}
+		}
 		name, dashboard, ok := a.match(token)
 		if !hasToken || !strings.EqualFold(scheme, "Bearer") || !ok {
-			writeError(w, http.StatusUnauthorized, authFailedMessage, typeAuthentication, "invalid_api_key")
+			if r.URL.Path == "/v1/messages" {
+				writeClientError(w, protocolAnthropic, http.StatusUnauthorized, "Invalid API key.", "invalid_api_key")
+			} else {
+				writeError(w, http.StatusUnauthorized, authFailedMessage, typeAuthentication, "invalid_api_key")
+			}
 			return
 		}
 		recordFrom(r.Context()).clientApp = name

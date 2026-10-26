@@ -13,7 +13,7 @@ VERSION ?= $(or $(shell git describe --tags --always --dirty),dev)
 # The race detector needs cgo; it is skipped where no C compiler is available.
 RACE    ?= $(if $(filter 1,$(shell $(GO) env CGO_ENABLED)),-race,)
 
-.PHONY: web-deps web-playwright-deps web-build web-test build test fuzz lint check run mock vuln cover release-check snapshot
+.PHONY: web-deps web-playwright-deps web-build web-test build test fuzz lint check run vuln cover release-check snapshot
 
 web-deps:
 	$(PNPM) --dir apps/spillway/web install --frozen-lockfile
@@ -56,9 +56,6 @@ check: lint test
 
 run: build
 	$(BIN) serve -config examples/config.yaml
-
-mock: build
-	$(BIN) serve -config examples/config.mock.yaml
 
 vuln:
 	$(TOOL) govulncheck ./...

@@ -3,15 +3,18 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func addProviderCommands(ctx context.Context, parent *cobra.Command, options Options) {
@@ -23,7 +26,7 @@ func addProviderCommands(ctx context.Context, parent *cobra.Command, options Opt
 			}
 			return nil
 		}
-		_, _ = fmt.Fprint(cmd.OutOrStdout(), "usage: spillway provider <command>\n\ncommands:\n  list             list configured instances\n  show <instance>  show a configured instance\n")
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), "usage: spillway provider <command>\n\ncommands:\n  list             list configured instances\n  show <instance>  show a configured instance\n  key set <name>   save a provider key with masked input\n")
 		return commandError{code: 2}
 	}}
 	provider.SetContext(ctx)
@@ -68,7 +71,102 @@ func addProviderCommands(ctx context.Context, parent *cobra.Command, options Opt
 		subcommand.Flags().String("config", defaultConfigPath, "path to the config file")
 	}
 	provider.AddCommand(show)
+	key := &cobra.Command{Use: "key", Short: "set a provider API key", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), "usage: spillway provider key set <instance>\n")
+		return commandError{code: 2}
+	}}
+	setKey := &cobra.Command{Use: "set <instance>", Short: "save a provider key with masked input", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if !options.StdinTerminal || !options.StdoutTerminal {
+			return commandFailure{code: 1, err: fmt.Errorf("provider key input requires an interactive terminal; run this command in your terminal")}
+		}
+		file, ok := options.Stdin.(*os.File)
+		if !ok {
+			return commandFailure{code: 1, err: fmt.Errorf("provider key input requires a terminal stdin")}
+		}
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Provider key for %s (masked): ", args[0]); err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		secret, err := readMaskedProviderKey(file, cmd.ErrOrStderr())
+		if _, writeErr := fmt.Fprintln(cmd.ErrOrStderr()); writeErr != nil {
+			return commandFailure{code: 1, err: writeErr}
+		}
+		if err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		defer clear(secret)
+		path, _ := cmd.Flags().GetString("config")
+		doc, err := config.OpenDocument(ctx, path)
+		if err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		edit := doc.Edit()
+		if err := edit.SetProviderAPIKey(args[0], string(secret)); err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		change, err := edit.Result()
+		if err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		if _, err := doc.Commit(ctx, change, config.CommitOptions{Now: options.Now}); err != nil {
+			return commandFailure{code: 1, err: err}
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Saved the key for provider %s in %s. Keep this file private.\n", args[0], doc.Path())
+		return err
+	}}
+	setKey.Flags().String("config", defaultConfigPath, "path to the config file")
+	key.AddCommand(setKey)
+	provider.AddCommand(key)
 	parent.AddCommand(provider)
+}
+
+func readMaskedProviderKey(input *os.File, output io.Writer) ([]byte, error) {
+	fd := int(input.Fd())
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return nil, fmt.Errorf("enable masked provider key input: %w", err)
+	}
+	defer func() { _ = term.Restore(fd, state) }()
+
+	secret := make([]byte, 0, 256)
+	var one [1]byte
+	for {
+		n, err := input.Read(one[:])
+		if err != nil {
+			clear(secret)
+			return nil, fmt.Errorf("read provider key: %w", err)
+		}
+		if n == 0 {
+			continue
+		}
+		switch one[0] {
+		case '\r', '\n':
+			if len(secret) == 0 {
+				return nil, errors.New("provider key input was empty")
+			}
+			return secret, nil
+		case 3:
+			clear(secret)
+			return nil, errors.New("provider key input canceled")
+		case '\b', 0x7f:
+			if len(secret) > 0 {
+				secret = secret[:len(secret)-1]
+				if _, err := io.WriteString(output, "\b \b"); err != nil {
+					clear(secret)
+					return nil, fmt.Errorf("update masked input: %w", err)
+				}
+			}
+		default:
+			if len(secret) >= 4096 {
+				clear(secret)
+				return nil, errors.New("provider key is longer than 4096 bytes")
+			}
+			secret = append(secret, one[0])
+			if _, err := io.WriteString(output, "*"); err != nil {
+				clear(secret)
+				return nil, fmt.Errorf("update masked input: %w", err)
+			}
+		}
+	}
 }
 
 func runProviderBrowser(ctx context.Context, path string, options Options) error {
@@ -118,21 +216,27 @@ func writeProviderList(ctx context.Context, out io.Writer, path string, lookupEn
 		return err
 	}
 	providersInTiers := providerTiers(cfg)
-	if _, err := fmt.Fprintln(out, "INSTANCE          TYPE        KEY VARIABLE       IN THIS TERMINAL  FREE TIER  BASE URL  IN TIERS"); err != nil {
+	if _, err := fmt.Fprintln(out, "INSTANCE          TYPE        KEY SOURCE         KEY STATUS       FREE TIER  BASE URL  IN TIERS"); err != nil {
 		return err
 	}
 	for _, name := range sortedProviderNames(cfg.Providers) {
 		entry := cfg.Providers[name]
 		preset, _ := providers.LookupPreset(configuredServiceType(name, entry))
-		keyName, err := config.ProviderKeyVariable(ctx, path, name)
-		if err != nil {
-			return err
-		}
-		if keyName == "" && preset.RequiresKey {
-			keyName = preset.KeyEnv
+		localKey := preset.RequiresKey && entry.APIKeyEnv == "" && !entry.APIKey.IsZero()
+		keyName := ""
+		if !localKey {
+			keyName, err = config.ProviderKeyVariable(ctx, path, name)
+			if err != nil {
+				return err
+			}
+			if keyName == "" && preset.RequiresKey {
+				keyName = preset.KeyEnv
+			}
 		}
 		presence := "not required"
-		if keyName != "" {
+		if localKey {
+			presence = "stored in config"
+		} else if keyName != "" {
 			if _, ok := lookupEnv(keyName); ok {
 				presence = "set"
 			} else if scope, ok := persistentEnv(keyName); ok {
@@ -173,12 +277,16 @@ func writeProviderShow(ctx context.Context, out io.Writer, path, name string, lo
 	}
 	serviceType := configuredServiceType(name, entry)
 	preset, _ := providers.LookupPreset(serviceType)
-	keyName, err := config.ProviderKeyVariable(ctx, path, name)
-	if err != nil {
-		return err
-	}
-	if keyName == "" && preset.RequiresKey {
-		keyName = preset.KeyEnv
+	localKey := preset.RequiresKey && entry.APIKeyEnv == "" && !entry.APIKey.IsZero()
+	keyName := ""
+	if !localKey {
+		keyName, err = config.ProviderKeyVariable(ctx, path, name)
+		if err != nil {
+			return err
+		}
+		if keyName == "" && preset.RequiresKey {
+			keyName = preset.KeyEnv
+		}
 	}
 	identity := "preset"
 	if entry.Type != "" {
@@ -187,7 +295,11 @@ func writeProviderShow(ctx context.Context, out io.Writer, path, name string, lo
 	if _, err := fmt.Fprintf(out, "%s (%s)\n", name, identity); err != nil {
 		return err
 	}
-	if keyName != "" {
+	if localKey {
+		if _, err := fmt.Fprintln(out, "  key           stored locally in config"); err != nil {
+			return err
+		}
+	} else if keyName != "" {
 		keyState := providerKeyEnvironmentState(keyName, lookupEnv, persistentEnv, goos)
 		if _, err := fmt.Fprintf(out, "  key variable  ${%s}, %s\n", keyName, keyState); err != nil {
 			return err

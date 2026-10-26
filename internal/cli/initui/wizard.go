@@ -30,9 +30,10 @@ type Draft struct {
 }
 
 type Prepared struct {
-	Preview string
-	Save    func(context.Context) error
-	Success string
+	Preview       string
+	Save          func(context.Context) error
+	Success       string
+	WillOverwrite bool
 }
 
 type PrepareFunc func(Draft) (Prepared, error)
@@ -76,9 +77,9 @@ type Frame struct {
 
 // NewStyles returns the shared Spillway interactive color palette.
 func NewStyles() Styles {
-	accent := lipgloss.Color("#A78BFA")
-	cyan := lipgloss.Color("#68DDE0")
-	green := lipgloss.Color("#7CE6B3")
+	accent := lipgloss.Color("#8B5CF6")
+	cyan := lipgloss.Color("#2DD4BF")
+	green := lipgloss.Color("#34D399")
 	muted := lipgloss.Color("#A7B0C0")
 	return Styles{
 		Accent: accent, Cyan: cyan, Green: green, Muted: muted,
@@ -108,7 +109,7 @@ func RenderFrame(frame Frame) string {
 
 	logo := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7057D9")).Padding(0, 1).Render(" SPILLWAY ")
 	brand := styles.Title.Render("Local model gateway")
-	tagline := muted.Render("One setup. Your providers. Your machine.")
+	tagline := muted.Render("Your providers. Your machine.")
 	if frame.Badge == "" {
 		frame.Badge = "PRIVATE BY DEFAULT"
 	}
@@ -118,7 +119,7 @@ func RenderFrame(frame Frame) string {
 	if width < 88 {
 		headerRow = lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.JoinHorizontal(lipgloss.Center, logo, "  ", brand),
-			muted.Render("Private setup · no provider calls"),
+			muted.Render("Private by default · local control"),
 		)
 	}
 	headerWidth := min(width-8, 124)
@@ -189,10 +190,10 @@ func Run(ctx context.Context, options Options, input io.Reader, output io.Writer
 	search.SetValue(options.ConfigPath)
 	search.Focus()
 	aliasInput := textinput.New()
-	aliasInput.Placeholder = "gemini-work"
+	aliasInput.Placeholder = "work"
 	aliasInput.Prompt = "Project alias: "
 	aliasInput.CharLimit = 32
-	draft := Draft{ConfigPath: options.ConfigPath, Providers: []string{"mock"}}
+	draft := Draft{ConfigPath: options.ConfigPath}
 	m := model{ctx: ctx, options: options, draft: draft, step: stepPath, search: search, aliasInput: aliasInput}
 	program := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output))
 	done := make(chan struct{})
@@ -632,7 +633,7 @@ func (m model) View() tea.View {
 		Content: content,
 		Summary: m.renderSummary(styles.CyanText, styles.Title, styles.MutedText, styles.Selected),
 		Help:    helpText,
-		Badge:   "OFFLINE SETUP",
+		Badge:   "LOCAL SETUP",
 	})
 	v := tea.NewView(view)
 	v.AltScreen = !m.canceled && !m.done
@@ -688,7 +689,7 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 	case stepPath:
 		b.WriteString(title.Render("Choose a home for your gateway config"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Use a filename such as config.yaml. The folder must already exist; existing files are never overwritten."))
+		b.WriteString(muted.Render("Use a filename such as config.yaml. Existing regular files are backed up before replacement."))
 		b.WriteString("\n\n")
 		if !m.search.Focused() {
 			m.search.Focus()
@@ -697,7 +698,7 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 	case stepProviders:
 		b.WriteString(title.Render("Choose your providers"))
 		b.WriteString("\n")
-		b.WriteString(muted.Render("Select providers you already use. Mock works offline; keys stay in environment variables."))
+		b.WriteString(muted.Render("Select real providers you use. Provider API keys stay in environment variables."))
 		b.WriteString("\n\n")
 		for i, item := range m.options.Providers {
 			prefix := "  "
@@ -724,7 +725,11 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 				if m.cursor == m.geminiAliasActionIndex() {
 					prefix = active.Render("› ")
 				}
-				b.WriteString(prefix + "+ Add a named Gemini project\n")
+				action := "+ Add a named Gemini project"
+				if len(m.draft.GeminiAliases) > 0 {
+					action = "+ Add another Gemini project"
+				}
+				b.WriteString(prefix + action + "\n")
 				for _, alias := range m.draft.GeminiAliases {
 					b.WriteString("    " + alias + " → " + GeminiAliasKeyEnv(alias) + " · direct only, may incur charges\n")
 				}
@@ -805,6 +810,10 @@ func (m model) renderStep(title, active, selected, muted lipgloss.Style) string 
 		b.WriteString(title.Render("Review before saving"))
 		b.WriteString("\n")
 		b.WriteString(muted.Render("The generated local API key is hidden. Provider credentials stay in environment variables."))
+		if m.prepared.WillOverwrite {
+			warning := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FBBF24"))
+			b.WriteString("\n\n" + warning.Render("Existing config will be backed up, then replaced."))
+		}
 		b.WriteString("\n\n")
 		preview := m.prepared.Preview
 		if preview == "" {

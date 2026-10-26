@@ -111,7 +111,7 @@ func TestProviderAdd_AddsNamedAuthorizedInstanceWithoutChangingRoutes(t *testing
 
 func TestProviderAdd_WritesOnlyEnvReference(t *testing.T) {
 	t.Parallel()
-	path, _ := providerAddFixture(t, "mock")
+	path, _ := providerAddFixture(t, "ollama")
 	const secret = "gsk_test-provider-add-canary"
 	lookup := func(name string) (string, bool) { return secret, name == "GROQ_API_KEY" }
 	var stdout, stderr bytes.Buffer
@@ -135,7 +135,7 @@ func TestProviderAdd_WritesOnlyEnvReference(t *testing.T) {
 func TestProviderAdd_KeyLikeKeyEnvRefusedWithoutEcho(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{"sk-test-provider-key-canary", "gsk_test-key-canary", "AIzaSyCanary", strings.Repeat("K", 65)} {
-		path, before := providerAddFixture(t, "mock")
+		path, before := providerAddFixture(t, "ollama")
 		var stdout, stderr bytes.Buffer
 		code := cli.Run(t.Context(), []string{"provider", "add", "gemini", "--key-env", value, "--config", path}, nil, &stdout, &stderr, noEnv)
 		if code != 1 {
@@ -168,7 +168,11 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path, _ := providerAddFixture(t, "mock")
+			fixtureProvider := "ollama"
+			if test.provider == "ollama" {
+				fixtureProvider = "groq"
+			}
+			path, _ := providerAddFixture(t, fixtureProvider)
 			var stdout, stderr bytes.Buffer
 			args := []string{"provider", "add", test.provider, "--tier", "free", "--yes", "--config", path}
 			if test.flags != "" {
@@ -194,17 +198,17 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 	}
 	path, _ := providerAddFixture(t, "groq")
 	var stdout, stderr bytes.Buffer
-	args := []string{"provider", "add", "mock", "--tier", "free", "--yes", "--config", path}
+	args := []string{"provider", "add", "ollama", "--tier", "free", "--yes", "--config", path}
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv); code != 0 {
-		t.Fatalf("mock exit = %d; stderr = %q", code, stderr.String())
+		t.Fatalf("ollama exit = %d; stderr = %q", code, stderr.String())
 	}
 	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "mock/echo") {
-		t.Error("mock suggested model was not added")
+	if !strings.Contains(string(data), "ollama/llama3.2:3b") {
+		t.Error("ollama suggested model was not added")
 	}
 }
 
@@ -222,7 +226,7 @@ func TestProviderAdd_UsesSharedInteractiveFrame(t *testing.T) {
 
 func TestProviderAdd_YesWithoutNameIsUsageError(t *testing.T) {
 	t.Parallel()
-	path, before := providerAddFixture(t, "mock")
+	path, before := providerAddFixture(t, "ollama")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"provider", "add", "--yes", "--config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 2 || !strings.Contains(stderr.String(), "--yes requires a provider name") {
@@ -240,7 +244,7 @@ func TestProviderAdd_YesWithoutNameIsUsageError(t *testing.T) {
 
 func TestProviderAdd_DryRunWritesNothing(t *testing.T) {
 	t.Parallel()
-	path, before := providerAddFixture(t, "mock")
+	path, before := providerAddFixture(t, "ollama")
 	var stdout, stderr bytes.Buffer
 	args := []string{"provider", "add", "gemini", "--dry-run", "--yes", "--config", path}
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv); code != 0 {
@@ -290,7 +294,7 @@ func TestProviderAdd_FlowStyleConfigPrintsSnippet(t *testing.T) {
 
 func TestProviderAdd_ReportsUnsetVariableAndRestart(t *testing.T) {
 	t.Parallel()
-	path, _ := providerAddFixture(t, "mock")
+	path, _ := providerAddFixture(t, "ollama")
 	var stdout, stderr bytes.Buffer
 	args := []string{"provider", "add", "gemini", "--yes", "--config", path}
 	if code := cli.Run(t.Context(), args, nil, &stdout, &stderr, noEnv); code != 0 {
@@ -314,15 +318,15 @@ func TestProviderAdd_HelpMarksExperimental(t *testing.T) {
 	}
 }
 
-func TestInit_ExistingConfigSuggestsProviderAdd(t *testing.T) {
+func TestInit_ExistingConfigRequiresOverwriteConfirmation(t *testing.T) {
 	t.Parallel()
-	path, before := providerAddFixture(t, "mock")
+	path, before := providerAddFixture(t, "ollama")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, nil, &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "spillway provider add") {
+	if !strings.Contains(stderr.String(), "-overwrite") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	// #nosec G304 -- path is returned by providerAddFixture and remains inside t.TempDir.
@@ -341,8 +345,8 @@ func providerAddFixture(t *testing.T, provider string) (string, []byte) {
 		"groq": filepath.Join("..", "config", "testdata", "edit", "init-groq.yaml"),
 	}[provider]
 	var data []byte
-	if provider == "mock" {
-		data = []byte("server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: \"sk-test-provider-add-local\"\nlogging:\n  level: info\nproviders:\n  mock: {}\ntiers:\n  free:\n    models:\n      - mock/echo\nrouter:\n  auto:\n    - free\n")
+	if provider == "ollama" {
+		data = []byte("server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: \"sk-test-provider-add-local\"\nlogging:\n  level: info\nproviders:\n  ollama: {}\ntiers:\n  free:\n    models:\n      - ollama/echo\nrouter:\n  auto:\n    - free\n")
 	} else {
 		var err error
 		// #nosec G304 -- fixture is selected from the fixed map above.
