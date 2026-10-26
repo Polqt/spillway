@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -63,23 +64,27 @@ func addModelCommands(ctx context.Context, root *cobra.Command, options Options)
 		if err != nil {
 			return commandFailure{code: 1, err: err}
 		}
-		if err := change.WritePreview(cmd.OutOrStdout()); err != nil {
+		var result bytes.Buffer
+		if err := change.WritePreview(&result); err != nil {
 			return commandFailure{code: 1, err: fmt.Errorf("write preview: %w", err)}
 		}
 		if dryRun {
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Dry run only; %s was not changed.\n", doc.Path())
+			_, err = fmt.Fprintf(&result, "Dry run only; %s was not changed.\n", doc.Path())
 			if err != nil {
 				return commandFailure{code: 1, err: err}
 			}
-			return nil
+		} else {
+			updated, commitErr := doc.Commit(ctx, change, config.CommitOptions{Now: options.Now})
+			if commitErr != nil {
+				return commandFailure{code: 1, err: commitErr}
+			}
+			_, err = fmt.Fprintf(&result, "Updated %s; backup at %s.\nRestart Spillway to apply the change.\n", updated.Path, updated.BackupPath)
+			if err != nil {
+				return commandFailure{code: 1, err: err}
+			}
 		}
-		result, err := doc.Commit(ctx, change, config.CommitOptions{Now: options.Now})
-		if err != nil {
-			return commandFailure{code: 1, err: err}
-		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Updated %s; backup at %s.\nRestart Spillway to apply the change.\n", result.Path, result.BackupPath)
-		if err != nil {
-			return commandFailure{code: 1, err: err}
+		if err := writeCommandResult(ctx, cmd, "spillway model replace", result.String(), options.interactive(), options.Stdin, cmd.OutOrStdout()); err != nil {
+			return commandFailure{code: 1, err: fmt.Errorf("show replacement result: %w", err)}
 		}
 		return nil
 	}}

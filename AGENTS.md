@@ -30,7 +30,6 @@ make test    # go test -race -count=1 ./...
 make lint    # gofmt check + golangci-lint (config in .golangci.yml)
 make check   # lint + test; must pass before any task is done
 make run     # build and serve with examples/config.yaml
-make mock    # build and serve with examples/config.mock.yaml (no real keys needed)
 make vuln    # govulncheck
 make cover   # coverage report to coverage.html (-coverpkg=./..., since tests sit outside their packages)
 ```
@@ -59,7 +58,7 @@ internal/redact/                 secret type and scrubbing helpers              
 internal/providers/              Provider interface, shared types, registry              v0.1
 internal/providers/openaicompat/ one client for OpenAI-compatible APIs (Groq, OpenRouter, Ollama presets)  v0.1
 internal/providers/gemini/       Gemini adapter                                          v0.1
-internal/providers/mock/         deterministic offline provider for tests and demos     v0.1
+tests/testutil/fakeprovider/     deterministic provider fake used only by tests
 internal/quota/                  per-key limits, 429/retry-after, circuit breakers      v0.2
 internal/router/                 rules, embedding classifier, LLM judge, cascade        v0.3+
 internal/store/                  SQLite access and migrations                           v0.4

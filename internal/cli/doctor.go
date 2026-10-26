@@ -97,7 +97,7 @@ func runDoctor(ctx context.Context, out io.Writer, configPath string, explicit b
 		assets = options.DashboardAssets
 	}
 	channel := detectInstallChannel(options.GOOS, executable, version, moduleVersion, vcsModified, assets)
-	if err := write("spillway %s at %s (%s)\nServes OpenAI Chat Completions (/v1/chat/completions, /v1/models); the Responses API is not served.\n", version, executable, channel.name); err != nil {
+	if err := write("spillway %s at %s (%s)\nServes OpenAI Chat Completions, OpenAI Responses (/v1/responses), Anthropic Messages (/v1/messages), and model listing (/v1/models).\n", version, executable, channel.name); err != nil {
 		return failed, err
 	}
 	if err := write("\nConfig\n"); err != nil {
@@ -199,6 +199,10 @@ func reportVariablesAndKeys(ctx context.Context, status func(string, string, ...
 	variables := make(map[string]*variableRole)
 	providerVariable := make(map[string]string)
 	for _, name := range sortedProviderNames(cfg.Providers) {
+		provider := cfg.Providers[name]
+		if provider.APIKeyEnv == "" && !provider.APIKey.IsZero() {
+			continue
+		}
 		variable, err := config.ProviderKeyVariable(ctx, path, name)
 		if err != nil {
 			return status("fail", "cannot inspect key variable for %s: %v", name, err)

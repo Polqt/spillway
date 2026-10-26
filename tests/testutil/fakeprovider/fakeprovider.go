@@ -1,6 +1,5 @@
-// Package mock is a deterministic, offline provider for tests and demos.
-// It does no network or file I/O.
-package mock
+// Package fakeprovider provides deterministic test implementations.
+package fakeprovider
 
 import (
 	"context"
@@ -16,23 +15,23 @@ import (
 	"github.com/Polqt/spillway/internal/providers"
 )
 
-// Options configures the mock provider.
+// Options configures the test provider.
 type Options struct {
 	Name string
 	// Now supplies the created timestamp of every response.
 	Now func() time.Time
 }
 
-// Provider is the deterministic mock provider used by tests and demos.
+// Provider is a deterministic provider used by tests.
 type Provider struct {
 	name string
 	now  func() time.Time
 }
 
-// New returns the mock provider.
+// New returns the test provider.
 func New(o Options) (*Provider, error) {
 	if o.Now == nil {
-		return nil, errors.New("mock: Options.Now is required")
+		return nil, errors.New("fake provider: Options.Now is required")
 	}
 	if o.Name == "" {
 		o.Name = "mock"
@@ -40,10 +39,10 @@ func New(o Options) (*Provider, error) {
 	return &Provider{name: o.Name, now: o.Now}, nil
 }
 
-// Name returns "mock".
+// Name returns the configured provider name.
 func (p *Provider) Name() string { return p.name }
 
-// Models lists the mock provider's supported models.
+// Models lists the test provider's supported models.
 func (p *Provider) Models(ctx context.Context) ([]providers.Model, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -121,7 +120,7 @@ func (p *Provider) ChatStream(ctx context.Context, req providers.ChatRequest) (p
 	end := io.EOF
 	if req.Model == modelStreamError {
 		deltas = deltas[:2]
-		end = fmt.Errorf("mock: upstream model %q failed mid-stream: %w", req.Model, providers.ErrUpstreamUnavailable)
+		end = fmt.Errorf("fake provider: upstream model %q failed mid-stream: %w", req.Model, providers.ErrUpstreamUnavailable)
 	}
 	chunks := make([]providers.ChatChunk, len(deltas))
 	for i, d := range deltas {
@@ -143,7 +142,7 @@ type stream struct {
 
 func (s *stream) Recv() (providers.ChatChunk, error) {
 	if s.closed {
-		return providers.ChatChunk{}, errors.New("mock: stream is closed")
+		return providers.ChatChunk{}, errors.New("fake provider: stream is closed")
 	}
 	if err := s.ctx.Err(); err != nil {
 		return providers.ChatChunk{}, err
@@ -181,7 +180,7 @@ func checkModel(model string) error {
 func simulatedError(model string) error {
 	switch model {
 	case modelRateLimited:
-		return fmt.Errorf("mock: upstream model %q: %w", model, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited, Scope: "model"})
+		return fmt.Errorf("fake provider: upstream model %q: %w", model, providers.RetryAfterError{After: 7 * time.Second, Kind: providers.ErrRateLimited, Scope: "model"})
 	case modelUnauthorized:
 		return modelError(model, providers.ErrUnauthorized)
 	case modelUnavailable:
@@ -192,10 +191,10 @@ func simulatedError(model string) error {
 }
 
 func modelError(model string, kind error) error {
-	return fmt.Errorf("mock: upstream model %q: %w", model, kind)
+	return fmt.Errorf("fake provider: upstream model %q: %w", model, kind)
 }
 
-// reply is what the mock answers to req, before it is shaped as a response
+// reply creates a deterministic response before shaping it for the API.
 // or as chunks.
 type reply struct {
 	id      string
@@ -227,10 +226,10 @@ func (p *Provider) reply(req providers.ChatRequest) (reply, error) {
 func requestID(req providers.ChatRequest) (string, error) {
 	b, err := json.Marshal(req)
 	if err != nil {
-		return "", fmt.Errorf("mock: encode request: %w", err)
+		return "", fmt.Errorf("fake provider: encode request: %w", err)
 	}
 	sum := sha256.Sum256(b)
-	return "chatcmpl-mock-" + hex.EncodeToString(sum[:])[:12], nil
+	return "chatcmpl-test-" + hex.EncodeToString(sum[:])[:12], nil
 }
 
 func lastUserText(msgs []providers.Message) string {

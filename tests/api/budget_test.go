@@ -12,9 +12,9 @@ import (
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
+	fakeprovider "github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 func TestChat_BudgetSkipsPaidCandidateAndServesFreeCandidate(t *testing.T) {
@@ -23,7 +23,7 @@ func TestChat_BudgetSkipsPaidCandidateAndServesFreeCandidate(t *testing.T) {
 		t.Fatal("budget-blocked paid provider was called")
 		return providers.ChatResponse{}, nil
 	}}
-	free, err := mock.New(mock.Options{Now: func() time.Time { return now }})
+	free, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestChat_BudgetSkipsPaidCandidateAndServesFreeCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		Providers: map[string]config.Provider{"openrouter": {}, "mock": {}},
+		Providers: map[string]config.Provider{"openrouter": {}, "mock": {Type: "ollama"}},
 		Pricing:   map[string]config.Price{"openrouter/vendor/model": {InputMicroUSDPerMillion: 1_000_000, OutputMicroUSDPerMillion: 1_000_000}},
 	}
 	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 1}, Providers: cfg.Providers, Now: func() time.Time { return now }})
@@ -253,7 +253,7 @@ func TestChat_BudgetChargesReportedCostBeforeNextPaidRequest(t *testing.T) {
 }
 
 func TestChat_DirectFreeReferenceStillServesOverBudget(t *testing.T) {
-	provider, err := mock.New(mock.Options{Now: time.Now})
+	provider, err := fakeprovider.New(fakeprovider.Options{Now: time.Now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestChat_DirectFreeReferenceStillServesOverBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{Providers: map[string]config.Provider{"mock": {}}}
+	cfg := config.Config{Providers: map[string]config.Provider{"mock": {Type: "ollama"}}}
 	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 1}, Providers: cfg.Providers})
 	if err != nil {
 		t.Fatal(err)

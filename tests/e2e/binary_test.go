@@ -3,10 +3,12 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -59,12 +62,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestBinary_MockSpilloverMatchesDocs(t *testing.T) {
+func TestBinary_EvaluationConfigStarts(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := os.ReadFile(filepath.Join(root, "examples", "config.mock.yaml")) // #nosec G304 -- root is the repository root found from this test's source directory.
+	config, err := os.ReadFile(filepath.Join(root, "examples", "config.eval.yaml")) // #nosec G304 -- root is the repository root found from this test's source directory.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,27 +97,25 @@ func TestBinary_MockSpilloverMatchesDocs(t *testing.T) {
 	})
 	baseURL := "http://" + addr
 	waitForBinaryServer(t, baseURL, wait)
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"spillover demo"}]}`))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, baseURL+"/healthz", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer sk-test-spillway-mock")
-	request.Header.Set("Content-Type", "application/json")
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil {
-			t.Errorf("close mock response: %v", err)
+			t.Errorf("close health response: %v", err)
 		}
 	}()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || response.Header.Get("x-spillway-route") != "auto; tier demo; candidate 3/3" || !bytes.Contains(body, []byte("spillover demo")) {
-		t.Fatalf("mock response = %d route %q body %s", response.StatusCode, response.Header.Get("x-spillway-route"), body)
+	if response.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("health response = %d body %s", response.StatusCode, body)
 	}
 }
 
@@ -148,7 +149,7 @@ func TestBinary_LdflagsVersionIsPrinted(t *testing.T) {
 func TestBinary_InitServeQuickstart(t *testing.T) {
 	workDir := t.TempDir()
 	configPath := filepath.Join(workDir, "config.yaml")
-	initOutput, initErr := runBinary(t, workDir, "init", "-yes", "-providers", "mock", "-store", "-config", configPath)
+	initOutput, initErr := runBinary(t, workDir, "init", "-yes", "-providers", "ollama", "-store", "-config", configPath)
 	if initErr != nil {
 		t.Fatalf("spillway init: %v\n%s", initErr, initOutput)
 	}
@@ -205,11 +206,6 @@ func TestBinary_InitServeQuickstart(t *testing.T) {
 	}
 
 	requestBinaryAPI(t, baseURL, http.MethodGet, "/v1/models", "", appKey, http.StatusOK, "")
-	requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","messages":[{"role":"user","content":"binary quickstart"}]}`, appKey, http.StatusOK, "binary quickstart")
-	stream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/chat/completions", `{"model":"auto","stream":true,"messages":[{"role":"user","content":"binary stream"}]}`, appKey, http.StatusOK, "[DONE]")
-	if !strings.HasSuffix(strings.TrimSpace(stream), "data: [DONE]") {
-		t.Errorf("stream response ends with %q, want data: [DONE]", stream)
-	}
 	requestBinaryAPI(t, baseURL, http.MethodGet, "/api/usage", "", appKey, http.StatusForbidden, "")
 	requestBinaryAPI(t, baseURL, http.MethodGet, "/api/usage", "", dashboardKey, http.StatusOK, "")
 
@@ -254,7 +250,7 @@ func TestBinary_ProviderAddDoctorJourney(t *testing.T) {
 	if err := os.WriteFile(configPath, configData, 0o600); err != nil { //nolint:gosec // configPath is inside t.TempDir.
 		t.Fatal(err)
 	}
-	addOutput, addErr := runBinaryWithEnv(t, workDir, environment, "provider", "add", "mock", "--tier", "free", "--yes", "-config", configPath)
+	addOutput, addErr := runBinaryWithEnv(t, workDir, environment, "provider", "add", "ollama", "--tier", "free", "--yes", "-config", configPath)
 	if addErr != nil {
 		t.Fatalf("spillway provider add: %v\n%s", addErr, addOutput)
 	}
@@ -294,7 +290,7 @@ func TestBinary_ProviderAddDoctorJourney(t *testing.T) {
 	if runningErr != nil || !strings.Contains(runningOutput, "answers like Spillway") {
 		t.Fatalf("doctor against running server: %v\n%s", runningErr, runningOutput)
 	}
-	if !strings.Contains(serverOutput.String(), `providers="[groq mock]"`) {
+	if !strings.Contains(serverOutput.String(), `providers="[groq ollama]"`) {
 		t.Errorf("serve startup summary = %q, want loaded providers", serverOutput.String())
 	}
 	if err := command.Process.Kill(); err != nil {
@@ -400,7 +396,12 @@ func requestBinaryAPI(t *testing.T, baseURL, method, path, body, key string, wan
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+key)
+	if path == "/v1/messages" {
+		request.Header.Set("x-api-key", key)
+		request.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -422,6 +423,154 @@ func requestBinaryAPI(t *testing.T, baseURL, method, path, body, key string, wan
 		t.Errorf("%s %s = %d %s, want status %d containing %q", method, path, response.StatusCode, data, wantStatus, wantBody)
 	}
 	return string(data)
+}
+
+func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unexpected provider request", http.StatusNotFound)
+			return
+		}
+		upstreamRequests.Add(1)
+		var request struct {
+			Stream bool  `json:"stream"`
+			Tools  []any `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "invalid chat request", http.StatusBadRequest)
+			return
+		}
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+				return
+			}
+			_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-e2e\",\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Stream hello.\"},\"finish_reason\":null}]}\n\n")
+			flusher.Flush()
+			_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-e2e\",\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if len(request.Tools) > 0 {
+			_, _ = io.WriteString(w, `{"id":"chatcmpl-e2e","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call-e2e","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-e2e","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from the fake provider."},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	workDir := t.TempDir()
+	configPath := filepath.Join(workDir, "config.yaml")
+	localKey := "sk-test-client-compat-e2e-local-key"
+	addr := freeLoopbackAddr(t)
+	config := fmt.Sprintf("server:\n  listen: %q\n  api_keys:\n    - name: default\n      key: %q\nproviders:\n  ollama:\n    base_url: %q\ntiers:\n  demo:\n    models: [ollama/test-model]\nmodels:\n  ollama/test-model:\n    capabilities: [tools]\nrouter:\n  auto: [demo]\n", addr, localKey, upstream.URL+"/v1")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
+	command.Dir = workDir
+	var output synchronizedBuffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal("start spillway serve:", err)
+	}
+	wait := make(chan error, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		wait <- command.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		<-waitDone
+	})
+	baseURL := "http://" + addr
+	waitForBinaryServer(t, baseURL, wait)
+
+	responses := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Say hello"}`, localKey, http.StatusOK, `"object":"response"`)
+	if !strings.Contains(responses, "Hello from the fake provider.") {
+		t.Fatalf("Responses API response = %s", responses)
+	}
+	messages := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/messages", `{"model":"ollama/test-model","max_tokens":32,"messages":[{"role":"user","content":"Say hello"}]}`, localKey, http.StatusOK, `"type":"message"`)
+	if !strings.Contains(messages, "Hello from the fake provider.") {
+		t.Fatalf("Anthropic Messages response = %s", messages)
+	}
+	responsesTool := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Use a tool","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]}`, localKey, http.StatusOK, `"type":"function_call"`)
+	if !strings.Contains(responsesTool, `"name":"lookup"`) {
+		t.Fatalf("Responses tool response = %s", responsesTool)
+	}
+	messagesTool := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/messages", `{"model":"ollama/test-model","max_tokens":32,"messages":[{"role":"user","content":"Use a tool"}],"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}}}]}`, localKey, http.StatusOK, `"type":"tool_use"`)
+	if !strings.Contains(messagesTool, `"name":"lookup"`) {
+		t.Fatalf("Anthropic tool response = %s", messagesTool)
+	}
+	responsesStream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Stream hello","stream":true}`, localKey, http.StatusOK, "event: response.completed")
+	if !strings.Contains(responsesStream, "Stream hello.") {
+		t.Fatalf("Responses stream = %s", responsesStream)
+	}
+	messagesStream := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/messages", `{"model":"ollama/test-model","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"Stream hello"}]}`, localKey, http.StatusOK, "event: message_stop")
+	if !strings.Contains(messagesStream, "Stream hello.") {
+		t.Fatalf("Anthropic Messages stream = %s", messagesStream)
+	}
+	if got := upstreamRequests.Load(); got != 6 {
+		t.Fatalf("fake provider requests = %d, want 6", got)
+	}
+}
+
+func TestBinary_SetupCodingClientsWritesPrivateGlobalConfig(t *testing.T) {
+	for _, client := range []string{"opencode", "claude", "codex"} {
+		t.Run(client, func(t *testing.T) {
+			workDir := t.TempDir()
+			home := filepath.Join(workDir, "home")
+			configPath := filepath.Join(workDir, "config.yaml")
+			localKey := "sk-test-" + client + "-setup-binary-key"
+			configText := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: " + localKey + "\nproviders: {}\n"
+			if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
+				t.Fatal(err)
+			}
+			environment := setEnv(os.Environ(), "USERPROFILE", home)
+			environment = setEnv(environment, "HOME", home)
+			environment = setEnv(environment, "CODEX_HOME", filepath.Join(home, ".codex"))
+			output, err := runBinaryWithEnv(t, workDir, environment, "setup", client, "-config", configPath)
+			if err != nil {
+				t.Fatalf("spillway setup %s: %v\n%s", client, err, output)
+			}
+			if strings.Contains(output, localKey) {
+				t.Fatal("setup output revealed the local key")
+			}
+			var settingsPath string
+			switch client {
+			case "opencode":
+				settingsPath = filepath.Join(home, ".config", "opencode", "opencode.json")
+			case "claude":
+				settingsPath = filepath.Join(home, ".claude", "settings.json")
+			case "codex":
+				settingsPath = filepath.Join(home, ".codex", "spillway.config.toml")
+			}
+			settings, err := os.ReadFile(settingsPath) // #nosec G304 -- settingsPath is inside t.TempDir.
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(settings), localKey) {
+				t.Fatalf("%s settings contain the local key", client)
+			}
+			if client == "opencode" {
+				if !strings.Contains(string(settings), "spillway/auto") || !strings.Contains(string(settings), "{file:./spillway.key}") {
+					t.Fatalf("OpenCode settings = %s", settings)
+				}
+				keyFile, err := os.ReadFile(filepath.Join(filepath.Dir(settingsPath), "spillway.key")) // #nosec G304 -- adjacent private file is inside t.TempDir.
+				if err != nil || string(keyFile) != localKey {
+					t.Fatalf("OpenCode key file = %q, err=%v", keyFile, err)
+				}
+			} else if client == "codex" && !strings.Contains(string(settings), "args = [\"key\", \"-config\", ") {
+				t.Fatalf("Codex profile does not invoke the Spillway key command: %s", settings)
+			}
+		})
+	}
 }
 
 func setEnv(environment []string, key, value string) []string {

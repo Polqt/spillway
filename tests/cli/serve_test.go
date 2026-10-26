@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,11 +79,7 @@ func TestRun_ConfigRecoveryGuidance(t *testing.T) {
 	if code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, lookupEnv); code != 1 {
 		t.Fatalf("missing environment variable exit = %d; stderr = %q", code, stderr.String())
 	}
-	shellCommand := "read -rs GROQ_API_KEY && export GROQ_API_KEY"
-	if runtime.GOOS == "windows" {
-		shellCommand = "$env:GROQ_API_KEY = [Net.NetworkCredential]::new('', (Read-Host -AsSecureString 'provider key')).Password"
-	}
-	if !strings.Contains(stderr.String(), "providers.groq.api_key") || !strings.Contains(stderr.String(), "GROQ_API_KEY") || !strings.Contains(stderr.String(), shellCommand) || strings.Contains(stderr.String(), localSecret) || strings.Contains(stderr.String(), providerSecret) {
+	if !strings.Contains(stderr.String(), "providers.groq.api_key") || !strings.Contains(stderr.String(), "spillway provider key set groq") || strings.Contains(stderr.String(), localSecret) || strings.Contains(stderr.String(), providerSecret) {
 		t.Errorf("missing environment guidance = %q", stderr.String())
 	}
 	var invalidOut, invalidErr strings.Builder
@@ -124,7 +119,7 @@ func TestRun_ServeRejectsMissingLocalKey(t *testing.T) {
 	for _, listen := range []string{"127.0.0.1:0", "0.0.0.0:0"} {
 		t.Run(listen, func(t *testing.T) {
 			t.Parallel()
-			path := writeConfig(t, "server:\n  listen: \""+listen+"\"\nproviders:\n  mock: {}\n")
+			path := writeConfig(t, "server:\n  listen: \""+listen+"\"\nproviders:\n  ollama: {}\n")
 			var stdout, stderr strings.Builder
 
 			code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
@@ -147,7 +142,7 @@ func TestRun_ServeRejectsMissingLocalKey(t *testing.T) {
 // local address, so the bind fails and no socket is opened.
 func TestRun_ServeWarnsOnNonLoopbackListen(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  listen: \"192.0.2.1:0\"\n  api_keys: [sk-test-local-e2e]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  listen: \"192.0.2.1:0\"\n  api_keys: [sk-test-local-e2e]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr strings.Builder
 
 	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
@@ -175,7 +170,7 @@ func TestRun_ServeListenConflictNamesAddressAndRecovery(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	address := listener.Addr().String()
-	path := writeConfig(t, "server:\n  listen: \""+address+"\"\n  api_keys: [sk-test-listen-recovery]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  listen: \""+address+"\"\n  api_keys: [sk-test-listen-recovery]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr strings.Builder
 
 	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
@@ -207,7 +202,7 @@ func TestRun_ServeNewerStoreSchemaSuggestsSafeRecovery(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-newer-schema]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-newer-schema]\nproviders:\n  ollama: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
 	var versionOut, versionErr strings.Builder
 	if code := cli.Run(t.Context(), []string{"version"}, nil, &versionOut, &versionErr, noEnv); code != 0 {
 		t.Fatalf("version exit code = %d; stderr = %q", code, versionErr.String())
@@ -244,7 +239,7 @@ func TestRun_ServeHonorsLoggingLevel(t *testing.T) {
 			t.Parallel()
 			addr := testListenAddress(t, 20000+i*1000)
 
-			path := writeConfig(t, "server:\n  listen: \""+addr+"\"\n  api_keys: ["+e2eKey+"]\nlogging:\n  level: "+tt.level+"\nproviders:\n  mock: {}\n")
+			path := writeConfig(t, "server:\n  listen: \""+addr+"\"\n  api_keys: ["+e2eKey+"]\nlogging:\n  level: "+tt.level+"\nproviders:\n  ollama: {}\n")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			pr, pw := io.Pipe()
@@ -393,9 +388,22 @@ func (l *logLines) String() string {
 	return strings.Join(l.lines, "\n")
 }
 
-func TestRun_ServeMockEndToEnd(t *testing.T) {
+func TestRun_ServeOllamaEndToEnd(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: e2e\n      key: "+e2eKey+"\nproviders:\n  mock: {}\ntiers:\n  free:\n    models: [mock/echo]\nmodels:\n  mock/echo:\n    capabilities: [tools]\nrouter:\n  auto: [free]\n")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"echo"}]}`)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","created":1760400000,"model":"echo","choices":[{"index":0,"message":{"role":"assistant","content":"You said: hello spillway"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":4,"total_tokens":6}}`)
+	}))
+	defer upstream.Close()
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys:\n    - name: e2e\n      key: "+e2eKey+"\nproviders:\n  ollama:\n    base_url: "+upstream.URL+"\ntiers:\n  free:\n    models: [ollama/echo]\nmodels:\n  ollama/echo:\n    capabilities: [tools]\nrouter:\n  auto: [free]\n")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	pr, pw := io.Pipe()
@@ -439,7 +447,7 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 		}
 		return reply{status: resp.StatusCode, header: resp.Header, body: string(b)}
 	}
-	const chat = `{"model":"mock/echo","messages":[{"role":"user","content":"hello spillway"}]}`
+	const chat = `{"model":"ollama/echo","messages":[{"role":"user","content":"hello spillway"}]}`
 
 	if r := send(http.MethodGet, "/healthz", "", "", ""); r.status != http.StatusOK || r.body != "ok" {
 		t.Errorf("/healthz: %d %q, want 200 ok", r.status, r.body)
@@ -455,7 +463,7 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	if r.status != http.StatusOK {
 		t.Fatalf("chat: status %d, want 200; body %s", r.status, r.body)
 	}
-	if r.header.Get("X-Spillway-Provider") != "mock" || r.header.Get("X-Spillway-Model") != "echo" {
+	if r.header.Get("X-Spillway-Provider") != "ollama" || r.header.Get("X-Spillway-Model") != "echo" {
 		t.Errorf("chat headers = %v", r.header)
 	}
 	var completion struct {
@@ -473,7 +481,7 @@ func TestRun_ServeMockEndToEnd(t *testing.T) {
 	autoBody := `{"model":"auto","messages":[{"role":"user","content":"use a tool"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`
 	auto := send(http.MethodPost, "/v1/chat/completions", "", e2eKey, autoBody)
 	if auto.status != http.StatusOK || !strings.Contains(auto.body, `"model":"echo"`) {
-		t.Errorf("auto chat = %d %s, want mock/echo success", auto.status, auto.body)
+		t.Errorf("auto chat = %d %s, want ollama/echo success", auto.status, auto.body)
 	}
 	models := send(http.MethodGet, "/v1/models", "", e2eKey, "")
 	if models.status != http.StatusOK || !strings.Contains(models.body, `"id":"auto"`) {
@@ -503,7 +511,7 @@ func TestRun_ServeCreatesStoreOnlyWhenConfigured(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "usage.db")
-	configPath := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-e2e]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
+	configPath := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-e2e]\nproviders:\n  ollama: {}\nstore:\n  path: '"+storePath+"'\n  retention: 1d\n")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	pr, pw := io.Pipe()
@@ -763,7 +771,7 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	configPath := filepath.Join(dir, "config.yaml")
 	const providerSecret = "sk-test-provider-secret"
 	const providerURL = "https://private-provider-url.invalid/v1"
-	config := "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [{name: admin, key: sk-test-no-store, dashboard: true}]\nproviders:\n  gemini:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n    base_url: \"${CUSTOM_PROVIDER_URL}\"\n  groq:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n  mock: {}\n  ollama: {}\n  openrouter:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n"
+	config := "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [{name: admin, key: sk-test-no-store, dashboard: true}]\nproviders:\n  gemini:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n    base_url: \"${CUSTOM_PROVIDER_URL}\"\n  groq:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n  ollama: {}\n  openrouter:\n    api_key: \"${CUSTOM_PROVIDER_SECRET}\"\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -837,8 +845,8 @@ func TestRun_ServeWithoutStoreCreatesNoAdditionalFiles(t *testing.T) {
 	if err := json.Unmarshal(statusBody, &status); err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Providers) != 5 {
-		t.Fatalf("provider statuses = %d, want the five configured built-in providers", len(status.Providers))
+	if len(status.Providers) != 4 {
+		t.Fatalf("provider statuses = %d, want the four configured built-in providers", len(status.Providers))
 	}
 	for _, provider := range status.Providers {
 		wantCredential := provider.Name == "gemini" || provider.Name == "groq" || provider.Name == "openrouter"
@@ -872,7 +880,7 @@ func TestRun_ServeRejectsStorePathThatCannotOpen(t *testing.T) {
 	if err := os.WriteFile(storePath, []byte("invalid sqlite file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-bad-path]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n")
+	path := writeConfig(t, "server:\n  listen: \"127.0.0.1:0\"\n  api_keys: [sk-test-store-bad-path]\nproviders:\n  ollama: {}\nstore:\n  path: '"+storePath+"'\n")
 	var stdout, stderr strings.Builder
 	code := cli.Run(t.Context(), []string{"serve", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 1 || !strings.Contains(stderr.String(), "spillway: ") || strings.Contains(stderr.String(), "listening") {
@@ -1347,9 +1355,9 @@ type reply struct {
 	body   string
 }
 
-func TestExamples_MockConfigValidates(t *testing.T) {
+func TestExamples_EvaluationConfigValidates(t *testing.T) {
 	t.Parallel()
-	cfg, err := config.Load(filepath.Join("..", "..", "examples", "config.mock.yaml"))
+	cfg, err := config.Load(filepath.Join("..", "..", "examples", "config.eval.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -1357,16 +1365,13 @@ func TestExamples_MockConfigValidates(t *testing.T) {
 		t.Errorf("Listen = %q, want 127.0.0.1:8080", cfg.Server.Listen)
 	}
 	keys := cfg.Server.APIKeys
-	if len(keys) != 2 || keys[0].Name != "demo" || !strings.HasPrefix(keys[0].Key.Reveal(), "sk-test-") || keys[1].Name != "dashboard" || !keys[1].Dashboard {
-		t.Errorf("api_keys = %v, want fake demo and dashboard keys with dashboard access enabled", keys)
+	if len(keys) != 1 || keys[0].Name != "evaluation" || !strings.HasPrefix(keys[0].Key.Reveal(), "sk-test-") {
+		t.Errorf("api_keys = %v, want the evaluation key", keys)
 	}
-	if _, ok := cfg.Providers["mock"]; !ok || len(cfg.Providers) != 1 {
-		t.Errorf("providers = %v, want only mock", cfg.Providers)
+	if _, ok := cfg.Providers["ollama"]; !ok || len(cfg.Providers) != 1 {
+		t.Errorf("providers = %v, want only ollama", cfg.Providers)
 	}
-	if cfg.Store == nil || cfg.Store.Path != "./spillway-mock.db" || cfg.Budgets == nil || cfg.Budgets.MonthlyMicroUSD <= 0 || cfg.Cache == nil || !cfg.Cache.Exact {
-		t.Errorf("v0.4 config = store:%+v budgets:%+v cache:%+v, want all observability features enabled", cfg.Store, cfg.Budgets, cfg.Cache)
-	}
-	if _, ok := cfg.Pricing["mock/echo"]; !ok {
-		t.Errorf("pricing = %v, want a mock/echo example price", cfg.Pricing)
+	if cfg.Store != nil || cfg.Budgets != nil || cfg.Cache != nil {
+		t.Errorf("evaluation config should omit store, budgets and cache: %+v", cfg)
 	}
 }

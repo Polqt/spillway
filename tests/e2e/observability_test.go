@@ -18,10 +18,10 @@ import (
 	"github.com/Polqt/spillway/internal/cache"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/router"
 	"github.com/Polqt/spillway/internal/store"
+	fakeprovider "github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 const observabilityLocalKey = "sk-test-observability-e2e"
@@ -39,7 +39,7 @@ func TestObservability_CachedPaidAnswerSurvivesBudgetAndMixedConcurrencyRecordsE
 		}
 	}()
 	paid := &observabilityProvider{}
-	free, err := mock.New(mock.Options{Now: func() time.Time { return now }})
+	free, err := fakeprovider.New(fakeprovider.Options{Name: "ollama", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,13 +47,13 @@ func TestObservability_CachedPaidAnswerSurvivesBudgetAndMixedConcurrencyRecordsE
 	if err != nil {
 		t.Fatal(err)
 	}
-	paidRef, freeRef := providers.ModelRef{Provider: "openrouter", Model: "fixture/paid"}, providers.ModelRef{Provider: "mock", Model: "echo"}
+	paidRef, freeRef := providers.ModelRef{Provider: "openrouter", Model: "fixture/paid"}, providers.ModelRef{Provider: "ollama", Model: "echo"}
 	planner, err := router.New(router.Options{Tiers: map[string][]providers.ModelRef{"mixed": {paidRef, freeRef}}, Auto: []string{"mixed"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		Providers: map[string]config.Provider{"openrouter": {}, "mock": {}},
+		Providers: map[string]config.Provider{"openrouter": {}, "ollama": {Type: "ollama"}},
 		Pricing:   map[string]config.Price{"openrouter/fixture/paid": {InputMicroUSDPerMillion: 500_000, OutputMicroUSDPerMillion: 500_000}},
 	}
 	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{MonthlyMicroUSD: 2}, Providers: cfg.Providers, Store: usageStore, Now: func() time.Time { return now }})
@@ -140,7 +140,7 @@ func TestObservability_CachedPaidAnswerSurvivesBudgetAndMixedConcurrencyRecordsE
 		for _, skip := range request.Skips {
 			paidBudgetSkip = paidBudgetSkip || skip.Provider == "openrouter" && skip.Reason == "budget_exceeded"
 		}
-		freeServe = freeServe || request.Provider == "mock"
+		freeServe = freeServe || request.Provider == "ollama"
 	}
 	if !cacheHit || !paidBudgetSkip || !freeServe {
 		t.Errorf("cross-feature records: cacheHit=%v paidBudgetSkip=%v freeServe=%v", cacheHit, paidBudgetSkip, freeServe)

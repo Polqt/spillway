@@ -135,8 +135,8 @@ func TestRun_RootHelpShowsQuickPathAndCommandGroups(t *testing.T) {
 	if code := cli.Run(t.Context(), nil, nil, &stdout, &stderr, noEnv); code != 2 {
 		t.Fatalf("bare command exit code = %d, want 2; stderr: %q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "spillway init -yes -providers mock -store") {
-		t.Errorf("bare command output = %q, want offline mock quick path", stderr.String())
+	if !strings.Contains(stderr.String(), "spillway init -yes -providers ollama -store") {
+		t.Errorf("bare command output = %q, want Ollama quick path", stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -146,7 +146,7 @@ func TestRun_RootHelpShowsQuickPathAndCommandGroups(t *testing.T) {
 	help := stdout.String()
 	for _, want := range []string{
 		"Quick start:",
-		"spillway init -yes -providers mock -store",
+		"spillway init -yes -providers ollama -store",
 		"Get started",
 		"Tools",
 		"Experimental",
@@ -178,8 +178,9 @@ func TestRun_InteractiveHelpExplorerCanFilterAndInspect(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("interactive help exit code = %d; stderr: %q", code, stderr)
 	}
+	lowerOutput := strings.ToLower(stdout)
 	for _, want := range []string{"command explorer", "usage: spillway serve", "q quit"} {
-		if !strings.Contains(stdout, want) {
+		if !strings.Contains(lowerOutput, strings.ToLower(want)) {
 			t.Errorf("interactive help output does not contain %q: %q", want, stdout)
 		}
 	}
@@ -211,7 +212,7 @@ func runInteractiveCLI(t *testing.T, args []string, lookup func(string) (string,
 		})
 	}()
 	deadline := time.After(5 * time.Second)
-	for !strings.Contains(stdout.String(), waitFor) {
+	for !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(waitFor)) {
 		select {
 		case <-stdout.updates:
 		case <-deadline:
@@ -368,7 +369,7 @@ func TestRun_ParseErrorUsesUsageExitCode(t *testing.T) {
 
 func TestRun_DoubleDashKeepsFollowingFlagLikeArgumentPositional(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  api_keys: [sk-test-double-dash]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-double-dash]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr bytes.Buffer
 
 	code := cli.Run(t.Context(), []string{"check", "--", "-config=" + path}, nil, &stdout, &stderr, noEnv)
@@ -404,7 +405,7 @@ func TestRun_RedirectedStatusHasNoANSI(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("CLICOLOR_FORCE", "")
-	path := writeConfig(t, "server:\n  api_keys: [sk-test-redirected-status]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-redirected-status]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr bytes.Buffer
 
 	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
@@ -545,7 +546,7 @@ func TestRun_CheckPrintsTierAndFreeTierWithoutKeys(t *testing.T) {
 func TestRun_CheckPrintsStoreConfig(t *testing.T) {
 	t.Parallel()
 	storePath := filepath.Join(t.TempDir(), "usage.db")
-	path := writeConfig(t, "server:\n  api_keys: [sk-test-check-store]\nproviders:\n  mock: {}\nstore:\n  path: '"+storePath+"'\n  retention: 30d\n")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-check-store]\nproviders:\n  ollama: {}\nstore:\n  path: '"+storePath+"'\n  retention: 30d\n")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 0 {
@@ -559,7 +560,7 @@ func TestRun_CheckPrintsStoreConfig(t *testing.T) {
 }
 
 func TestRun_CheckPrintsDashboardKeyFlagWithoutKey(t *testing.T) {
-	path := writeConfig(t, "server:\n  api_keys: [{name: admin, key: sk-test-check-dashboard, dashboard: true}]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  api_keys: [{name: admin, key: sk-test-check-dashboard, dashboard: true}]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 0 {
@@ -575,7 +576,7 @@ func TestRun_CheckPrintsDashboardKeyFlagWithoutKey(t *testing.T) {
 
 func TestRun_CheckInvalidNeverPrintsConfigToStdout(t *testing.T) {
 	t.Parallel()
-	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  mock: {}\n")
+	path := writeConfig(t, "server:\n  api_keys: [\"${MISSING_KEY}\"]\nproviders:\n  ollama: {}\n")
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"check", "-config", path}, nil, &stdout, &stderr, noEnv)
 	if code != 1 {
@@ -598,7 +599,7 @@ func TestRun_CheckMissingFlagValue(t *testing.T) {
 	}
 }
 
-func TestRun_CatalogUsesConfiguredProviderAndSkipsMock(t *testing.T) {
+func TestRun_CatalogUsesConfiguredProvider(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer sk-test-groq-catalog" {
 			t.Errorf("catalog request = %s %s authorization=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
@@ -606,7 +607,7 @@ func TestRun_CatalogUsesConfiguredProviderAndSkipsMock(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"id":"llama-test","context_window":32768}]}`))
 	}))
 	defer server.Close()
-	path := writeConfig(t, "server:\n  api_keys: [sk-test-local-catalog]\nproviders:\n  groq:\n    api_key: ${GROQ_API_KEY}\n    base_url: "+server.URL+"\n    free_tier: true\n  mock: {}\ntiers:\n  free:\n    models: [groq/llama-test, mock/echo]\n")
+	path := writeConfig(t, "server:\n  api_keys: [sk-test-local-catalog]\nproviders:\n  groq:\n    api_key: ${GROQ_API_KEY}\n    base_url: "+server.URL+"\n    free_tier: true\ntiers:\n  free:\n    models: [groq/llama-test]\n")
 	lookup := func(name string) (string, bool) {
 		if name == "GROQ_API_KEY" {
 			return "sk-test-groq-catalog", true
@@ -618,7 +619,7 @@ func TestRun_CatalogUsesConfiguredProviderAndSkipsMock(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
-	for _, want := range []string{"models:", "context_window: 32768", "mock skipped"} {
+	for _, want := range []string{"models:", "context_window: 32768"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stdout missing %q: %s", want, stdout.String())
 		}

@@ -397,7 +397,7 @@ func writeOutput(out io.Writer, cfg config.Config, refs map[string]providers.Mod
 	}
 	for _, name := range providerNames(cfg.Providers) {
 		serviceType := providerServiceType(name, cfg.Providers[name])
-		if serviceType == "gemini" || serviceType == "mock" {
+		if serviceType == "gemini" {
 			label := serviceType
 			if serviceType == "gemini" {
 				label = "Gemini"

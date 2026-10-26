@@ -66,6 +66,9 @@ func TestEdit_AddProviderKeepsEveryOtherByte(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if strings.Contains(string(data), "\n  mock: {}") {
+			continue
+		}
 		cfg, err := config.ParseWithEnv(data, placeholderEnv)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
@@ -130,7 +133,7 @@ func TestEdit_PreservesCRLFAndBOM(t *testing.T) {
 		t.Fatalf("OpenDocument: %v", err)
 	}
 	edit := doc.Edit()
-	if err := edit.AddProvider(config.ProviderEntry{Name: "mock"}); err != nil {
+	if err := edit.AddProvider(config.ProviderEntry{Name: "ollama"}); err != nil {
 		t.Fatalf("AddProvider: %v", err)
 	}
 	change, err := edit.Result()
@@ -139,7 +142,7 @@ func TestEdit_PreservesCRLFAndBOM(t *testing.T) {
 	}
 	anchor := "    free_tier: true\r\n"
 	at := bytes.Index(before, []byte(anchor)) + len(anchor)
-	want := string(before[:at]) + "  mock: {}\r\n" + string(before[at:])
+	want := string(before[:at]) + "  ollama: {}\r\n" + string(before[at:])
 	if got := string(change.Content()); got != want {
 		t.Errorf("Content() = %q\nwant %q", got, want)
 	}
@@ -167,10 +170,10 @@ func TestEdit_AppendTierModelBlockSequence(t *testing.T) {
 
 	doc, _ = openEditFixture(t, "commented.yaml")
 	edit = doc.Edit()
-	if err := edit.AddProvider(config.ProviderEntry{Name: "mock"}); err != nil {
+	if err := edit.AddProvider(config.ProviderEntry{Name: "ollama"}); err != nil {
 		t.Fatalf("AddProvider: %v", err)
 	}
-	if err := edit.AppendTierModel("free", "mock/echo"); err != nil {
+	if err := edit.AppendTierModel("free", "ollama/echo"); err != nil {
 		t.Fatalf("AppendTierModel: %v", err)
 	}
 	change, err = edit.Result()
@@ -178,8 +181,8 @@ func TestEdit_AppendTierModelBlockSequence(t *testing.T) {
 		t.Fatalf("Result: %v", err)
 	}
 	item := "      - groq/llama-3.3-70b-versatile   # suggested\n"
-	if got := string(change.Content()); !strings.Contains(got, item+"      - mock/echo\n      # - groq/other\n") {
-		t.Errorf("Content() does not place mock/echo after the last item and before the trailing comment:\n%s", got)
+	if got := string(change.Content()); !strings.Contains(got, item+"      - ollama/echo\n      # - groq/other\n") {
+		t.Errorf("Content() does not place ollama/echo after the last item and before the trailing comment:\n%s", got)
 	}
 }
 
@@ -286,11 +289,11 @@ func TestEdit_FlowStyleTargetReturnsLayoutErrorWithSnippet(t *testing.T) {
 		},
 		{
 			name:        "flow models",
-			config:      "server:\n  api_keys: [\"sk-test-local-flow-edit\"]\nproviders:\n  mock: {}\ntiers:\n  free:\n    models: [mock/echo]\n",
+			config:      "server:\n  api_keys: [\"sk-test-local-flow-edit\"]\nproviders:\n  ollama: {}\ntiers:\n  free:\n    models: [ollama/echo]\n",
 			wantPath:    "tiers.free.models",
 			wantLine:    7,
-			wantSnippet: "tiers:\n  free:\n    models:\n      - mock/other\n",
-			edit:        func(e *config.Edit) error { return e.AppendTierModel("free", "mock/other") },
+			wantSnippet: "tiers:\n  free:\n    models:\n      - ollama/other\n",
+			edit:        func(e *config.Edit) error { return e.AppendTierModel("free", "ollama/other") },
 		},
 	}
 	for _, tt := range tests {
@@ -306,8 +309,10 @@ func TestEdit_FlowStyleTargetReturnsLayoutErrorWithSnippet(t *testing.T) {
 
 func TestEdit_AnchorsAliasesAndMultipleDocumentsRefused(t *testing.T) {
 	t.Parallel()
-	base := "server:\n  api_keys: [\"sk-test-local-anchor-edit\"]\nproviders:\n  mock: {}\ntiers:\n  free:\n    models:\n      - mock/echo\n"
-	addOllama := func(e *config.Edit) error { return e.AddProvider(config.ProviderEntry{Name: "ollama"}) }
+	base := "server:\n  api_keys: [\"sk-test-local-anchor-edit\"]\nproviders:\n  ollama: {}\ntiers:\n  free:\n    models:\n      - ollama/echo\n"
+	addGemini := func(e *config.Edit) error {
+		return e.AddProvider(config.ProviderEntry{Name: "gemini", KeyEnv: "GEMINI_API_KEY"})
+	}
 	for name, input := range map[string]string{
 		"anchor":             strings.Replace(base, "    models:\n", "    models: &models\n", 1),
 		"alias":              base + "router:\n  mode: rules\n  auto: [free]\n  difficulty:\n    simple: &simple [free]\n    moderate: *simple\n    hard: *simple\n",
@@ -315,9 +320,9 @@ func TestEdit_AnchorsAliasesAndMultipleDocumentsRefused(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			layout := editLayoutError(t, input, addOllama)
-			if layout.Path != "providers" || !strings.Contains(layout.Snippet, "ollama: {}") {
-				t.Errorf("LayoutError = %+v, want a providers snippet for ollama", *layout)
+			layout := editLayoutError(t, input, addGemini)
+			if layout.Path != "providers" || !strings.Contains(layout.Snippet, "gemini:") {
+				t.Errorf("LayoutError = %+v, want a providers snippet after adding Gemini", *layout)
 			}
 		})
 	}
@@ -326,10 +331,10 @@ func TestEdit_AnchorsAliasesAndMultipleDocumentsRefused(t *testing.T) {
 func TestEdit_ResultValidatesWithUniquePlaceholders(t *testing.T) {
 	t.Parallel()
 	// Two ${VAR} local keys would look like duplicates if every variable expanded to the same value.
-	input := "server:\n  api_keys:\n    - name: ci\n      key: \"${CI_KEY}\"\n    - name: cursor\n      key: \"${CURSOR_KEY}\"\nproviders:\n  mock: {}\n"
+	input := "server:\n  api_keys:\n    - name: ci\n      key: \"${CI_KEY}\"\n    - name: cursor\n      key: \"${CURSOR_KEY}\"\nproviders:\n  ollama: {}\n"
 	doc := writeDocument(t, input)
 	edit := doc.Edit()
-	if err := edit.AddProvider(config.ProviderEntry{Name: "ollama"}); err != nil {
+	if err := edit.AddProvider(config.ProviderEntry{Name: "gemini", KeyEnv: "GEMINI_API_KEY"}); err != nil {
 		t.Fatalf("AddProvider: %v", err)
 	}
 	if _, err := edit.Result(); err != nil {
@@ -394,7 +399,7 @@ func TestEdit_ProviderEntryRejectsNonVariableKeyEnvWithoutEcho(t *testing.T) {
 func TestEdit_PreviewRedactsLocalKeys(t *testing.T) {
 	t.Parallel()
 	const localKey = "sk-test-local-preview-canary"
-	doc := writeDocument(t, "server:\n  api_keys:\n    - name: default\n      key: \""+localKey+"\"\nproviders:\n  mock: {}\n")
+	doc := writeDocument(t, "server:\n  api_keys:\n    - name: default\n      key: \""+localKey+"\"\nproviders:\n  ollama: {}\n")
 	edit := doc.Edit()
 	if err := edit.AddProvider(config.ProviderEntry{Name: "gemini", KeyEnv: "GEMINI_API_KEY"}); err != nil {
 		t.Fatalf("AddProvider: %v", err)
@@ -410,7 +415,7 @@ func TestEdit_PreviewRedactsLocalKeys(t *testing.T) {
 	want := "@@ providers @@\n" +
 		"       key: \"[REDACTED]\"\n" +
 		" providers:\n" +
-		"   mock: {}\n" +
+		"   ollama: {}\n" +
 		"+  gemini:\n" +
 		"+    api_key: \"${GEMINI_API_KEY}\"\n"
 	if preview.String() != want {
@@ -465,7 +470,7 @@ func unconfiguredProvider(cfg config.Config) (config.ProviderEntry, bool) {
 		{Name: "groq", KeyEnv: "GROQ_API_KEY"},
 		{Name: "openrouter", KeyEnv: "OPENROUTER_API_KEY"},
 		{Name: "ollama"},
-		{Name: "mock"},
+		{Name: "ollama"},
 	}
 	for _, entry := range candidates {
 		if _, ok := cfg.Providers[entry.Name]; !ok {

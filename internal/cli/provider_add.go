@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -53,7 +54,7 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 			if len(args) == 1 {
 				serviceType = args[0]
 			}
-			interactive := options.StdinTerminal && options.StdoutTerminal && !yes
+			interactive := commandTUIEnabled(cmd, options.interactive()) && !yes
 			if serviceType == "" && !interactive {
 				return usageFailure(cmd, "provider name is required when prompts are unavailable; choose one of: "+strings.Join(availableProviderNames(cfg), ", "))
 			}
@@ -189,6 +190,8 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 			}
 
 			var draft provideraddui.Draft
+			var result bytes.Buffer
+			resultOutput := cmd.OutOrStdout()
 			if needsWizard {
 				choiceNames := allProviderNames()
 				if askProvider {
@@ -217,6 +220,9 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 					return commandFailure{code: 1, err: err}
 				}
 			} else {
+				if commandTUIEnabled(cmd, options.interactive()) {
+					resultOutput = &result
+				}
 				draft = provideraddui.Draft{
 					ConfigPath: path, ServiceType: serviceType, InstanceName: instanceName,
 					KeyEnv: initialKeyEnv, AttestFreeTier: attest, Tier: tier,
@@ -226,14 +232,15 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				if err != nil {
 					return commandFailure{code: 1, err: err}
 				}
-				if _, err := io.WriteString(cmd.OutOrStdout(), prepared.Preview); err != nil {
+				if _, err := io.WriteString(resultOutput, prepared.Preview); err != nil {
 					return commandFailure{code: 1, err: fmt.Errorf("write preview: %w", err)}
 				}
 				if dryRun {
-					_, err := fmt.Fprintf(cmd.OutOrStdout(), "Dry run only; %s was not changed.\n", finalPath)
-					return err
-				}
-				if prepared.Save != nil {
+					_, err := fmt.Fprintf(resultOutput, "Dry run only; %s was not changed.\n", finalPath)
+					if err != nil {
+						return commandFailure{code: 1, err: err}
+					}
+				} else if prepared.Save != nil {
 					if err := prepared.Save(ctx); err != nil {
 						return commandFailure{code: 1, err: err}
 					}
@@ -241,7 +248,7 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 			}
 
 			if warning != "" {
-				if _, err := io.WriteString(cmd.OutOrStdout(), warning); err != nil {
+				if _, err := io.WriteString(resultOutput, warning); err != nil {
 					return commandFailure{code: 1, err: err}
 				}
 			}
@@ -250,23 +257,28 @@ func providerAddCommand(ctx context.Context, options Options) *cobra.Command {
 				backupNote = "contains local keys; original Windows permissions kept"
 			}
 			if !dryRun {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Updated %s; backup at %s (%s).\n", committed.Path, committed.BackupPath, backupNote); err != nil {
+				if _, err := fmt.Fprintf(resultOutput, "Updated %s; backup at %s (%s).\n", committed.Path, committed.BackupPath, backupNote); err != nil {
 					return commandFailure{code: 1, err: err}
 				}
 				if committed.ModeTightened {
-					if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Config permissions were tightened to owner-only."); err != nil {
+					if _, err := fmt.Fprintln(resultOutput, "Config permissions were tightened to owner-only."); err != nil {
 						return commandFailure{code: 1, err: err}
 					}
 				}
 				if finalKeyEnv != "" {
 					if _, ok := options.LookupEnv(finalKeyEnv); !ok {
-						if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s is not set in this terminal. Run spillway doctor for shell-specific setup guidance.\n", finalKeyEnv); err != nil {
+						if _, err := fmt.Fprintf(resultOutput, "%s is not set in this terminal. Run spillway doctor for shell-specific setup guidance.\n", finalKeyEnv); err != nil {
 							return commandFailure{code: 1, err: err}
 						}
 					}
 				}
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Spillway reads config only at startup; restart spillway serve -config %s to apply.\n", committed.Path); err != nil {
+				if _, err := fmt.Fprintf(resultOutput, "Spillway reads config only at startup; restart spillway serve -config %s to apply.\n", committed.Path); err != nil {
 					return commandFailure{code: 1, err: err}
+				}
+			}
+			if result.Len() > 0 {
+				if err := writeCommandResult(ctx, cmd, "spillway provider add", result.String(), options.interactive(), options.Stdin, cmd.OutOrStdout()); err != nil {
+					return commandFailure{code: 1, err: fmt.Errorf("show provider result: %w", err)}
 				}
 			}
 			return nil
@@ -382,8 +394,6 @@ func providerAddHint(name string) string {
 		return "Google AI"
 	case "groq":
 		return "fast inference"
-	case "mock":
-		return "offline testing"
 	case "ollama":
 		return "local Ollama server"
 	case "openrouter":

@@ -1,4 +1,4 @@
-# Mock-only container config. Replace the fake local key before exposing the API.
+# Ollama container config. Replace the local key before exposing the API.
 # Publish only to host loopback with -p 127.0.0.1:8080:8080.
 # A local key is mandatory because the container listens on 0.0.0.0.
 server:
@@ -7,10 +7,10 @@ server:
     - name: demo
       key: "sk-test-spillway-docker"
 providers:
-  mock: {}
+  ollama: {}
 tiers:
   demo:
-    models: [mock/echo]
+    models: [ollama/llama3.2:3b]
 router:
   auto: [demo]
 store:

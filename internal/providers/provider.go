@@ -13,7 +13,7 @@ import (
 
 // Provider is one configured upstream endpoint that serves models.
 type Provider interface {
-	// Name is the provider part of a model reference, such as "mock".
+	// Name is the provider part of a model reference, such as "gemini".
 	Name() string
 	// Models lists the upstream models this provider serves.
 	Models(ctx context.Context) ([]Model, error)

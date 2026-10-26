@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/Polqt/spillway/apps/spillway/web"
 	"github.com/Polqt/spillway/internal/api"
 	"github.com/Polqt/spillway/internal/budget"
@@ -25,7 +26,6 @@ import (
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/providers/gemini"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/providers/openaicompat"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
@@ -38,7 +38,7 @@ const windowsWSAEADDRINUSE syscall.Errno = 10048
 
 // serve runs the API until ctx is cancelled. It refuses to listen when the
 // config is invalid, including when it has no local key (ADR 0003).
-func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(string) (string, bool)) int {
+func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(string) (string, bool), interactive bool) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", defaultConfigPath, "path to the config file")
@@ -125,6 +125,22 @@ func serve(ctx context.Context, args []string, stderr io.Writer, lookupEnv func(
 		return 1
 	}
 	baseURL := "http:" + "/" + "/" + ln.Addr().String()
+	if interactive {
+		status := lipgloss.JoinVertical(lipgloss.Left,
+			brandHeader("serve"),
+			"",
+			okStyle.Bold(true).Render("Gateway online"),
+			mutedStyle.Render("API       ")+baseURL+"/v1",
+			mutedStyle.Render("Models    ")+baseURL+"/v1/models",
+			"",
+			mutedStyle.Render("Ctrl+C stops the gateway · run spillway dashboard to monitor usage"),
+		)
+		panel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorViolet).Padding(1, 2).Render(status)
+		if _, err := lipgloss.Fprintln(styledWriter(stderr), panel); err != nil {
+			report(stderr, "spillway: serve: write status: %v\n", err)
+			return 1
+		}
+	}
 	dashboardKeyConfigured := false
 	for _, key := range cfg.Server.APIKeys {
 		if key.Dashboard {
@@ -170,12 +186,6 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 		}
 		serviceTypes[name] = serviceType
 		switch serviceType {
-		case "mock":
-			p, err := mock.New(mock.Options{Name: name, Now: time.Now})
-			if err != nil {
-				return nil, fmt.Errorf("build provider mock: %w", err)
-			}
-			ps = append(ps, p)
 		case "gemini":
 			baseURL := providerConfig.BaseURL
 			if baseURL == "" {

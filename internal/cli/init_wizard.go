@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,10 +32,16 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 		})
 	}
 	var statuses []string
+	var backupPath string
 	baseURL := "http:" + "/" + "/127.0.0.1:8080"
 	prepare := func(draft initui.Draft) (initui.Prepared, error) {
 		if err := validateNewConfigPath(draft.ConfigPath); err != nil {
 			return initui.Prepared{}, err
+		}
+		_, statErr := os.Lstat(draft.ConfigPath)
+		willOverwrite := statErr == nil
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return initui.Prepared{}, fmt.Errorf("check config path: %w", statErr)
 		}
 		attested := make(map[string]bool, len(draft.Attested))
 		for _, name := range draft.Attested {
@@ -50,7 +57,11 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 		if draft.ConfigPath != defaultConfigPath {
 			keyCommand += ` -config "` + draft.ConfigPath + `"`
 		}
-		success := fmt.Sprintf("Created %s with private file permissions.\n\nClient: base URL %s/v1; model `auto`; key `%s default`.\nStart: `spillway check -config %s`, then `spillway serve -config %s`.", draft.ConfigPath, baseURL, keyCommand, draft.ConfigPath, draft.ConfigPath)
+		configAction := "Created"
+		if willOverwrite {
+			configAction = "Replaced after backing up"
+		}
+		success := fmt.Sprintf("%s %s with private file permissions.\n\nClient: base URL %s/v1; model `auto`; key `%s default`.\nStart: `spillway check -config %s`, then `spillway serve -config %s`.", configAction, draft.ConfigPath, baseURL, keyCommand, draft.ConfigPath, draft.ConfigPath)
 		if draft.Store {
 			success += fmt.Sprintf("\nDashboard: %s/dashboard; key `%s dashboard`.", baseURL, keyCommand)
 		} else {
@@ -60,10 +71,13 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 			success += "\nAdditional Gemini projects are configured for direct model selection only; they are not Gemini fallbacks in `auto`."
 		}
 		return initui.Prepared{
-			Preview: preview,
-			Success: success,
+			Preview:       preview,
+			Success:       success,
+			WillOverwrite: willOverwrite,
 			Save: func(saveCtx context.Context) error {
-				return writeInitConfig(saveCtx, draft.ConfigPath, generated)
+				var err error
+				backupPath, err = writeInitConfig(saveCtx, draft.ConfigPath, generated, true)
+				return err
 			},
 		}, nil
 	}
@@ -91,6 +105,12 @@ func runInitWizard(ctx context.Context, configPath string, lookupEnv func(string
 	if _, err := lipgloss.Fprintf(stdout, "%s\n", result.Success); err != nil {
 		report(stderr, "spillway: init: write setup summary: %v\n", err)
 		return 1
+	}
+	if backupPath != "" {
+		if _, err := fmt.Fprintf(stdout, "Backup: %s\n", backupPath); err != nil {
+			report(stderr, "spillway: init: write backup path: %v\n", err)
+			return 1
+		}
 	}
 	return 0
 }

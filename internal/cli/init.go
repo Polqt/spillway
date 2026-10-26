@@ -34,6 +34,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	attestFlag := fs.String("attest-free-tier", "", "comma-separated providers attested as zero-spend")
 	storeFlag := fs.Bool("store", false, "enable the local usage store and dashboard key")
 	yes := fs.Bool("yes", false, "accept defaults and run without prompts")
+	overwrite := fs.Bool("overwrite", false, "replace an existing config after saving a backup")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -47,7 +48,8 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	inputCloser, _ := stdin.(io.Closer)
 	provided := make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
-	if !*yes && isInitWizardTerminal(stdin, stdout) && !provided["providers"] && !provided["attest-free-tier"] && !provided["store"] {
+	useWizard := !*yes && isInitWizardTerminal(stdin, stdout) && !provided["providers"] && !provided["attest-free-tier"] && !provided["store"]
+	if useWizard {
 		return runInitWizard(ctx, *configPath, lookupEnv, stdin, stdout, stderr)
 	}
 	if !*yes {
@@ -60,11 +62,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	var err error
 	if provided["config"] || *yes {
 		if err := validateNewConfigPath(targetConfigPath); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s already exists. Spillway never overwrites existing configs.", targetConfigPath), fmt.Sprintf("Check it with `spillway check -config %s`, add a provider with `spillway provider add`, or choose a new path with `spillway init -config <new-path>`.", targetConfigPath))
-			} else {
-				reportInitError(stderr, "Couldn't use that config path", err.Error(), "Choose a writable file path and try `spillway init` again.")
-			}
+			reportInitError(stderr, "Couldn't use that config path", err.Error(), "Choose a regular config file in an existing writable folder.")
 			return 1
 		}
 	} else {
@@ -72,6 +70,15 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		if err != nil {
 			return initChoiceError(stderr, err)
 		}
+	}
+	_, pathErr := os.Lstat(targetConfigPath)
+	willOverwrite := pathErr == nil
+	if willOverwrite && !*overwrite {
+		reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s will be kept unchanged unless you confirm replacement.", targetConfigPath), "Review the replacement in `spillway init`, or use `spillway init -yes -providers <provider> -overwrite`.")
+		return 1
+	} else if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
+		reportInitError(stderr, "Couldn't inspect that config path", pathErr.Error(), "Choose a regular config file in an existing writable folder.")
+		return 1
 	}
 
 	var selected []string
@@ -114,9 +121,25 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		reportInitError(stderr, "Couldn't prepare the config", err.Error(), "Review the selected providers and environment values, then try `spillway init` again.")
 		return 1
 	}
-	if err := writeInitConfig(ctx, targetConfigPath, content); err != nil {
+	if willOverwrite && !*yes {
+		preview := generatedKeyPattern.ReplaceAllString(string(content), `key: "<redacted>"`)
+		if _, err := fmt.Fprintf(stdout, "Replacement preview for %s:\n\n%s\n", targetConfigPath, preview); err != nil {
+			report(stderr, "spillway: init: write replacement preview: %v\n", err)
+			return 1
+		}
+		answer, err := promptLine(ctx, bufio.NewReader(stdin), inputCloser, stdout, "Replace this config and save a private backup? [y/N]: ")
+		if err != nil {
+			return initChoiceError(stderr, err)
+		}
+		if !isYes(answer) {
+			reportInitError(stderr, "Replacement cancelled", "The existing config was left unchanged.", "Run `spillway init -overwrite` when you're ready to review a replacement.")
+			return 1
+		}
+	}
+	backupPath, err := writeInitConfig(ctx, targetConfigPath, content, *overwrite)
+	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s already exists. Spillway never overwrites existing configs.", targetConfigPath), fmt.Sprintf("Check it with `spillway check -config %s`, add a provider with `spillway provider add`, or choose a new path with `spillway init -config <new-path>`.", targetConfigPath))
+			reportInitError(stderr, "That config file already exists", fmt.Sprintf("%s was not changed.", targetConfigPath), "Use `spillway init -overwrite` after reviewing the destination config.")
 		} else {
 			reportInitError(stderr, "Couldn't create the config file", fmt.Sprintf("`%s`: %v", targetConfigPath, err), "Check that the folder exists and is writable, or choose another path.")
 		}
@@ -130,7 +153,7 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		keyCommand += " -config \"" + targetConfigPath + "\""
 	}
 	if interactiveTerminal(stdin, stdout) {
-		if err := writeInitSummary(stdout, targetConfigPath, statuses, attested, selected, storeEnabled, baseURL, keyCommand); err == nil {
+		if err := writeInitSummary(stdout, targetConfigPath, backupPath, statuses, attested, selected, storeEnabled, baseURL, keyCommand); err == nil {
 			return 0
 		}
 		_, _ = fmt.Fprintf(stderr, "Note: the config is ready, but the styled summary could not render.\n")
@@ -186,6 +209,12 @@ func initCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		report(stderr, "spillway: init: write next steps: %v\n", err)
 		return 1
 	}
+	if backupPath != "" {
+		if _, err := fmt.Fprintf(stdout, "Backup: %s\n", backupPath); err != nil {
+			report(stderr, "spillway: init: write backup path: %v\n", err)
+			return 1
+		}
+	}
 	return 0
 }
 
@@ -195,11 +224,15 @@ func interactiveTerminal(stdin io.Reader, stdout io.Writer) bool {
 	return inputOK && outputOK && in == os.Stdin && out == os.Stdout && term.IsTerminal(int(in.Fd())) && term.IsTerminal(int(out.Fd()))
 }
 
-func writeInitSummary(stdout io.Writer, configPath string, statuses []string, attested map[string]bool, selected []string, storeEnabled bool, baseURL, keyCommand string) (err error) {
+func writeInitSummary(stdout io.Writer, configPath, backupPath string, statuses []string, attested map[string]bool, selected []string, storeEnabled bool, baseURL, keyCommand string) (err error) {
 	var markdown strings.Builder
 	markdown.WriteString("# Spillway is ready\n\n")
 	markdown.WriteString("Your local gateway is set up. Here's everything you need to get connected.\n\n")
-	markdown.WriteString("## Config\n\n`" + configPath + "` was created with private file permissions.\n\n")
+	configAction := "was created"
+	if backupPath != "" {
+		configAction = "replaced after saving a backup at `" + backupPath + "`"
+	}
+	markdown.WriteString("## Config\n\n`" + configPath + "` " + configAction + " with private file permissions.\n\n")
 	markdown.WriteString("## Providers\n\n")
 	for _, name := range selected {
 		preset, _ := providers.LookupPreset(name)
@@ -276,7 +309,7 @@ func chooseConfigPathInteractive(ctx context.Context, stdin io.Reader, closeInpu
 	path := defaultConfigPath
 	field := huh.NewInput().
 		Title("Config file").
-		Description("Choose where Spillway creates the new config.").
+		Description("Existing regular files are replaced only after review; Spillway keeps a private backup.").
 		Value(&path).
 		Validate(validateNewConfigPath)
 	if err := runInitForm(ctx, closeInput, stdin, stdout, huh.NewForm(huh.NewGroup(field))); err != nil {
@@ -289,15 +322,18 @@ func validateNewConfigPath(path string) error {
 	if path == "" {
 		return errors.New("config path must not be empty")
 	}
-	_, err := os.Lstat(path)
+	info, err := os.Lstat(path)
 	if err == nil {
-		return fmt.Errorf("%w: %s already exists; choose another path", os.ErrExist, path)
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("config path %q must be a regular file, not a symlink", path)
+		}
+		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check config path: %w", err)
 	}
 	directory := filepath.Dir(path)
-	info, err := os.Stat(directory)
+	info, err = os.Stat(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("config folder %q does not exist; create it first or choose a path in an existing folder", directory)
 	}
@@ -311,7 +347,7 @@ func validateNewConfigPath(path string) error {
 }
 
 func chooseProvidersInteractive(ctx context.Context, stdin io.Reader, closeInput io.Closer, stdout io.Writer) ([]string, error) {
-	selected := []string{"mock"}
+	selected := []string{"ollama"}
 	options := make([]huh.Option[string], 0, len(providers.Presets()))
 	for _, preset := range providers.Presets() {
 		options = append(options, huh.NewOption(preset.Name, preset.Name))
@@ -456,7 +492,7 @@ func initChoiceError(stderr io.Writer, err error) int {
 		return 1
 	}
 	if strings.Contains(err.Error(), "unexpected end of input") {
-		reportInitError(stderr, "Setup needs more input", "The prompt ended before all choices were complete, so no config file was created.", "Run `spillway init` in a terminal, or use `spillway init -yes -providers mock` for non-interactive setup.")
+		reportInitError(stderr, "Setup needs more input", "The prompt ended before all choices were complete, so no config file was created.", "Run `spillway init` in a terminal, or use `spillway init -yes -providers gemini` for non-interactive setup.")
 		return 1
 	}
 	reportInitError(stderr, "Setup couldn't continue", err.Error(), "Run `spillway init --help` to review the available options.")
@@ -498,12 +534,12 @@ func chooseProviders(ctx context.Context, value string, explicitlySet, yes bool,
 	if yes {
 		return nil, initUsageError{message: "-yes requires -providers"}
 	}
-	answer, err := promptLine(ctx, stdin, closeInput, stdout, "Providers (comma-separated: "+providerNames()+") [mock]: ")
+	answer, err := promptLine(ctx, stdin, closeInput, stdout, "Providers (comma-separated: "+providerNames()+"): ")
 	if err != nil {
 		return nil, err
 	}
 	if answer == "" {
-		answer = "mock"
+		return nil, initUsageError{message: "select at least one provider"}
 	}
 	return parseProviderList(answer)
 }
@@ -775,31 +811,43 @@ func generateLocalKey() (string, error) {
 	return "sk-spillway-" + base64.RawURLEncoding.EncodeToString(random[:]), nil
 }
 
-func writeInitConfig(ctx context.Context, path string, content []byte) error {
+func writeInitConfig(ctx context.Context, path string, content []byte, overwrite bool) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		if !overwrite {
+			return "", os.ErrExist
+		}
+		result, err := config.ReplaceContents(ctx, path, content, config.CommitOptions{})
+		if err != nil {
+			return "", err
+		}
+		return result.BackupPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
 	// #nosec G304 -- the path is the user's explicit -config destination.
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return "", err
 	}
 	n, err := file.Write(content)
 	if err != nil || n != len(content) {
 		_ = file.Close()
 		_ = os.Remove(path)
 		if err != nil {
-			return err
+			return "", err
 		}
-		return io.ErrShortWrite
+		return "", io.ErrShortWrite
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
-		return err
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		_ = os.Remove(path)
-		return err
+		return "", err
 	}
-	return nil
+	return "", nil
 }

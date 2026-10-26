@@ -95,7 +95,7 @@ func ProviderKeyVariable(ctx context.Context, path, provider string) (string, er
 		return "", nil
 	}
 	if !providerKeyReference.MatchString(key.Value) {
-		return "", fmt.Errorf("config: providers.%s.api_key is not an environment-variable reference", provider)
+		return "", nil
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(key.Value, "${"), "}"), nil
 }

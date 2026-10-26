@@ -11,14 +11,14 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/Polqt/spillway/internal/cli/initui"
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 )
 
 const (
-	helpMinimumWidth   = 48
-	helpMinimumHeight  = 13
-	helpWideBreakpoint = 82
+	helpMinimumWidth  = 60
+	helpMinimumHeight = 20
 )
 
 type helpEntry struct {
@@ -56,6 +56,20 @@ func runBrowser(ctx context.Context, title, subtitle string, entries []helpEntry
 	search.Placeholder = "filter commands"
 	search.CharLimit = 80
 	model := helpModel{title: title, subtitle: subtitle, entries: entries, search: search, width: 80, height: 24}
+	return runHelpModel(ctx, model, input, output)
+}
+
+func runResultScreen(ctx context.Context, title, content string, input io.Reader, output io.Writer) error {
+	search := textinput.New()
+	model := helpModel{
+		title: title, subtitle: "Command complete · review the result",
+		entries: []helpEntry{{name: title, group: "RESULT", short: "Completed successfully", detail: strings.TrimSpace(content)}},
+		search:  search, width: 80, height: 24, showHelp: true,
+	}
+	return runHelpModel(ctx, model, input, output)
+}
+
+func runHelpModel(ctx context.Context, model helpModel, input io.Reader, output io.Writer) error {
 	program := tea.NewProgram(model, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output), tea.WithWindowSize(80, 24))
 	_, err := program.Run()
 	if errors.Is(err, tea.ErrProgramKilled) {
@@ -107,7 +121,7 @@ func (m helpModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.search.SetWidth(max(10, min(m.width-8, 80)))
+		m.search.SetWidth(max(12, min(m.width-16, 80)))
 	case tea.KeyPressMsg:
 		key := msg.String()
 		if m.search.Focused() {
@@ -197,49 +211,33 @@ func (m helpModel) View() tea.View {
 
 func (m helpModel) render() string {
 	if m.width < helpMinimumWidth || m.height < helpMinimumHeight {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			brandHeader(m.title),
-			"",
-			warnStyle.Bold(true).Render("Terminal too small"),
-			mutedStyle.Render(fmt.Sprintf("Resize to at least %d columns by %d rows.", helpMinimumWidth, helpMinimumHeight)),
-			"",
-			mutedStyle.Render("q quit"),
-		)
+		return lipgloss.Place(max(1, m.width), max(1, m.height), lipgloss.Center, lipgloss.Center,
+			lipgloss.JoinVertical(lipgloss.Left, brandHeader(m.title), "", warnStyle.Bold(true).Render("Terminal too small"),
+				mutedStyle.Render(fmt.Sprintf("Resize to at least %d columns by %d rows.", helpMinimumWidth, helpMinimumHeight)), "", mutedStyle.Render("q quit")))
 	}
-	if m.width >= helpWideBreakpoint {
-		return m.renderWide()
+	entries := m.filtered()
+	current, total := 1, max(1, len(entries))
+	if len(entries) > 0 {
+		current = min(m.selected+1, len(entries))
 	}
-	if m.showHelp {
-		return m.renderDetail(m.width-4, m.height-7, true)
+	list := m.renderList(max(20, min(72, m.width-54)), max(3, m.height-15))
+	content := lipgloss.JoinVertical(lipgloss.Left, m.searchView(), mutedStyle.Render(m.subtitle), "", list)
+	detail := ""
+	if len(entries) > 0 {
+		detail = m.renderDetail(21, max(4, m.height-15), m.showHelp)
 	}
-	return m.renderNarrow()
-}
-
-func (m helpModel) renderWide() string {
-	listWidth := 27
-	detailWidth := m.width - listWidth - 7
-	panelHeight := m.height - 8
-	header := lipgloss.JoinVertical(lipgloss.Left,
-		brandHeader(m.title),
-		mutedStyle.Render(m.subtitle),
-		"",
-		m.searchView(),
-	)
-	list := m.renderList(listWidth, panelHeight)
-	detail := m.renderDetail(detailWidth, panelHeight, m.showHelp)
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", detail)
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", panels, "", m.footer())
-}
-
-func (m helpModel) renderNarrow() string {
-	header := lipgloss.JoinVertical(lipgloss.Left,
-		brandHeader(m.title),
-		mutedStyle.Render(m.subtitle),
-		"",
-		m.searchView(),
-	)
-	list := m.renderList(m.width-4, m.height-8)
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", list, "", m.footer())
+	if m.width < 112 {
+		list = m.renderList(max(20, m.width-16), max(3, m.height-15))
+		content = lipgloss.JoinVertical(lipgloss.Left, m.searchView(), mutedStyle.Render(m.subtitle), "", list)
+		if m.showHelp && detail != "" {
+			detail = m.renderDetail(max(20, m.width-16), max(4, m.height-15), true)
+			content = lipgloss.JoinVertical(lipgloss.Left, detail)
+		}
+	}
+	return initui.RenderFrame(initui.Frame{
+		Width: m.width, Height: m.height, Current: current, Total: total,
+		Step: m.title, Content: content, Summary: detail, Help: m.footer(), Badge: "SPILLWAY / TUI",
+	})
 }
 
 func (m helpModel) searchView() string {
@@ -287,15 +285,14 @@ func (m helpModel) renderDetail(width, height int, full bool) string {
 		if content == "" {
 			content = entry.short
 		}
-		content = visibleLines(lipgloss.NewStyle().Width(max(1, width-4)).Render(content), m.scroll, max(1, height-4))
-		return lipgloss.NewStyle().Width(width).Padding(1).Border(lipgloss.RoundedBorder()).BorderForeground(colorViolet).Render(content)
+		content = visibleLines(lipgloss.NewStyle().Width(max(1, width)).Render(content), m.scroll, max(1, height))
+		return content
 	}
 	group := mutedStyle.Render(strings.ToUpper(entry.group))
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(entry.name)
 	short := lipgloss.NewStyle().Width(max(1, width-4)).Render(entry.short)
 	content := lipgloss.JoinVertical(lipgloss.Left, group, title, "", short, "", mutedStyle.Render("Press enter to inspect full help."))
-	content = limitLines(content, max(1, height-4))
-	return lipgloss.NewStyle().Width(width).Padding(1).Border(lipgloss.RoundedBorder()).BorderForeground(colorViolet).Render(content)
+	return limitLines(content, max(1, height))
 }
 
 func (m helpModel) filtered() []int {

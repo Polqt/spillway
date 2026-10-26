@@ -31,7 +31,7 @@ func TestDoctor_HealthyConfigExits0(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d; stdout = %q; stderr = %q", code, stdout.String(), stderr.String())
 	}
-	for _, want := range []string{"Config", "valid with placeholder values", "providers in this config: groq", "Provider keys", "Local keys", "Install", "Responses API is not served"} {
+	for _, want := range []string{"Config", "valid with placeholder values", "providers in this config: groq", "Provider keys", "Local keys", "Install", "OpenAI Responses (/v1/responses)", "Anthropic Messages (/v1/messages)"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stdout %q lacks %q", stdout.String(), want)
 		}

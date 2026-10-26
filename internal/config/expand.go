@@ -206,8 +206,8 @@ func rejectUnknownFields(root *yaml.Node) error {
 					return fmt.Errorf("providers.%s.free_tier is only supported for groq and gemini; OpenRouter is checked per model and local providers are always free", key.Value)
 				}
 				apiKey := mappingValue(value, "api_key")
-				if preset.AcceptsKey && apiKey != nil && apiKey.Kind == yaml.ScalarNode && apiKey.Tag == "!!str" && !providerKeyReference.MatchString(apiKey.Value) {
-					return fmt.Errorf("providers.%s.api_key (line %d): must use an environment reference such as \"${%s}\"", key.Value, apiKey.Line, preset.KeyEnv)
+				if preset.AcceptsKey && apiKey != nil && (apiKey.Kind != yaml.ScalarNode || apiKey.Tag != "!!str") {
+					return fmt.Errorf("providers.%s.api_key (line %d): must be a string or environment reference", key.Value, apiKey.Line)
 				}
 				if domains := mappingValue(value, "quota_domains"); domains != nil && domains.Kind != yaml.MappingNode {
 					return fmt.Errorf("providers.%s.quota_domains (line %d): must be a mapping", key.Value, domains.Line)

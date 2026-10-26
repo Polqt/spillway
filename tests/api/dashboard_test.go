@@ -17,10 +17,10 @@ import (
 	"github.com/Polqt/spillway/internal/budget"
 	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
-	"github.com/Polqt/spillway/internal/providers/mock"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
 	"github.com/Polqt/spillway/internal/store"
+	fakeprovider "github.com/Polqt/spillway/tests/testutil/fakeprovider"
 )
 
 const (
@@ -40,7 +40,7 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 			t.Errorf("close store: %v", err)
 		}
 	})
-	provider, err := mock.New(mock.Options{Now: func() time.Time { return now }})
+	provider, err := fakeprovider.New(fakeprovider.Options{Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func dashboardEnv(t *testing.T) (http.Handler, *store.Store, time.Time) {
 		},
 		AllowedHosts: api.LoopbackHosts("127.0.0.1"), Logger: slog.New(slog.DiscardHandler),
 		UsageRecorder: db, DashboardStore: db, Dashboard: web.Handler(), Tracker: tracker, BudgetGate: gate,
-		CostEstimator: budget.NewPricer(config.Config{}), Now: func() time.Time { return now },
+		CostEstimator: budget.NewPricer(config.Config{Providers: map[string]config.Provider{"mock": {Type: "ollama"}}}), Now: func() time.Time { return now },
 		DashboardPricing: map[string]config.Price{
 			"groq/paid-model": {InputMicroUSDPerMillion: 500_000, OutputMicroUSDPerMillion: 1_000_000},
 			"mock/echo":       {InputMicroUSDPerMillion: 7_000_000, OutputMicroUSDPerMillion: 9_000_000},
@@ -111,8 +111,8 @@ func TestDashboardPricing_RequiresDashboardKeyAndReturnsDeclaredPrices(t *testin
 				if strings.Contains(response.Body.String(), dashboardKey) || strings.Contains(response.Body.String(), "Authorization") {
 					t.Errorf("pricing response contains sensitive data: %s", response.Body)
 				}
-				if strings.Contains(response.Body.String(), "mock/echo") {
-					t.Errorf("pricing response includes a price for the always-free mock provider: %s", response.Body)
+				if !strings.Contains(response.Body.String(), `"mock/echo"`) {
+					t.Errorf("pricing response omitted a configured model price: %s", response.Body)
 				}
 				if response.Header().Get("Cache-Control") != "no-store" {
 					t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))

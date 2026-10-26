@@ -1,15 +1,28 @@
 # Configuration reference
 
 Spillway reads YAML from `config.yaml` by default. Unknown fields, duplicate fields and invalid values fail during `spillway check` and before serving starts.
-Provider keys use `${NAME}` environment references; `spillway init` generates local API keys in the private config file, and config output redacts secrets.
+Provider keys can use `${NAME}` environment references or be stored directly in the config file.
+Use `spillway provider key set <instance> -config <path>` to enter a provider key through terminal input.
+Config output redacts secrets, and config files containing keys must remain private.
+`spillway init` generates local API keys in the private config file.
 After init, use the `default` key entry for client apps and the `dashboard` entry for dashboard data when init created one with `-store`.
 See [install](install.md) for the first-run sequence and [client examples](clients.md) for SDK setup.
 
 ## Provider management
 
-`spillway provider list -config <path>` shows configured instances, their provider service types and whether each required environment variable is set.
+`spillway provider list -config <path>` shows configured instances, their provider service types and whether a key is stored locally or its environment variable is set.
 `spillway provider show <instance> -config <path>` shows one instance's safe configuration metadata.
 Neither command prints provider key values or makes provider requests.
+
+Set or replace a key without adding it to shell history or process arguments.
+The terminal displays one `*` per character:
+
+```powershell
+spillway provider key set work -config config.yaml
+```
+
+Spillway reads the key through a masked terminal prompt and stores it in the selected config file.
+The command makes a private backup before updating the config.
 
 `spillway provider add <type> -config <path>` adds the canonical legacy instance.
 `spillway provider add <type> --name <instance> -config <path>` adds a separately named instance, for example `spillway provider add gemini --name gemini-research --key-env GEMINI_RESEARCH_API_KEY`.
@@ -17,7 +30,7 @@ Named aliases must be short, lowercase, non-identifying slugs; do not use an ema
 When no `--key-env` is supplied, the command derives an environment-variable name from the alias, such as `GEMINI_RESEARCH_API_KEY`.
 Each instance must use its own environment-variable reference; this does not prove that the credential has independent quota or authorization.
 The experimental command validates the existing config, previews the provider entry and proposed tier changes, creates a private backup, then atomically saves the edit.
-It does not accept provider key values; set the named environment variable in your shell.
+Use `provider key set` to store a provider key locally, or configure the named environment variable in your shell.
 Use `--dry-run` to inspect the preview without writing.
 An instance addition does not change `auto` or any existing virtual route.
 Use an explicit model reference such as `gemini-research/gemini-2.5-flash` to select it.
@@ -93,7 +106,7 @@ It probes only that listener with unauthenticated requests and does not contact 
 
 ## Complete example
 
-This example uses the mock provider and needs no network access or provider credential.
+This example uses a local Ollama service at its default endpoint.
 
 ```yaml spillway-config
 server:
@@ -104,10 +117,10 @@ server:
 logging:
   level: info
 providers:
-  mock: {}
+  ollama: {}
 tiers:
   free:
-    models: [mock/echo]
+    models: [ollama/llama3.2:3b]
 router:
   auto: [free]
 ```
@@ -120,9 +133,9 @@ router:
 | `server.api_keys` | list of strings or `{name, key, dashboard}` | none; required | At least one key on every listen address. A string entry gets the generated name `key-N`; named keys: `name` is 1–64 lowercase letters, digits or hyphens; key is non-empty and has no whitespace. Names and keys must be unique. `dashboard` is boolean and defaults false. | Add a long random local key even on loopback; give each app a different name and key. | ADR 0003, 0012 |
 | `server.shutdown_timeout` | duration string | `10s` | `1s` to `5m`. | Use a duration in that range, for example `30s`; align Docker stop grace with it. | ADR 0015 |
 | `logging.level` | enum string | `info` | `debug`, `info`, `warn` or `error`. | Choose one of the four supported levels. | v1.0 logging configuration |
-| `providers.<instance>` | mapping | none; at least one provider required | Legacy preset names remain valid; additional aliases require an explicit supported `type`. At most 32 instances; `auto` and `spillway` are reserved. | Add a supported service; `mock: {}` is the offline option. | ADR 0001, 0028 |
-| `providers.<instance>.type` | provider service type | inferred only for legacy preset keys | Built-ins: `gemini`, `groq`, `mock`, `ollama`, `openrouter`. DeepSeek adapter support is not included. | Use a supported service type and a safe alias. | ADR 0028, 0030 |
-| `providers.<name>.api_key` | environment reference string | none | Required for Gemini, Groq and OpenRouter; those values must use `${VARIABLE}`. Not accepted for Mock or Ollama. | Set the named environment variable and use its exact reference in YAML. | ADR 0017 |
+| `providers.<instance>` | mapping | none; at least one provider required | Legacy preset names remain valid; additional aliases require an explicit supported `type`. At most 32 instances; `auto` and `spillway` are reserved. | Add a supported provider service. | ADR 0001, 0028 |
+| `providers.<instance>.type` | provider service type | inferred only for legacy preset keys | Built-ins: `gemini`, `groq`, `ollama`, `openrouter`. DeepSeek adapter support is not included. | Use a supported service type and a safe alias. | ADR 0028, 0030 |
+| `providers.<name>.api_key` | string or environment reference | none | Required for Gemini, Groq and OpenRouter; may be a local string or `${VARIABLE}`. Not accepted for Ollama. | Use `spillway provider key set` for terminal input, or reference a non-empty environment variable. | ADR 0017, 0031 |
 | `providers.<name>.base_url` | absolute URL string | provider preset URL | Only `http` or `https`; HTTP is allowed only for loopback. No userinfo, query or fragment. | Use the provider's HTTPS endpoint; local Ollama can use `http://localhost:11434`. | ADR 0001 |
 | `providers.<name>.timeout` | duration string | `120s` | Greater than zero and at most `30m`. | Use a positive Go duration such as `30s`. | Baseline provider config |
 | `providers.<instance>.free_tier` | boolean | `false` | Only supported for Groq and Gemini. Each instance's claim applies only to its associated account or project. | Without the attestation, put its model in an `allow_spend: true` tier. | ADR 0005 |
@@ -160,7 +173,10 @@ Budgets estimate spend observed by this process, stop paid models after a soft c
 
 ## Environment variables
 
-Use `${NAME}` references for provider keys and optional local API keys. Every referenced variable must exist and be non-empty when loading the config. `spillway init` creates a complete config for the selected providers, including local keys; protect that file and keep provider secrets in your shell environment or secret manager.
+Use `${NAME}` references for provider keys and optional local API keys when you prefer environment-based secrets.
+Every referenced variable must exist and be non-empty when loading the config.
+Provider keys entered through `provider key set` are stored in the config, so protect the file and its backups.
+`spillway init` creates a complete config for the selected providers, including local keys.
 
 ## Validation errors
 

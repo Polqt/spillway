@@ -27,11 +27,10 @@ func LookupPreset(name string) (Preset, bool) {
 	return Preset{}, false
 }
 
-func builtInPresets() [5]Preset {
+func builtInPresets() [4]Preset {
 	return [...]Preset{
 		{Name: "gemini", DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", KeyEnv: "GEMINI_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "gemini-2.5-flash"},
 		{Name: "groq", DefaultBaseURL: "https://api.groq.com/openai/v1", KeyEnv: "GROQ_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "llama-3.3-70b-versatile"},
-		{Name: "mock", SuggestedModel: "echo"},
 		{Name: "ollama", DefaultBaseURL: "http://localhost:11434", SuggestedModel: "llama3.2:3b"},
 		{Name: "openrouter", DefaultBaseURL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY", RequiresKey: true, AcceptsKey: true, SuggestedModel: "meta-llama/llama-3.3-70b-instruct:free"},
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,11 +19,6 @@ import (
 func readInitFile(path string) ([]byte, error) {
 	// #nosec G304 -- tests pass config paths created under t.TempDir.
 	return os.ReadFile(path)
-}
-
-func writeInitFile(path string, data []byte) error {
-	// #nosec G703 -- tests pass config paths created under t.TempDir.
-	return os.WriteFile(path, data, 0o600)
 }
 
 type promptWriter struct {
@@ -96,7 +90,7 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init exit = %d; stderr: %s", code, stderr.String())
 	}
-	want := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: GENERATED_KEY\nproviders:\n  mock: {}\n# Suggested model IDs may be outdated; check current provider documentation.\ntiers:\n  free:\n    models:\n      - mock/echo\nrouter:\n  auto:\n    - free\n"
+	want := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: GENERATED_KEY\nproviders:\n  ollama: {}\n# Suggested model IDs may be outdated; check current provider documentation.\ntiers:\n  free:\n    models:\n      - ollama/llama3.2:3b\nrouter:\n  auto:\n    - free\n"
 	got, err := readInitFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -115,9 +109,9 @@ func TestRun_InitPromptsForConfigAndSelectableModels(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "wizard.yaml")
-	input := strings.Join([]string{path, "1", "2", "0", "y", "y", "2", "0", "n", ""}, "\n")
+	input := strings.Join([]string{path, "y", "0", "n", ""}, "\n")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init"}, strings.NewReader(input), &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-providers", "gemini,ollama"}, strings.NewReader(input), &stdout, &stderr, noEnv)
 	if code != 0 {
 		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
 	}
@@ -129,12 +123,12 @@ func TestRun_InitPromptsForConfigAndSelectableModels(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Config file") || !strings.Contains(stdout.String(), "Choose models for auto") {
 		t.Errorf("init output = %q; want config path and model selection prompts", stdout.String())
 	}
-	if !strings.Contains(content, "gemini/gemini-2.5-flash") || !strings.Contains(content, "mock/echo") || strings.Contains(content, "groq/llama-3.3-70b-versatile") {
-		t.Errorf("generated config models = %q; want selected Gemini and mock, without deselected Groq", content)
+	if !strings.Contains(content, "gemini/gemini-2.5-flash") || !strings.Contains(content, "ollama/llama3.2:3b") || strings.Contains(content, "groq/llama-3.3-70b-versatile") {
+		t.Errorf("generated config models = %q; want selected Gemini and Ollama, without deselected Groq", content)
 	}
 }
 
-func TestRun_InitExistingInteractivePathPromptsForAnotherFile(t *testing.T) {
+func TestRun_InitExistingInteractivePathRequiresOverwriteFlag(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	existing := filepath.Join(directory, "config.yaml")
@@ -143,11 +137,11 @@ func TestRun_InitExistingInteractivePathPromptsForAnotherFile(t *testing.T) {
 	if err := os.WriteFile(existing, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	input := strings.Join([]string{existing, newPath, "0", "0", "n", ""}, "\n")
+	input := existing + "\n"
 	var stdout, stderr bytes.Buffer
 	code := cli.Run(t.Context(), []string{"init"}, strings.NewReader(input), &stdout, &stderr, noEnv)
-	if code != 0 {
-		t.Fatalf("init = %d; stdout %q; stderr %q", code, stdout.String(), stderr.String())
+	if code != 1 || !strings.Contains(stderr.String(), "That config file already exists") || !strings.Contains(stderr.String(), "-overwrite") {
+		t.Fatalf("init = %d; stdout %q; stderr %q; want overwrite guidance", code, stdout.String(), stderr.String())
 	}
 	after, err := readInitFile(existing)
 	if err != nil {
@@ -156,8 +150,8 @@ func TestRun_InitExistingInteractivePathPromptsForAnotherFile(t *testing.T) {
 	if !bytes.Equal(after, before) {
 		t.Errorf("existing config changed: got %q, want %q", after, before)
 	}
-	if _, err := os.Stat(newPath); err != nil {
-		t.Errorf("new config was not created: %v", err)
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Errorf("unexpected config created at alternate path: %v", err)
 	}
 }
 
@@ -202,7 +196,7 @@ func TestRun_InitInteractiveEOFDoesNotCreateConfig(t *testing.T) {
 	}
 }
 
-func TestRun_InitNeverOverwrites(t *testing.T) {
+func TestRun_InitOverwriteCreatesBackup(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "existing.yaml")
 	before := []byte("keep these bytes\n")
@@ -210,13 +204,45 @@ func TestRun_InitNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path, "-overwrite"}, strings.NewReader(""), &stdout, &stderr, noEnv)
 	after, err := readInitFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code != 1 || !bytes.Equal(after, before) || !strings.Contains(stderr.String(), path+" already exists") || !strings.Contains(stderr.String(), "never overwrites existing configs") || !strings.Contains(stderr.String(), "spillway check -config "+path) || !strings.Contains(stderr.String(), "new-path") {
-		t.Errorf("init = %d, stderr %q, contents %q; want exit 1, recovery guidance, unchanged bytes", code, stderr.String(), after)
+	if code != 0 || bytes.Equal(after, before) {
+		t.Fatalf("init = %d, stderr %q, contents %q; want replaced config", code, stderr.String(), after)
+	}
+	backups, err := filepath.Glob(path + ".*.bak")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups = %v, err = %v; want one backup", backups, err)
+	}
+	backup, err := os.ReadFile(backups[0])
+	if err != nil || !bytes.Equal(backup, before) {
+		t.Fatalf("backup = %q, err = %v; want original bytes", backup, err)
+	}
+}
+
+func TestRun_InitInteractiveOverwriteShowsPreviewAndCanBeCancelled(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "existing.yaml")
+	before := []byte("keep these bytes\n")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init", "-providers", "ollama", "-config", path, "-overwrite", "-store=false"}, strings.NewReader("0\nno\n"), &stdout, &stderr, noEnv)
+	after, err := readInitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !bytes.Equal(after, before) {
+		t.Fatalf("init = %d, contents %q; want cancelled replacement and original contents", code, after)
+	}
+	if !strings.Contains(stdout.String(), "Replacement preview") || !strings.Contains(stdout.String(), `key: "<redacted>"`) || strings.Contains(stdout.String(), "sk-spillway-") {
+		t.Fatalf("init preview = %q; want generated config with local key redacted", stdout.String())
+	}
+	if backups, err := filepath.Glob(path + ".*.bak"); err != nil || len(backups) != 0 {
+		t.Fatalf("backups = %v, err = %v; want no backup after cancellation", backups, err)
 	}
 }
 
@@ -237,7 +263,7 @@ func TestRun_InitFileIsOwnerOnly(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	var stdout, stderr bytes.Buffer
-	if code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv); code != 0 {
+	if code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv); code != 0 {
 		t.Fatalf("init = %d; stderr: %s", code, stderr.String())
 	}
 	info, err := os.Stat(path)
@@ -277,7 +303,7 @@ func TestRun_InitNeverPrintsLocalKey(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
 	data, err := readInitFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -365,76 +391,13 @@ func TestRun_InitPromptStopsWhenContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestRun_InitMockQuickstartServes(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	var stdout, stderr bytes.Buffer
-	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
-	if code != 0 {
-		t.Fatalf("init = %d; stderr %s", code, stderr.String())
-	}
-	data, err := readInitFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	withEphemeralPort := bytes.Replace(data, []byte("listen: 127.0.0.1:8080"), []byte("listen: 127.0.0.1:0"), 1)
-	if bytes.Equal(data, withEphemeralPort) {
-		t.Fatal("generated config has no default listen address")
-	}
-	if err := writeInitFile(path, withEphemeralPort); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.LoadWithEnv(path, noEnv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := cfg.Server.APIKeys[0].Key.Reveal()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	pr, pw := io.Pipe()
-	logs := readLogs(pr)
-	exit := make(chan int, 1)
-	go func() {
-		var serveOut bytes.Buffer
-		exit <- cli.Run(ctx, []string{"serve", "-config", path}, strings.NewReader(""), &serveOut, pw, noEnv)
-		_ = pw.Close()
-	}()
-	var base string
-	select {
-	case addr := <-logs.addr:
-		base = "http://" + addr
-	case result := <-exit:
-		t.Fatalf("serve exited with %d before listening: %s", result, logs)
-	}
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/chat/completions", strings.NewReader(`{"model":"mock/echo","messages":[{"role":"user","content":"hello init"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+key)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("hello init")) {
-		t.Errorf("chat = %d %s, %v", response.StatusCode, body, err)
-	}
-	cancel()
-	if result := <-exit; result != 0 {
-		t.Errorf("serve exit = %d", result)
-	}
-	<-logs.done
-}
-
 func TestRun_InitCanceledContextDoesNotCreateConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var stdout, stderr bytes.Buffer
-	code := cli.Run(ctx, []string{"init", "-yes", "-providers", "mock", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	code := cli.Run(ctx, []string{"init", "-yes", "-providers", "ollama", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
 	if code != 1 || !strings.Contains(stderr.String(), "context canceled") {
 		t.Fatalf("init = %d; stderr = %q; want cancellation error", code, stderr.String())
 	}

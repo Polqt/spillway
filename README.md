@@ -1,6 +1,6 @@
 # Spillway
 
-Spillway is a self-hosted LLM gateway with one OpenAI-compatible API. It routes requests to configured providers, spills over across providers when an upstream is temporarily unavailable, and can record local usage metadata, estimate costs and enforce local budgets.
+Spillway is a self-hosted LLM gateway with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages APIs. It routes requests to configured providers, spills over across providers when an upstream is temporarily unavailable, and can record local usage metadata, estimate costs and enforce local budgets.
 
 Spillway is a single Go binary. It has no telemetry and sends requests only to providers you configure. You bring your own provider keys; Spillway stores no provider credentials for you.
 
@@ -25,12 +25,12 @@ docker pull ghcr.io/polqt/spillway:1.1.0
 Docker users should read [the Docker guide](docs/docker.md) for the required config mount and loopback-only port publishing.
 For config fields and validation, see the [configuration reference](docs/configuration.md).
 
-## Five-minute offline quickstart
+## Quickstart
 
-This starts a mock provider that needs no provider account, provider key, network access or Docker. The mock answers with the user's message, so it is useful for checking the API wiring but does not call a language model.
+Start the provider you intend to use. This example uses local Ollama and requires Ollama to be running.
 
 ```sh
-spillway init -yes -providers mock -store
+spillway init -yes -providers ollama -store
 spillway check
 spillway serve
 ```
@@ -44,26 +44,7 @@ curl.exe http://127.0.0.1:8080/v1/chat/completions `
   -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
 ```
 
-Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. The response contains `Hello from Spillway`.
-
-### See spillover offline
-
-The shipped mock config demonstrates spillover across three mock candidates without provider credentials. Start it in place of the generated config:
-
-```sh
-spillway serve -config examples/config.mock.yaml
-```
-
-In another terminal, send the same `auto` request using the mock config's fake `demo` local key, `sk-test-spillway-mock`:
-
-```sh
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Authorization: Bearer sk-test-spillway-mock' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Hello from Spillway"}]}'
-```
-
-The first two candidates simulate rate limiting and unavailability; the third responds. Check the response header `x-spillway-route: auto; tier demo; candidate 3/3`. This fake key works only with the shipped mock config on loopback; never use it with another config or expose it on a network. For copyable client examples, see [Connect a client app](docs/clients.md).
+Use `curl` with the same headers and a single-quoted JSON body on POSIX shells. For copyable client examples, see [Connect a client app](docs/clients.md).
 
 ### Set up the dashboard
 
@@ -83,17 +64,14 @@ To use an OpenAI SDK, set its base URL to `http://127.0.0.1:8080/v1` and its API
 
 ## Use a real provider
 
-For example, configure Groq. Set the provider key in your environment, then create a config that refers to it:
-
-```powershell
-$env:GROQ_API_KEY = "your-provider-key"
-```
+For example, create a Groq config, then enter your key at the masked terminal prompt:
 
 ```sh
 spillway init -yes -providers groq -attest-free-tier groq
+spillway provider key set groq -config config.yaml
 ```
 
-`init` generates a local key in `config.yaml`. Run `spillway key default` to print it for your client. Only use `-attest-free-tier groq` if the Groq account has no paid plan; otherwise omit the attestation and configure a spend-enabled tier and prices as described in the [Groq guide](docs/providers/groq.md). `GROQ_API_KEY` must be present before `spillway check` or `serve`.
+`init` generates a local key in `config.yaml`. Run `spillway key default` to print it for your client. Only use `-attest-free-tier groq` if the Groq account has no paid plan; otherwise omit the attestation and configure a spend-enabled tier and prices as described in the [Groq guide](docs/providers/groq.md).
 
 Then validate and start Spillway:
 
@@ -105,12 +83,16 @@ spillway serve
 For local inference, use Ollama instead: install Ollama, pull a model such as `llama3.2:3b`, then run `spillway init -yes -providers ollama`. See the [Ollama guide](docs/providers/ollama.md), especially its Docker limitation.
 
 For a guided first run, run `spillway` without arguments to discover commands, then use `spillway init`, `spillway check` and `spillway serve`.
-The interactive setup writes local key values only to the private config file and refers to provider keys by environment variable.
+The interactive setup writes local key values only to the private config file.
+Use `spillway provider key set <instance>` to enter a provider key without shell environment variables.
 See [configuration](docs/configuration.md) before enabling paid models, budgets or persistent history.
 
 Create multiple configs with `spillway init -config NAME.yaml`.
 Use `spillway config list` to find configs in the current directory and `spillway config open -config NAME.yaml` to open one in your text editor.
 Pass `-config NAME.yaml` to `check`, `serve` or `dashboard` to choose which config that command uses.
+
+To connect a coding client after starting Spillway, run `spillway setup opencode`, `spillway setup claude`, or `spillway setup codex`.
+See [client setup](docs/clients.md#one-command-coding-client-setup) for the supported clients and Codex profile command.
 
 ## Operations and limitations
 

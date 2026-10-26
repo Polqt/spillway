@@ -2,7 +2,7 @@
 
 ## Download a release archive
 
-Choose the archive for your operating system and CPU architecture from [GitHub Releases](https://github.com/Polqt/spillway/releases). Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Release archives contain the `spillway` binary, `LICENSE`, `README.md` and `examples/config.mock.yaml`.
+Choose the archive for your operating system and CPU architecture from [GitHub Releases](https://github.com/Polqt/spillway/releases). Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Release archives contain the `spillway` binary, `LICENSE` and `README.md`.
 
 Download `checksums.txt` from the same release and verify the archive before extracting it.
 
@@ -87,7 +87,7 @@ A running server logs `spillway starting` with its version, executable and confi
 
 ## First run
 
-Run `spillway init -yes -providers mock`, then `spillway check` and `spillway serve`. The mock provider needs no provider key or outbound network access. The generated local key is written only to the config file. Run `spillway key default` to print it for your client. See the [README quickstart](../README.md#five-minute-offline-quickstart).
+Start your chosen provider, then run `spillway init`, `spillway check` and `spillway serve`. The generated local key is written only to the config file. Run `spillway key default` to print it for your client. The README has a local Ollama quickstart.
 For config fields, environment variables and validation rules, see the [configuration reference](configuration.md).
 
 After setup, `spillway doctor` checks the selected config, environment, local keys, store, installation path and configured listen address.
@@ -97,6 +97,8 @@ It makes only unauthenticated requests to the configured local listener; use `sp
 
 For the interactive path, run `spillway init`, review the provider and optional store choices, then follow the suggested `check` and `serve` commands.
 The wizard creates a dashboard key when you enable the store.
+If the chosen config file already exists, review the replacement in the wizard; Spillway saves a timestamped backup before writing the new config.
+For scripted setup, add `-overwrite` to `spillway init -yes -providers <provider>` to replace an existing regular config after creating a backup.
 To use the dashboard without storing history, set `dashboard: true` on a local key under `server.api_keys` and omit `store:`.
 Keep `config.yaml` private, then open `http://127.0.0.1:8080/dashboard` after the server starts and enter that key.
 Spillway does not print it.

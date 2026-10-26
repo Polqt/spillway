@@ -20,7 +20,7 @@ func TestBinary_SIGTERMAndSIGINTExitZero(t *testing.T) {
 			addr := freeLoopbackAddr(t)
 			configPath := filepath.Join(t.TempDir(), "config.yaml")
 			const localKey = "sk-test-binary-signal"
-			config := fmt.Sprintf("server:\n  listen: %q\n  shutdown_timeout: 2s\n  api_keys: [%s]\nproviders:\n  mock: {}\n", addr, localKey)
+			config := fmt.Sprintf("server:\n  listen: %q\n  shutdown_timeout: 2s\n  api_keys: [%s]\nproviders:\n  ollama: {}\n", addr, localKey)
 			if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 				t.Fatal("write signal test config:", err)
 			}

@@ -6,7 +6,7 @@ Spillway's image is distroless and runs as uid 65532. It has no shell or package
 
 Create a private config file based on `examples/config.docker.yaml`. Replace its demo local key with a strong random local key before starting the container. Keep provider keys in the container environment and reference them as `${VARIABLE}` in the config; do not put provider key values in YAML.
 
-For example, after setting `config.docker.yaml` and its local key:
+For example, after setting `config.docker.yaml` and its local key, and choosing a provider reachable from the container:
 
 ```sh
 docker volume create spillway-data

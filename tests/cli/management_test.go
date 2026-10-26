@@ -148,10 +148,10 @@ func TestCheckTUIShowsRedactedConfigWithoutExposingKeys(t *testing.T) {
     - name: default
       key: sk-test-local-check-tui-key-0123456789
 providers:
-  mock: {}
+  ollama: {}
 tiers:
   free:
-    models: [mock/echo]
+    models: [ollama/echo]
 router:
   auto: [free]
 `)
@@ -175,7 +175,7 @@ func TestDoctorTUIShowsDiagnosticReport(t *testing.T) {
 		}
 		return "", false
 	}
-	code, stdout, stderr := runInteractiveCLI(t, []string{"doctor", "-config", path, "--no-probe"}, lookup, "spillway doctor", "/report\r\rq")
+	code, stdout, stderr := runInteractiveCLI(t, []string{"doctor", "-config", path, "--no-probe"}, lookup, "SPILLWAY DOCTOR", "/report\r\rq")
 	if code != 0 {
 		t.Fatalf("doctor TUI exit = %d; stderr: %q", code, stderr)
 	}

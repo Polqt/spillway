@@ -47,7 +47,7 @@ func TestDocs_CoreCommandExamplesParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docPaths := []string{"README.md", filepath.Join("docs", "install.md"), filepath.Join("docs", "configuration.md"), filepath.Join("docs", "troubleshooting.md")}
+	docPaths := []string{"README.md", filepath.Join("docs", "install.md"), filepath.Join("docs", "configuration.md"), filepath.Join("docs", "troubleshooting.md"), filepath.Join("docs", "clients.md")}
 	var documentation strings.Builder
 	for _, relative := range docPaths {
 		data, err := os.ReadFile(filepath.Join(root, relative)) // #nosec G304 -- paths are fixed documentation files under the repository root.
@@ -56,7 +56,7 @@ func TestDocs_CoreCommandExamplesParse(t *testing.T) {
 		}
 		documentation.Write(data)
 	}
-	for _, command := range []string{"spillway doctor", "spillway provider list", "spillway provider show", "spillway provider add"} {
+	for _, command := range []string{"spillway doctor", "spillway provider list", "spillway provider show", "spillway provider add", "spillway setup opencode", "spillway setup claude", "spillway setup codex"} {
 		if !strings.Contains(documentation.String(), command) {
 			t.Errorf("core command %q is not documented", command)
 		}
@@ -66,7 +66,10 @@ func TestDocs_CoreCommandExamplesParse(t *testing.T) {
 		{"doctor", "--no-probe", "-config", "config.yaml"},
 		{"provider", "list", "-config", "config.yaml"},
 		{"provider", "show", "groq", "-config", "config.yaml"},
-		{"provider", "add", "mock", "--tier", "free", "--yes", "-config", "config.yaml"},
+		{"provider", "add", "ollama", "--tier", "free", "--yes", "-config", "config.yaml"},
+		{"setup", "opencode", "-config", "config.yaml"},
+		{"setup", "claude", "-config", "config.yaml"},
+		{"setup", "codex", "-config", "config.yaml"},
 	}
 	for _, args := range commands {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -89,7 +92,7 @@ func TestDocs_ClientsStateSupportedProtocols(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(guide)
-	for _, want := range []string{"/v1/chat/completions", "/v1/models", "/v1/responses", "does not implement the OpenAI Responses API"} {
+	for _, want := range []string{"/v1/chat/completions", "/v1/models", "/v1/responses", "/v1/messages", "spillway setup opencode", "spillway setup claude", "spillway setup codex"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("client guide lacks %q", want)
 		}
