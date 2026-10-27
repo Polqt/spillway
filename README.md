@@ -1,5 +1,13 @@
 # Spillway
 
+<p align="center">
+  <img src="assets/spillway-gopher.svg" alt="The Go Gopher beside a spillway directing water into three routes" width="320">
+</p>
+
+<p align="center">
+  Go Gopher by Renée French, adapted with original Spillway artwork under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Spillway is an independent project.
+</p>
+
 Spillway is a self-hosted LLM gateway with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages APIs. It routes requests to configured providers, spills over across providers when an upstream is temporarily unavailable, and can record local usage metadata, estimate costs and enforce local budgets.
 
 Spillway is a single Go binary. It has no telemetry and sends requests only to providers you configure. You bring your own provider keys; Spillway stores no provider credentials for you.
