@@ -19,7 +19,7 @@ providers:
     free_tier: true
 tiers:
   free:
-    models: [gemini/gemini-2.5-flash]
+    models: [gemini/gemini-3.5-flash]
 router:
   auto: [free]
 ```

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/Polqt/spillway/internal/providers"
@@ -12,17 +13,17 @@ import (
 func TestPresets_CoverEverySupportedProvider(t *testing.T) {
 	t.Parallel()
 	want := []providers.Preset{
-		{Name: "gemini", DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", KeyEnv: "GEMINI_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "gemini-2.5-flash"},
-		{Name: "groq", DefaultBaseURL: "https://api.groq.com/openai/v1", KeyEnv: "GROQ_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "llama-3.3-70b-versatile"},
-		{Name: "ollama", DefaultBaseURL: "http://localhost:11434", SuggestedModel: "llama3.2:3b"},
-		{Name: "openrouter", DefaultBaseURL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY", RequiresKey: true, AcceptsKey: true, SuggestedModel: "meta-llama/llama-3.3-70b-instruct:free"},
+		{Name: "gemini", DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", KeyEnv: "GEMINI_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "gemini-3.5-flash", SuggestedCapabilities: []string{"tools", "vision", "json_mode", "structured_outputs"}},
+		{Name: "groq", DefaultBaseURL: "https://api.groq.com/openai/v1", KeyEnv: "GROQ_API_KEY", RequiresKey: true, AcceptsKey: true, FreeTierAttestable: true, SuggestedModel: "openai/gpt-oss-120b", SuggestedCapabilities: []string{"tools"}},
+		{Name: "ollama", DefaultBaseURL: "http://localhost:11434", SuggestedModel: "llama3.2:3b", SuggestedCapabilities: []string{"tools"}},
+		{Name: "openrouter", DefaultBaseURL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY", RequiresKey: true, AcceptsKey: true, SuggestedModel: "google/gemma-4-31b-it:free", SuggestedCapabilities: []string{"tools"}},
 	}
 	got := providers.Presets()
 	if len(got) != len(want) {
 		t.Fatalf("Presets() returned %d providers, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("Presets()[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}

@@ -789,6 +789,24 @@ func buildInitConfigWithGeminiAliases(selected []string, attested map[string]boo
 			}
 		}
 		out.WriteString("router:\n  auto:\n    - free\n")
+		// Coding clients send tools, and auto skips undeclared models for them (ADR 0007).
+		declared := false
+		for _, model := range models {
+			instance, id, _ := strings.Cut(model, "/")
+			preset, ok := providers.LookupPreset(instance)
+			if !ok || id != preset.SuggestedModel || len(preset.SuggestedCapabilities) == 0 {
+				continue
+			}
+			if !declared {
+				out.WriteString("models:\n")
+				declared = true
+			}
+			out.WriteString("  ")
+			out.WriteString(model)
+			out.WriteString(":\n    capabilities: [")
+			out.WriteString(strings.Join(preset.SuggestedCapabilities, ", "))
+			out.WriteString("]\n")
+		}
 	}
 	if storeEnabled {
 		out.WriteString("store:\n  path: ./spillway.db\n  retention: 90d\n")

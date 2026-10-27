@@ -5,6 +5,7 @@ Provider keys can use `${NAME}` environment references or be stored directly in 
 Use `spillway provider key set <instance> -config <path>` to enter a provider key through terminal input.
 Config output redacts secrets, and config files containing keys must remain private.
 `spillway init` generates local API keys in the private config file.
+It also declares capabilities for the suggested models it adds, so coding clients that send tools work immediately; run `spillway catalog` for models you add later.
 After init, use the `default` key entry for client apps and the `dashboard` entry for dashboard data when init created one with `-store`.
 See [install](install.md) for the first-run sequence and [client examples](clients.md) for SDK setup.
 
@@ -33,12 +34,12 @@ The experimental command validates the existing config, previews the provider en
 Use `provider key set` to store a provider key locally, or configure the named environment variable in your shell.
 Use `--dry-run` to inspect the preview without writing.
 An instance addition does not change `auto` or any existing virtual route.
-Use an explicit model reference such as `gemini-research/gemini-2.5-flash` to select it.
+Use an explicit model reference such as `gemini-research/gemini-3.5-flash` to select it.
 Virtual routes reject two distinct instances of one provider service, and no failure automatically rotates to another instance of that service.
 The gateway reads configuration at startup; restart it after a config change.
 
 During `spillway init`, select Gemini and choose `Add a named Gemini project` to configure extra project aliases.
-Init makes each alias directly selectable as `<alias>/gemini-2.5-flash`.
+Init makes each alias directly selectable as `<alias>/gemini-3.5-flash`.
 It is excluded from automatic routing and its tier allows spending, so an explicit request may incur provider charges.
 This is for separately authorized workload isolation, never quota or rate-limit evasion.
 A Gmail address is not an API key or a safe alias.
@@ -85,7 +86,7 @@ store:
   retention: 35d
 tiers:
   free:
-    models: [gemini/gemini-2.5-flash]
+    models: [gemini/gemini-3.5-flash]
 router:
   auto: [free]
 ```
@@ -96,7 +97,7 @@ If the upstream response does not identify its quota scope, Spillway applies a p
 A documented model-scoped limit is shared for that service and model; other models remain eligible only when the provider's policy permits it.
 The per-instance budget is an additional restriction; the process-wide daily and monthly budgets remain the aggregate spending ceiling across every instance and spill attempt.
 
-An explicit reference such as `gemini-research/gemini-2.5-flash` selects only that instance and never spills to its sibling.
+An explicit reference such as `gemini-research/gemini-3.5-flash` selects only that instance and never spills to its sibling.
 Existing `gemini/...`, `groq/...`, `auto` and `spillway/<tier>` meanings remain unchanged unless a virtual route is invalid under the same-service uniqueness rule.
 OpenAI-compatible `/v1/*` request and response shapes are unchanged.
 

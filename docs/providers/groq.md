@@ -18,7 +18,7 @@ providers:
     free_tier: true
 tiers:
   free:
-    models: [groq/llama-3.3-70b-versatile]
+    models: [groq/openai/gpt-oss-120b]
 router:
   auto: [free]
 ```

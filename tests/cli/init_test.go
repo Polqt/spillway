@@ -90,7 +90,7 @@ func TestRun_InitInteractiveAnswers(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init exit = %d; stderr: %s", code, stderr.String())
 	}
-	want := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: GENERATED_KEY\nproviders:\n  ollama: {}\n# Suggested model IDs may be outdated; check current provider documentation.\ntiers:\n  free:\n    models:\n      - ollama/llama3.2:3b\nrouter:\n  auto:\n    - free\n"
+	want := "server:\n  listen: 127.0.0.1:8080\n  api_keys:\n    - name: default\n      key: GENERATED_KEY\nproviders:\n  ollama: {}\n# Suggested model IDs may be outdated; check current provider documentation.\ntiers:\n  free:\n    models:\n      - ollama/llama3.2:3b\nrouter:\n  auto:\n    - free\nmodels:\n  ollama/llama3.2:3b:\n    capabilities: [tools]\n"
 	got, err := readInitFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestRun_InitPromptsForConfigAndSelectableModels(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Config file") || !strings.Contains(stdout.String(), "Choose models for auto") {
 		t.Errorf("init output = %q; want config path and model selection prompts", stdout.String())
 	}
-	if !strings.Contains(content, "gemini/gemini-2.5-flash") || !strings.Contains(content, "ollama/llama3.2:3b") || strings.Contains(content, "groq/llama-3.3-70b-versatile") {
+	if !strings.Contains(content, "gemini/gemini-3.5-flash") || !strings.Contains(content, "ollama/llama3.2:3b") || strings.Contains(content, "groq/openai/gpt-oss-120b") {
 		t.Errorf("generated config models = %q; want selected Gemini and Ollama, without deselected Groq", content)
 	}
 }

@@ -35,7 +35,7 @@ func TestProviderAdd_AddsGeminiToGroqConfig(t *testing.T) {
 	if got := configSection(after, "  api_keys:", "providers:"); got != localKeysBefore {
 		t.Errorf("server.api_keys changed:\nbefore %q\nafter  %q", localKeysBefore, got)
 	}
-	if !strings.Contains(string(after), `api_key: "${GEMINI_API_KEY}"`) || !strings.Contains(string(after), "gemini/gemini-2.5-flash") {
+	if !strings.Contains(string(after), `api_key: "${GEMINI_API_KEY}"`) || !strings.Contains(string(after), "gemini/gemini-3.5-flash") {
 		t.Errorf("updated config lacks Gemini reference and model: %s", after)
 	}
 	var checkOut, checkErr bytes.Buffer
@@ -161,9 +161,9 @@ func TestProviderAdd_TierPlacementFollowsADR0005(t *testing.T) {
 		name, provider, flags, model string
 		wantModel, wantWarning       bool
 	}{
-		{"gemini requires attestation", "gemini", "", "gemini/gemini-2.5-flash", false, true},
-		{"groq requires attestation", "groq", "", "groq/llama-3.3-70b-versatile", false, true},
-		{"openrouter free preset", "openrouter", "--key-env OPENROUTER_API_KEY", "openrouter/meta-llama/llama-3.3-70b-instruct:free", true, false},
+		{"gemini requires attestation", "gemini", "", "gemini/gemini-3.5-flash", false, true},
+		{"groq requires attestation", "groq", "", "groq/openai/gpt-oss-120b", false, true},
+		{"openrouter free preset", "openrouter", "--key-env OPENROUTER_API_KEY", "openrouter/google/gemma-4-31b-it:free", true, false},
 		{"ollama", "ollama", "", "ollama/llama3.2:3b", true, false},
 	}
 	for _, test := range tests {

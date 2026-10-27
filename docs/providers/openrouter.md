@@ -17,7 +17,7 @@ providers:
     api_key: "${OPENROUTER_API_KEY}"
 tiers:
   free:
-    models: [openrouter/meta-llama/llama-3.3-70b-instruct:free]
+    models: [openrouter/google/gemma-4-31b-it:free]
 router:
   auto: [free]
 ```

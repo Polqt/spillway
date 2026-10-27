@@ -156,7 +156,7 @@ func (e *Edit) AppendTierModel(tier, modelRef string) error {
 		return fmt.Errorf("config: %q is not a valid tier name", tier)
 	}
 	if !modelReferencePattern.MatchString(modelRef) || !strings.Contains(modelRef, "/") {
-		return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-2.5-flash", modelRef)
+		return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-3.5-flash", modelRef)
 	}
 	e.ops = append(e.ops, appendTierModelOp{tier: tier, model: modelRef})
 	return nil
@@ -166,7 +166,7 @@ func (e *Edit) AppendTierModel(tier, modelRef string) error {
 func (e *Edit) ReplaceModelReference(oldRef, newRef string) error {
 	for _, ref := range []string{oldRef, newRef} {
 		if !modelReferencePattern.MatchString(ref) || !strings.Contains(ref, "/") {
-			return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-2.5-flash", ref)
+			return fmt.Errorf("config: %q is not a model reference such as gemini/gemini-3.5-flash", ref)
 		}
 	}
 	if oldRef == newRef {

@@ -49,7 +49,7 @@ func addModelCommands(ctx context.Context, root *cobra.Command, options Options)
 	list.Flags().String("tier", "", "show only models in this tier")
 	list.Flags().String("provider", "", "show only models from this provider")
 	list.GroupID = "manage"
-	replace := &cobra.Command{Use: "replace <old-model> <new-model>", Short: "replace a model reference throughout the config", Args: cobra.ExactArgs(2), Example: "  spillway model replace gemini/gemini-2.5-flash gemini/gemini-3-flash-preview -config config.yaml", RunE: func(cmd *cobra.Command, args []string) error {
+	replace := &cobra.Command{Use: "replace <old-model> <new-model>", Short: "replace a model reference throughout the config", Args: cobra.ExactArgs(2), Example: "  spillway model replace gemini/gemini-2.5-flash gemini/gemini-3.5-flash -config config.yaml", RunE: func(cmd *cobra.Command, args []string) error {
 		path, _ := cmd.Flags().GetString("config")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		doc, err := config.OpenDocument(ctx, path)
