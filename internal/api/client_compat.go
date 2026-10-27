@@ -29,7 +29,7 @@ func (h *clientCompatibilityHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		writeClientError(w, h.protocol, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
 	}
-	chatBody, stream, err := translateClientRequest(h.protocol, raw)
+	chatBody, stream, toolNamespaces, err := translateClientRequest(h.protocol, raw)
 	if err != nil {
 		writeClientError(w, h.protocol, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
@@ -42,6 +42,7 @@ func (h *clientCompatibilityHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		ResponseWriter: w,
 		protocol:       h.protocol,
 		stream:         stream,
+		toolNamespaces: toolNamespaces,
 	}
 	h.chat.ServeHTTP(response, request)
 	response.finish()
@@ -88,28 +89,30 @@ func decodeClientJSON(raw []byte, target any) error {
 	return nil
 }
 
-func translateClientRequest(protocol clientProtocol, raw []byte) ([]byte, bool, error) {
+func translateClientRequest(protocol clientProtocol, raw []byte) ([]byte, bool, map[string]responseToolNamespace, error) {
 	switch protocol {
 	case protocolAnthropic:
-		return anthropicRequest(raw)
+		body, stream, err := anthropicRequest(raw)
+		return body, stream, nil, err
 	case protocolResponses:
 		return responsesRequest(raw)
 	default:
-		return nil, false, errors.New("unsupported client protocol")
+		return nil, false, nil, errors.New("unsupported client protocol")
 	}
 }
 
 type clientCompatibilityWriter struct {
 	http.ResponseWriter
-	protocol clientProtocol
-	stream   bool
-	status   int
-	started  bool
-	failed   bool
-	body     bytes.Buffer
-	pending  []byte
-	response responsesStreamState
-	message  anthropicStreamState
+	protocol       clientProtocol
+	stream         bool
+	toolNamespaces map[string]responseToolNamespace
+	status         int
+	started        bool
+	failed         bool
+	body           bytes.Buffer
+	pending        []byte
+	response       responsesStreamState
+	message        anthropicStreamState
 }
 
 func (w *clientCompatibilityWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -164,7 +167,7 @@ func (w *clientCompatibilityWriter) finish() {
 		_, _ = w.ResponseWriter.Write(clientErrorBody(w.protocol, w.body.Bytes()))
 		return
 	}
-	body, err := translateClientResponse(w.protocol, w.body.Bytes())
+	body, err := translateClientResponse(w.protocol, w.body.Bytes(), w.toolNamespaces)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.ResponseWriter.WriteHeader(http.StatusBadGateway)
@@ -275,12 +278,12 @@ func clientErrorBody(protocol clientProtocol, raw []byte) []byte {
 	return encoded
 }
 
-func translateClientResponse(protocol clientProtocol, raw []byte) ([]byte, error) {
+func translateClientResponse(protocol clientProtocol, raw []byte, namespaces map[string]responseToolNamespace) ([]byte, error) {
 	switch protocol {
 	case protocolAnthropic:
 		return anthropicResponse(raw)
 	case protocolResponses:
-		return responsesResponse(raw)
+		return responsesResponse(raw, namespaces)
 	default:
 		return nil, errors.New("unsupported client protocol")
 	}

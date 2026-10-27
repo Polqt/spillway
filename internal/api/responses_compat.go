@@ -30,39 +30,44 @@ type responseCreateRequest struct {
 	Store           *bool             `json:"store"` // Accepted for client compatibility; Spillway does not retain Responses objects.
 }
 
-func responsesRequest(raw []byte) ([]byte, bool, error) {
+func responsesRequest(raw []byte) ([]byte, bool, map[string]responseToolNamespace, error) {
 	var request responseCreateRequest
 	if err := decodeClientJSON(raw, &request); err != nil {
-		return nil, false, fmt.Errorf("invalid Responses API request: %w", err)
+		return nil, false, nil, fmt.Errorf("invalid Responses API request: %w", err)
 	}
 	if request.Model == "" {
-		return nil, false, errors.New("model is required")
+		return nil, false, nil, errors.New("model is required")
 	}
 	if request.Background {
-		return nil, false, errors.New("background Responses API requests are not supported")
+		return nil, false, nil, errors.New("background Responses API requests are not supported")
 	}
-	messages, err := responseInputMessages(request.Input)
+	var tools []map[string]any
+	var namespaces map[string]responseToolNamespace
+	if len(request.Tools) > 0 {
+		var err error
+		tools, namespaces, err = responseTools(request.Tools)
+		if err != nil {
+			return nil, false, nil, err
+		}
+	}
+	messages, err := responseInputMessages(request.Input, namespaces)
 	if err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
 	if request.Instructions != "" {
 		messages = append([]map[string]any{{"role": "system", "content": request.Instructions}}, messages...)
 	}
 	if len(messages) == 0 {
-		return nil, false, errors.New("input must contain at least one message or instruction")
+		return nil, false, nil, errors.New("input must contain at least one message or instruction")
 	}
 	chat := map[string]any{"model": request.Model, "messages": messages, "stream": request.Stream}
-	if len(request.Tools) > 0 {
-		tools, err := responseTools(request.Tools)
-		if err != nil {
-			return nil, false, err
-		}
+	if len(tools) > 0 {
 		chat["tools"] = tools
 	}
 	if len(request.ToolChoice) > 0 {
 		choice, err := responseToolChoice(request.ToolChoice)
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 		chat["tool_choice"] = choice
 	}
@@ -77,7 +82,7 @@ func responsesRequest(raw []byte) ([]byte, bool, error) {
 			Summary string `json:"summary"`
 		}
 		if err := decodeClientJSON(request.Reasoning, &reasoning); err != nil {
-			return nil, false, fmt.Errorf("reasoning is invalid: %w", err)
+			return nil, false, nil, fmt.Errorf("reasoning is invalid: %w", err)
 		}
 		if reasoning.Effort != "" {
 			chat["reasoning_effort"] = reasoning.Effort
@@ -86,17 +91,17 @@ func responsesRequest(raw []byte) ([]byte, bool, error) {
 	if len(request.Text) > 0 {
 		format, err := responseTextFormat(request.Text)
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil, err
 		}
 		if format != nil {
 			chat["response_format"] = format
 		}
 	}
 	data, err := json.Marshal(chat)
-	return data, request.Stream, err
+	return data, request.Stream, namespaces, err
 }
 
-func responseInputMessages(raw json.RawMessage) ([]map[string]any, error) {
+func responseInputMessages(raw json.RawMessage, namespaces map[string]responseToolNamespace) ([]map[string]any, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
@@ -117,10 +122,11 @@ func responseInputMessages(raw json.RawMessage) ([]map[string]any, error) {
 			Content   json.RawMessage `json:"content"`
 			CallID    string          `json:"call_id"`
 			Name      string          `json:"name"`
+			Namespace string          `json:"namespace"`
 			Arguments json.RawMessage `json:"arguments"`
 			Output    json.RawMessage `json:"output"`
 		}
-		if err := decodeClientJSON(item, &entry); err != nil {
+		if err := json.Unmarshal(item, &entry); err != nil {
 			return nil, fmt.Errorf("input item is invalid: %w", err)
 		}
 		switch entry.Type {
@@ -134,11 +140,18 @@ func responseInputMessages(raw json.RawMessage) ([]map[string]any, error) {
 			}
 			messages = append(messages, map[string]any{"role": entry.Role, "content": content})
 		case "function_call":
+			name := entry.Name
+			for chatName, namespace := range namespaces {
+				if namespace.Namespace == entry.Namespace && namespace.Name == entry.Name {
+					name = chatName
+					break
+				}
+			}
 			messages = append(messages, map[string]any{
 				"role":    "assistant",
 				"content": nil,
 				"tool_calls": []map[string]any{{"id": entry.CallID, "type": "function", "function": map[string]any{
-					"name": entry.Name, "arguments": string(entry.Arguments),
+					"name": name, "arguments": string(entry.Arguments),
 				}}},
 			})
 		case "function_call_output":
@@ -169,6 +182,9 @@ func responseContent(raw json.RawMessage) (any, error) {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
 		ImageURL string `json:"image_url"`
+		// Clients replay these output_text fields from earlier responses; chat history has no equivalent.
+		Annotations json.RawMessage `json:"annotations"`
+		Logprobs    json.RawMessage `json:"logprobs"`
 	}
 	if err := decodeClientJSON(raw, &parts); err != nil {
 		return nil, errors.New("message content must be text or an array of content parts")
@@ -214,32 +230,82 @@ func responseOutputText(raw json.RawMessage) (string, error) {
 	return result.String(), nil
 }
 
-func responseTools(raw []json.RawMessage) ([]map[string]any, error) {
+type responseToolNamespace struct {
+	Namespace string
+	Name      string
+}
+
+func responseTools(raw []json.RawMessage) ([]map[string]any, map[string]responseToolNamespace, error) {
 	tools := make([]map[string]any, 0, len(raw))
+	namespaces := make(map[string]responseToolNamespace)
 	for _, item := range raw {
 		var tool struct {
-			Type        string          `json:"type"`
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
-			Strict      *bool           `json:"strict"`
+			Type        string            `json:"type"`
+			Name        string            `json:"name"`
+			Description string            `json:"description"`
+			Parameters  json.RawMessage   `json:"parameters"`
+			Strict      *bool             `json:"strict"`
+			Tools       []json.RawMessage `json:"tools"`
 		}
-		if err := decodeClientJSON(item, &tool); err != nil {
-			return nil, fmt.Errorf("tool definition is invalid: %w", err)
+		if err := json.Unmarshal(item, &tool); err != nil {
+			return nil, nil, fmt.Errorf("tool definition is invalid: %w", err)
 		}
-		if tool.Type != "function" || tool.Name == "" || len(tool.Parameters) == 0 {
-			return nil, fmt.Errorf("tool type %q requires a function name and parameters", tool.Type)
+		if tool.Type == "namespace" {
+			if tool.Name == "" || len(tool.Tools) == 0 {
+				return nil, nil, errors.New("namespace tool requires a name and at least one function")
+			}
+			for _, nested := range tool.Tools {
+				function, name, err := responseFunctionTool(nested)
+				if err != nil {
+					return nil, nil, err
+				}
+				chatName := fmt.Sprintf("spillway_tool_%d", len(namespaces))
+				function["name"] = chatName
+				tools = append(tools, map[string]any{"type": "function", "function": function})
+				namespaces[chatName] = responseToolNamespace{Namespace: tool.Name, Name: name}
+			}
+			continue
 		}
-		function := map[string]any{"name": tool.Name, "parameters": tool.Parameters}
-		if tool.Description != "" {
-			function["description"] = tool.Description
+		if tool.Type != "function" {
+			// Provider-hosted tools have no Chat Completions equivalent.
+			continue
 		}
-		if tool.Strict != nil {
-			function["strict"] = *tool.Strict
+		function, _, err := responseFunctionTool(item)
+		if err != nil {
+			return nil, nil, err
 		}
 		tools = append(tools, map[string]any{"type": "function", "function": function})
 	}
-	return tools, nil
+	if len(namespaces) == 0 {
+		namespaces = nil
+	}
+	return tools, namespaces, nil
+}
+
+func responseFunctionTool(raw json.RawMessage) (map[string]any, string, error) {
+	var tool struct {
+		Type           string          `json:"type"`
+		Name           string          `json:"name"`
+		Description    string          `json:"description"`
+		Parameters     json.RawMessage `json:"parameters"`
+		Strict         *bool           `json:"strict"`
+		DeferLoading   bool            `json:"defer_loading"`
+		AllowedCallers []string        `json:"allowed_callers"`
+	}
+	if err := json.Unmarshal(raw, &tool); err != nil {
+		return nil, "", fmt.Errorf("tool definition is invalid: %w", err)
+	}
+	if tool.Type != "function" || tool.Name == "" || len(tool.Parameters) == 0 {
+		return nil, "", fmt.Errorf("tool type %q requires a function name and parameters", tool.Type)
+	}
+	function := map[string]any{"name": tool.Name, "parameters": tool.Parameters}
+	if tool.Description != "" {
+		function["description"] = tool.Description
+	}
+	if tool.Strict != nil {
+		function["strict"] = *tool.Strict
+	}
+	return function, tool.Name, nil
 }
 
 func responseToolChoice(raw json.RawMessage) (any, error) {
@@ -346,7 +412,7 @@ func decodeChatCompletion(raw []byte) (chatCompletionResponse, error) {
 	return response, nil
 }
 
-func responsesResponse(raw []byte) ([]byte, error) {
+func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace) ([]byte, error) {
 	chat, err := decodeChatCompletion(raw)
 	if err != nil {
 		return nil, err
@@ -366,7 +432,7 @@ func responsesResponse(raw []byte) ([]byte, error) {
 		output = append(output, map[string]any{"id": "msg_" + chat.ID, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": contentType, "text": text, "annotations": []any{}}}})
 	}
 	for _, call := range choice.Message.ToolCalls {
-		output = append(output, map[string]any{"id": call.ID, "type": "function_call", "status": "completed", "call_id": call.ID, "name": call.Function.Name, "arguments": call.Function.Arguments})
+		output = append(output, responsesFunctionCall(call.ID, call.Function.Name, call.Function.Arguments, "completed", namespaces))
 	}
 	status := "completed"
 	var incomplete any
@@ -379,6 +445,15 @@ func responsesResponse(raw []byte) ([]byte, error) {
 		"status": status, "error": nil, "incomplete_details": incomplete, "model": chat.Model,
 		"output": output, "usage": map[string]int{"input_tokens": chat.Usage.PromptTokens, "output_tokens": chat.Usage.CompletionTokens, "total_tokens": chat.Usage.TotalTokens},
 	})
+}
+
+func responsesFunctionCall(id, name, arguments, status string, namespaces map[string]responseToolNamespace) map[string]any {
+	item := map[string]any{"id": id, "type": "function_call", "status": status, "call_id": id, "name": name, "arguments": arguments}
+	if namespace, ok := namespaces[name]; ok {
+		item["namespace"] = namespace.Namespace
+		item["name"] = namespace.Name
+	}
+	return item
 }
 
 type responseToolStream struct {
@@ -457,7 +532,7 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		if tool == nil {
 			tool = &responseToolStream{ID: delta.ID}
 			s.tools[delta.Index] = tool
-			w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": delta.Index + 1, "item": map[string]any{"id": delta.ID, "type": "function_call", "status": "in_progress", "call_id": delta.ID, "name": delta.Function.Name, "arguments": ""}}))
+			w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": delta.Index + 1, "item": responsesFunctionCall(delta.ID, delta.Function.Name, "", "in_progress", w.toolNamespaces)}))
 		}
 		if delta.ID != "" {
 			tool.ID = delta.ID
@@ -492,7 +567,7 @@ func (s *responsesStreamState) finish(w *clientCompatibilityWriter) {
 	for _, index := range indexes {
 		tool := s.tools[index]
 		w.writeEvent("response.function_call_arguments.done", s.event(map[string]any{"type": "response.function_call_arguments.done", "item_id": tool.ID, "output_index": index + 1, "arguments": tool.Arguments.String()}))
-		item := map[string]any{"id": tool.ID, "type": "function_call", "status": "completed", "call_id": tool.ID, "name": tool.Name, "arguments": tool.Arguments.String()}
+		item := responsesFunctionCall(tool.ID, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
 		output = append(output, item)
 		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": index + 1, "item": item}))
 	}

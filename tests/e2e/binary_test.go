@@ -434,8 +434,12 @@ func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
 		}
 		upstreamRequests.Add(1)
 		var request struct {
-			Stream bool  `json:"stream"`
-			Tools  []any `json:"tools"`
+			Stream bool `json:"stream"`
+			Tools  []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "invalid chat request", http.StatusBadRequest)
@@ -457,7 +461,7 @@ func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if len(request.Tools) > 0 {
-			_, _ = io.WriteString(w, `{"id":"chatcmpl-e2e","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call-e2e","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
+			_, _ = fmt.Fprintf(w, `{"id":"chatcmpl-e2e","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call-e2e","type":"function","function":{"name":%q,"arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`, request.Tools[0].Function.Name)
 			return
 		}
 		_, _ = io.WriteString(w, `{"id":"chatcmpl-e2e","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from the fake provider."},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)
@@ -504,6 +508,10 @@ func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
 	if !strings.Contains(responsesTool, `"name":"lookup"`) {
 		t.Fatalf("Responses tool response = %s", responsesTool)
 	}
+	responsesNamespacedTool := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/responses", `{"model":"auto","input":"Use a tool","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}}]},{"type":"web_search"}]}`, localKey, http.StatusOK, `"namespace":"functions"`)
+	if !strings.Contains(responsesNamespacedTool, `"name":"lookup"`) {
+		t.Fatalf("Responses namespaced tool response = %s", responsesNamespacedTool)
+	}
 	messagesTool := requestBinaryAPI(t, baseURL, http.MethodPost, "/v1/messages", `{"model":"ollama/test-model","max_tokens":32,"messages":[{"role":"user","content":"Use a tool"}],"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}}}]}`, localKey, http.StatusOK, `"type":"tool_use"`)
 	if !strings.Contains(messagesTool, `"name":"lookup"`) {
 		t.Fatalf("Anthropic tool response = %s", messagesTool)
@@ -516,8 +524,8 @@ func TestBinary_ResponsesAndAnthropicClientsReachFakeProvider(t *testing.T) {
 	if !strings.Contains(messagesStream, "Stream hello.") {
 		t.Fatalf("Anthropic Messages stream = %s", messagesStream)
 	}
-	if got := upstreamRequests.Load(); got != 6 {
-		t.Fatalf("fake provider requests = %d, want 6", got)
+	if got := upstreamRequests.Load(); got != 7 {
+		t.Fatalf("fake provider requests = %d, want 7", got)
 	}
 }
 

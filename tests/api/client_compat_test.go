@@ -18,9 +18,9 @@ func TestResponses_UsesChatExecutionAndReturnsResponsesShape(t *testing.T) {
 	var got providers.ChatRequest
 	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
 		got = req
-		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"docs\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)}, nil
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"spillway_tool_0","arguments":"{\"query\":\"docs\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)}, nil
 	}
-	body := `{"model":"fake/model","instructions":"Be concise.","store":false,"include":["reasoning.encrypted_content"],"client_metadata":{"app":"codex"},"prompt_cache_key":"codex-session","service_tier":"priority","parallel_tool_calls":true,"reasoning":{"effort":"medium","summary":"auto"},"text":{"verbosity":"medium"},"input":[{"type":"message","id":"msg_codex_1","role":"user","content":[{"type":"input_text","text":"Use a tool."}]}],"tools":[{"type":"function","name":"lookup","description":"Search docs","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}],"tool_choice":"auto"}`
+	body := `{"model":"fake/model","instructions":"Be concise.","store":false,"include":["reasoning.encrypted_content"],"client_metadata":{"app":"codex"},"prompt_cache_key":"codex-session","service_tier":"priority","parallel_tool_calls":true,"reasoning":{"effort":"medium","summary":"auto"},"text":{"verbosity":"medium"},"input":[{"type":"message","id":"msg_codex_1","internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]},"role":"user","content":[{"type":"input_text","text":"Use a tool."}]}],"tools":[{"type":"namespace","name":"functions","description":"Local functions","external_web_access":true,"tools":[{"type":"function","name":"lookup","description":"Search docs","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}]},{"type":"web_search"}],"tool_choice":"auto"}`
 	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
@@ -38,7 +38,7 @@ func TestResponses_UsesChatExecutionAndReturnsResponsesShape(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	if err := json.Unmarshal(request["tools"], &tools); err != nil || len(tools) != 1 || tools[0].Type != "function" || tools[0].Function.Name != "lookup" {
+	if err := json.Unmarshal(request["tools"], &tools); err != nil || len(tools) != 1 || tools[0].Type != "function" || tools[0].Function.Name != "spillway_tool_0" {
 		t.Fatalf("chat tools = %s, want chat-completions function shape", request["tools"])
 	}
 	var response struct {
@@ -46,6 +46,7 @@ func TestResponses_UsesChatExecutionAndReturnsResponsesShape(t *testing.T) {
 		Status string `json:"status"`
 		Output []struct {
 			Type      string `json:"type"`
+			Namespace string `json:"namespace"`
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		} `json:"output"`
@@ -53,8 +54,59 @@ func TestResponses_UsesChatExecutionAndReturnsResponsesShape(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal("decode Responses response:", err)
 	}
-	if response.Object != "response" || response.Status != "completed" || len(response.Output) != 1 || response.Output[0].Type != "function_call" || response.Output[0].Name != "lookup" || response.Output[0].Arguments != `{"query":"docs"}` {
+	if response.Object != "response" || response.Status != "completed" || len(response.Output) != 1 || response.Output[0].Type != "function_call" || response.Output[0].Namespace != "functions" || response.Output[0].Name != "lookup" || response.Output[0].Arguments != `{"query":"docs"}` {
 		t.Fatalf("Responses output = %#v", response)
+	}
+}
+
+func TestResponses_RestoresNamespacedToolHistory(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"function_call","call_id":"call-9","namespace":"functions","name":"lookup","arguments":"{\"query\":\"docs\"}"},{"type":"function_call_output","call_id":"call-9","output":"found"},{"type":"message","role":"user","content":"Continue."}],"tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			ToolCalls []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated tool history:", err)
+	}
+	if len(translated.Messages) != 3 || translated.Messages[0].ToolCalls[0].Function.Name != "spillway_tool_0" || translated.Messages[1].ToolCallID != "call-9" || translated.Messages[2].Content != "Continue." {
+		t.Fatalf("translated tool history = %#v", translated.Messages)
+	}
+}
+
+func TestResponses_AcceptsReplayedAssistantOutputText(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Again."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi."}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello.","annotations":[],"logprobs":[]}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Again."}]}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if len(got.Messages) != 3 || got.Messages[1].Role != "assistant" || got.Messages[1].Text() != "Hello." {
+		t.Fatalf("translated messages = %#v, want replayed assistant text", got.Messages)
 	}
 }
 
@@ -209,6 +261,22 @@ func TestResponses_StreamsResponsesEvents(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "[DONE]") {
 		t.Errorf("Responses stream contains Chat Completions sentinel: %s", rec.Body)
+	}
+}
+
+func TestResponses_StreamsNamespacedToolCalls(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"spillway_tool_0","arguments":"{}"}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-tool","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+		}}, nil
+	}
+	body := `{"model":"fake/model","input":"call lookup","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}],"stream":true}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"namespace":"functions"`) || !strings.Contains(rec.Body.String(), `"name":"lookup"`) {
+		t.Fatalf("namespaced Responses stream = %d %s", rec.Code, rec.Body)
 	}
 }
 
