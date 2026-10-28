@@ -1,0 +1,31 @@
+{
+  "model": "fake/model",
+  "max_tokens": 256,
+  "metadata": { "user_id": "user_test_0000" },
+  "thinking": { "type": "adaptive", "display": "summarized" },
+  "output_config": { "effort": "high" },
+  "context_management": {
+    "edits": [{ "type": "clear_tool_uses_20250919" }]
+  },
+  "cache_control": { "type": "ephemeral", "ttl": "1h" },
+  "system": [
+    { "type": "text", "text": "System block one.", "cache_control": { "type": "ephemeral" } },
+    { "type": "text", "text": "System block two." }
+  ],
+  "messages": [
+    { "role": "user", "content": [{ "type": "text", "text": "Use one of these tools." }] }
+  ],
+  "tools": [
+    {
+      "type": "custom",
+      "name": "lookup",
+      "description": "Search documentation.",
+      "input_schema": { "type": "object", "properties": { "query": { "type": "string" } } },
+      "cache_control": { "type": "ephemeral" }
+    },
+    {
+      "name": "read_file",
+      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } } }
+    }
+  ]
+}

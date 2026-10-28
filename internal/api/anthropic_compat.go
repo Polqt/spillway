@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 type anthropicCreateRequest struct {
 	Model       string            `json:"model"`
 	MaxTokens   int               `json:"max_tokens"`
+	Metadata    json.RawMessage   `json:"metadata"`
+	Thinking    json.RawMessage   `json:"thinking"`
+	Output      json.RawMessage   `json:"output_config"`
+	Context     json.RawMessage   `json:"context_management"`
+	Cache       json.RawMessage   `json:"cache_control"`
 	System      json.RawMessage   `json:"system"`
 	Messages    []json.RawMessage `json:"messages"`
 	Tools       []json.RawMessage `json:"tools"`
@@ -29,6 +35,9 @@ func anthropicRequest(raw []byte) ([]byte, bool, error) {
 	}
 	if request.Model == "" || request.MaxTokens <= 0 {
 		return nil, false, errors.New("model and positive max_tokens are required")
+	}
+	if err := validateAnthropicHints(request); err != nil {
+		return nil, false, err
 	}
 	messages := make([]map[string]any, 0, len(request.Messages)+1)
 	if len(request.System) > 0 {
@@ -102,6 +111,7 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 			Input     json.RawMessage `json:"input"`
 			ToolUseID string          `json:"tool_use_id"`
 			Content   json.RawMessage `json:"content"`
+			Cache     json.RawMessage `json:"cache_control"`
 			Source    struct {
 				Type      string `json:"type"`
 				MediaType string `json:"media_type"`
@@ -111,6 +121,9 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 		}
 		if err := decodeClientJSON(rawBlock, &block); err != nil {
 			return nil, fmt.Errorf("content block is invalid: %w", err)
+		}
+		if err := validateAnthropicCacheControl(block.Cache); err != nil {
+			return nil, err
 		}
 		switch block.Type {
 		case "text":
@@ -167,15 +180,24 @@ func anthropicContent(raw json.RawMessage) (any, error) {
 		return nil, errors.New("system must be text or an array of text blocks")
 	}
 	var result strings.Builder
+	first := true
 	for _, rawBlock := range blocks {
 		var block struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			Cache json.RawMessage `json:"cache_control"`
 		}
 		if err := decodeClientJSON(rawBlock, &block); err != nil || block.Type != "text" {
 			return nil, errors.New("system supports text blocks only")
 		}
+		if err := validateAnthropicCacheControl(block.Cache); err != nil {
+			return nil, err
+		}
+		if !first {
+			result.WriteString("\n\n")
+		}
 		result.WriteString(block.Text)
+		first = false
 	}
 	return result.String(), nil
 }
@@ -184,11 +206,22 @@ func anthropicTools(raw []json.RawMessage) ([]map[string]any, error) {
 	tools := make([]map[string]any, 0, len(raw))
 	for _, rawTool := range raw {
 		var tool struct {
+			Type        string          `json:"type"`
 			Name        string          `json:"name"`
 			Description string          `json:"description"`
 			Schema      json.RawMessage `json:"input_schema"`
+			Cache       json.RawMessage `json:"cache_control"`
 		}
-		if err := decodeClientJSON(rawTool, &tool); err != nil || tool.Name == "" || len(tool.Schema) == 0 {
+		if err := decodeClientJSON(rawTool, &tool); err != nil {
+			return nil, errors.New("tool requires a name and input_schema")
+		}
+		if tool.Type != "" && tool.Type != "custom" {
+			return nil, fmt.Errorf("tool type %q is not supported", tool.Type)
+		}
+		if err := validateAnthropicCacheControl(tool.Cache); err != nil {
+			return nil, err
+		}
+		if tool.Name == "" || len(tool.Schema) == 0 {
 			return nil, errors.New("tool requires a name and input_schema")
 		}
 		function := map[string]any{"name": tool.Name, "parameters": tool.Schema}
@@ -198,6 +231,93 @@ func anthropicTools(raw []json.RawMessage) ([]map[string]any, error) {
 		tools = append(tools, map[string]any{"type": "function", "function": function})
 	}
 	return tools, nil
+}
+
+func validateAnthropicHints(request anthropicCreateRequest) error {
+	if len(request.Metadata) > 0 && string(request.Metadata) != "null" {
+		var metadata struct {
+			UserID *string `json:"user_id"`
+		}
+		if err := decodeClientJSON(request.Metadata, &metadata); err != nil {
+			return fmt.Errorf("metadata is invalid: %w", err)
+		}
+		if metadata.UserID != nil && utf8.RuneCountInString(*metadata.UserID) > 512 {
+			return errors.New("metadata.user_id must be at most 512 characters")
+		}
+	}
+	if len(request.Thinking) > 0 && string(request.Thinking) != "null" {
+		var thinking struct {
+			Type         string `json:"type"`
+			BudgetTokens *int   `json:"budget_tokens"`
+			Display      string `json:"display"`
+		}
+		if err := decodeClientJSON(request.Thinking, &thinking); err != nil {
+			return fmt.Errorf("thinking is invalid: %w", err)
+		}
+		switch thinking.Type {
+		case "adaptive", "disabled", "between_tools", "enabled":
+		default:
+			return errors.New("thinking.type is not supported")
+		}
+		if thinking.Type == "enabled" && thinking.BudgetTokens == nil {
+			return errors.New("thinking.budget_tokens is required when thinking is enabled")
+		}
+		if thinking.BudgetTokens != nil && (*thinking.BudgetTokens < 1024 || *thinking.BudgetTokens >= request.MaxTokens) {
+			return errors.New("thinking.budget_tokens must be at least 1024 and below max_tokens")
+		}
+		if thinking.Display != "" && (thinking.Display != "summarized" && thinking.Display != "omitted" || thinking.Type != "adaptive" && thinking.Type != "enabled") {
+			return errors.New("thinking.display is not supported")
+		}
+	}
+	if len(request.Output) > 0 && string(request.Output) != "null" {
+		var output struct {
+			Effort string `json:"effort"`
+		}
+		if err := decodeClientJSON(request.Output, &output); err != nil {
+			return fmt.Errorf("output_config is invalid: %w", err)
+		}
+		switch output.Effort {
+		case "low", "medium", "high", "xhigh", "max":
+		default:
+			return errors.New("output_config.effort is not supported")
+		}
+	}
+	if len(request.Context) > 0 && string(request.Context) != "null" {
+		var management struct {
+			Edits []struct {
+				Type *string `json:"type"`
+			} `json:"edits"`
+		}
+		if err := decodeClientJSON(request.Context, &management); err != nil {
+			return fmt.Errorf("context_management is invalid: %w", err)
+		}
+		for _, edit := range management.Edits {
+			if edit.Type == nil {
+				return errors.New("context_management.edits[].type must be a string")
+			}
+		}
+	}
+	return validateAnthropicCacheControl(request.Cache)
+}
+
+func validateAnthropicCacheControl(raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var cache struct {
+		Type string `json:"type"`
+		TTL  string `json:"ttl"`
+	}
+	if err := decodeClientJSON(raw, &cache); err != nil {
+		return fmt.Errorf("cache_control is invalid: %w", err)
+	}
+	if cache.Type != "ephemeral" {
+		return errors.New("cache_control.type must be ephemeral")
+	}
+	if cache.TTL != "" && cache.TTL != "5m" && cache.TTL != "1h" {
+		return errors.New("cache_control.ttl must be 5m or 1h")
+	}
+	return nil
 }
 
 func anthropicToolChoice(raw json.RawMessage) (any, error) {

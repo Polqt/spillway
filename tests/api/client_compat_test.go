@@ -3,9 +3,12 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -276,20 +279,153 @@ func TestResponses_RejectsUnsupportedFieldsWithResponsesError(t *testing.T) {
 
 func TestAnthropicMessages_RejectsUnsupportedFieldsWithAnthropicError(t *testing.T) {
 	t.Parallel()
+	tests := []struct {
+		name, body, field string
+	}{
+		{"unknown thinking type", `"thinking":{"type":"always"}`, "thinking"},
+		{"missing enabled budget", `"thinking":{"type":"enabled"}`, "budget_tokens"},
+		{"disabled display", `"thinking":{"type":"disabled","display":"omitted"}`, "display"},
+		{"between tools display", `"thinking":{"type":"between_tools","display":"summarized"}`, "display"},
+		{"small budget", `"thinking":{"type":"enabled","budget_tokens":512}`, "budget_tokens"},
+		{"budget reaches max tokens", `"thinking":{"type":"enabled","budget_tokens":32}`, "budget_tokens"},
+		{"unsupported output format", `"output_config":{"format":{"type":"json_schema"}}`, "format"},
+		{"unknown effort", `"output_config":{"effort":"extreme"}`, "effort"},
+		{"invalid cache control", `"cache_control":{"type":"persistent"}`, "cache_control"},
+		{"container", `"container":{}`, "container"},
+		{"mcp servers", `"mcp_servers":[]`, "mcp_servers"},
+		{"non-string user id", `"metadata":{"user_id":7}`, "user_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			body := `{"model":"fake/model","max_tokens":32,` + tt.body + `,"messages":[{"role":"user","content":"hello"}]}`
+			rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+			var response struct {
+				Type  string `json:"type"`
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode Anthropic error %q: %v", rec.Body, err)
+			}
+			if rec.Code != http.StatusBadRequest || response.Type != "error" || response.Error.Type != "invalid_request_error" || !strings.Contains(response.Error.Message, tt.field) {
+				t.Fatalf("Anthropic error = %d %#v; want invalid_request_error naming %s", rec.Code, response, tt.field)
+			}
+		})
+	}
+}
+
+func TestAnthropicMessages_AcceptsClaudeCodeFirstTurn(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, nil)
-	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":32,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":"hello"}]}`})
-	var body struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode Anthropic error %q: %v", rec.Body, err)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "claude-code-first-turn.json"))
+	if err != nil {
+		t.Fatal("read Claude Code fixture:", err)
 	}
-	if rec.Code != http.StatusBadRequest || body.Type != "error" || body.Error.Type != "invalid_request_error" || !strings.Contains(body.Error.Message, "thinking") {
-		t.Fatalf("Anthropic error = %d %#v; want clear invalid_request_error", rec.Code, body)
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: string(fixture)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	for _, field := range []string{`"metadata"`, "user_test_0000", `"thinking"`, `"output_config"`, `"context_management"`, `"cache_control"`} {
+		if strings.Contains(string(got.RawBody), field) {
+			t.Errorf("upstream body contains ignored field %q: %s", field, got.RawBody)
+		}
+	}
+	var upstream struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &upstream); err != nil {
+		t.Fatal("decode upstream body:", err)
+	}
+	var system string
+	if len(upstream.Messages) > 0 {
+		_ = json.Unmarshal(upstream.Messages[0].Content, &system)
+	}
+	if len(upstream.Messages) < 2 || system != "System block one.\n\nSystem block two." {
+		t.Fatalf("system content = %#v, want blocks joined with blank line", upstream.Messages)
+	}
+}
+
+func TestAnthropicMessages_AcceptsHintFields(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, fields string }{
+		{"thinking adaptive", `"thinking":{"type":"adaptive"}`},
+		{"thinking adaptive display", `"thinking":{"type":"adaptive","display":"summarized"}`},
+		{"thinking adaptive omitted display", `"thinking":{"type":"adaptive","display":"omitted"}`},
+		{"thinking disabled", `"thinking":{"type":"disabled"}`},
+		{"thinking between tools", `"thinking":{"type":"between_tools"}`},
+		{"thinking enabled", `"thinking":{"type":"enabled","budget_tokens":1024}`},
+		{"thinking enabled display", `"thinking":{"type":"enabled","budget_tokens":1024,"display":"summarized"}`},
+		{"thinking enabled omitted display", `"thinking":{"type":"enabled","budget_tokens":1024,"display":"omitted"}`},
+		{"effort low", `"output_config":{"effort":"low"}`},
+		{"effort medium", `"output_config":{"effort":"medium"}`},
+		{"effort high", `"output_config":{"effort":"high"}`},
+		{"effort xhigh", `"output_config":{"effort":"xhigh"}`},
+		{"effort max", `"output_config":{"effort":"max"}`},
+		{"clear tool uses edit", `"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]}`},
+		{"clear thinking edit", `"context_management":{"edits":[{"type":"clear_thinking_20251015"}]}`},
+		{"top-level cache control", `"cache_control":{"type":"ephemeral"}`},
+		{"cache control one hour", `"cache_control":{"type":"ephemeral","ttl":"1h"}`},
+		{"tool cache control custom tool", `"tools":[{"type":"custom","name":"lookup","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral","ttl":"1h"}}]`},
+		{"image cache control", `"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image.png"},"cache_control":{"type":"ephemeral"}}]}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+			}
+			maxTokens := 32
+			if strings.HasPrefix(tt.name, "thinking enabled") {
+				maxTokens = 2048
+			}
+			base := fmt.Sprintf(`"model":"fake/model","max_tokens":%d,"messages":[{"role":"user","content":"hello"}]`, maxTokens)
+			fields := strings.TrimPrefix(tt.fields, `"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image.png"},"cache_control":{"type":"ephemeral"}}]}]`)
+			if tt.name == "image cache control" {
+				base = `"model":"fake/model","max_tokens":32`
+			}
+			body := "{" + base
+			if fields != "" {
+				body += "," + fields
+			}
+			if tt.name == "image cache control" {
+				body += "," + tt.fields
+			}
+			body += "}"
+			rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+func TestAnthropicMessages_DoesNotForwardOrLogMetadataUserID(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":32,"metadata":{"user_id":"user_test_private_987"},"messages":[{"role":"user","content":"hello"}]}`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(string(got.RawBody)+e.logs.String(), "user_test_private_987") {
+		t.Fatalf("user identifier leaked: upstream=%s logs=%s", got.RawBody, e.logs)
 	}
 }
 
