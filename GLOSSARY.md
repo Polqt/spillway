@@ -222,3 +222,15 @@ _Avoid_: provider setup wizard
 **Doctor probe**:
 The optional-by-flag, unauthenticated local HTTP and bind checks `spillway doctor` makes against the configured listen address; it never contacts configured providers or sends a key.
 _Avoid_: health check (too broad)
+
+### Coding client tool loops
+
+**Thought signature**:
+An opaque, model-derived value that Gemini attaches to a model step's function call and requires back unchanged in the next request's history.
+Spillway passes it back only to Gemini and never stores or logs it (ADR 0033).
+_Avoid_: reasoning token, thinking signature
+
+**Signed tool call ID**:
+A tool-call ID, prefixed `spwts1_`, that Spillway gives a Responses or Anthropic Messages client so the client's own history carries a thought signature back with the call.
+A tool call whose thought signature is absent or cannot be carried keeps its provider ID (ADR 0033).
+_Avoid_: encoded call ID, wrapped tool ID
