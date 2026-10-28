@@ -31,8 +31,10 @@ func TestPresets_CoverEverySupportedProvider(t *testing.T) {
 
 func TestLookupPreset_UnknownProvider(t *testing.T) {
 	t.Parallel()
-	if _, ok := providers.LookupPreset("unknown"); ok {
-		t.Fatal("LookupPreset(unknown) found a preset, want none")
+	for _, name := range []string{"unknown", "mock"} {
+		if _, ok := providers.LookupPreset(name); ok {
+			t.Errorf("LookupPreset(%s) found a preset, want none", name)
+		}
 	}
 }
 
