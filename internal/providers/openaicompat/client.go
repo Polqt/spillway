@@ -366,6 +366,12 @@ func requestBody(chat providers.ChatRequest, keepToolCallExtraContent bool) ([]b
 			return nil, err
 		}
 	}
+	if !keepToolCallExtraContent {
+		var err error
+		if data, err = EditMessages(data, messageWithoutToolCallExtraContent); err != nil {
+			return nil, fmt.Errorf("%w: chat request: %w", providers.ErrBadRequest, err)
+		}
+	}
 	model, err := json.Marshal(chat.Model)
 	if err != nil {
 		return nil, err
@@ -374,28 +380,39 @@ func requestBody(chat providers.ChatRequest, keepToolCallExtraContent bool) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("chat request: %w", err)
 	}
-	var edits []valueEdit
-	for _, member := range members {
-		switch member.key {
-		case "model":
-			edits = append(edits, valueEdit{objectMember: member, value: model})
-		case "messages":
-			if keepToolCallExtraContent {
-				continue
-			}
-			messages, changed, err := editArrayItems(data[member.start:member.end], "messages", messageWithoutToolCallExtraContent)
-			if err != nil {
-				return nil, fmt.Errorf("chat request: %w", err)
-			}
-			if changed {
-				edits = append(edits, valueEdit{objectMember: member, value: messages})
-			}
-		}
-	}
 	if !slices.ContainsFunc(members, func(member objectMember) bool { return member.key == "model" }) {
 		return nil, errors.New("chat request is missing model")
 	}
+	var edits []valueEdit
+	for _, member := range members {
+		if member.key == "model" {
+			edits = append(edits, valueEdit{objectMember: member, value: model})
+		}
+	}
 	return applyEdits(data, edits), nil
+}
+
+// EditMessages applies edit to each item of a chat request body's messages array.
+// Every byte outside the edited messages is kept, and body itself is returned when no message changes.
+func EditMessages(body []byte, edit func(index int, message json.RawMessage) (edited json.RawMessage, changed bool, err error)) ([]byte, error) {
+	members, err := objectMembers(body)
+	if err != nil {
+		return nil, err
+	}
+	var edits []valueEdit
+	for _, member := range members {
+		if member.key != "messages" {
+			continue
+		}
+		messages, changed, err := editArrayItems(body[member.start:member.end], "messages", edit)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			edits = append(edits, valueEdit{objectMember: member, value: messages})
+		}
+	}
+	return applyEdits(body, edits), nil
 }
 
 // messageWithoutToolCallExtraContent removes Google's extra_content from a message's tool calls.

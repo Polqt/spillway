@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,4 +281,210 @@ func TestProvider_ChatStreamDeliversSignatureChunksVerbatim(t *testing.T) {
 	if _, err := stream.Recv(); !errors.Is(err, io.EOF) || rest != "data: [DONE]\n\n" {
 		t.Fatalf("stream end = %v with %q left; want io.EOF after [DONE]", err, rest)
 	}
+}
+
+const placeholderExtra = `{"google":{"thought_signature":"skip_thought_signature_validator"}}`
+
+// upstreamBodies sends body through Chat and ChatStream and returns the raw request body Gemini received for each.
+func upstreamBodies(t *testing.T, body string) map[string][]byte {
+	t.Helper()
+	chatFixture := fixture(t, "chat.json")
+	got := map[string][]byte{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		method := "Chat"
+		if r.Header.Get("Accept") == "text/event-stream" {
+			method = "ChatStream"
+			_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n")
+		} else {
+			_, _ = w.Write(chatFixture)
+		}
+		mu.Lock()
+		got[method] = data
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Chat(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: []byte(body)}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	stream, err := p.ChatStream(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: []byte(body)})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("stream Recv: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("upstream saw %d request kinds, want Chat and ChatStream", len(got))
+	}
+	return got
+}
+
+func messagesOf(t *testing.T, body []byte) []json.RawMessage {
+	t.Helper()
+	var request struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode messages of %s: %v", body, err)
+	}
+	return request.Messages
+}
+
+func jsonEqual(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var x, y any
+	if err := json.Unmarshal(a, &x); err != nil {
+		t.Fatalf("decode %s: %v", a, err)
+	}
+	if err := json.Unmarshal(b, &y); err != nil {
+		t.Fatalf("decode %s: %v", b, err)
+	}
+	return reflect.DeepEqual(x, y)
+}
+
+func TestProvider_AddsPlaceholderSignatureToUnsignedToolCalls(t *testing.T) {
+	t.Parallel()
+	const (
+		user        = `{"role":"user","content":"read a.go and b.go"}`
+		toolA       = `{"role":"tool","tool_call_id":"call_a","content":"package a"}`
+		toolB       = `{"role":"tool","tool_call_id":"call_b","content":"package b"}`
+		callA       = `{"id":"call_a","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"}}`
+		callB       = `{"id":"call_b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.go\"}"}}`
+		signedCallA = `{"id":"function-call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}`
+		signedTool  = `{"role":"tool","tool_call_id":"function-call-1","content":"package a"}`
+		placedCallA = `{"id":"call_a","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"},"extra_content":` + placeholderExtra + `}`
+		placedCallB = `{"id":"call_b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.go\"}"},"extra_content":` + placeholderExtra + `}`
+	)
+	tests := []struct {
+		name     string
+		messages []string
+		// changed maps a message index to its expected upstream JSON; every other message must arrive byte-identical.
+		changed map[int]string
+	}{
+		{
+			name:     "one unsigned call",
+			messages: []string{user, `{"role":"assistant","content":null,"tool_calls":[` + callA + `]}`, toolA},
+			changed:  map[int]string{1: `{"role":"assistant","content":null,"tool_calls":[` + placedCallA + `]}`},
+		},
+		{
+			name:     "unsigned parallel calls get it on the first call only",
+			messages: []string{user, `{"role":"assistant","content":null,"tool_calls":[` + callA + `,` + callB + `]}`, toolA, toolB},
+			changed:  map[int]string{1: `{"role":"assistant","content":null,"tool_calls":[` + placedCallA + `,` + callB + `]}`},
+		},
+		{
+			name: "mixed history changes only the unsigned assistant message",
+			messages: []string{
+				user,
+				`{"role":"assistant","content":null,"tool_calls":[` + signedCallA + `]}`,
+				signedTool,
+				`{"role":"assistant","content":"now b.go","tool_calls":[` + callB + `]}`,
+				toolB,
+			},
+			changed: map[int]string{3: `{"role":"assistant","content":"now b.go","tool_calls":[` + placedCallB + `]}`},
+		},
+		{
+			name:     "an empty signature counts as unsigned",
+			messages: []string{user, `{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"read_file","arguments":"{}"},"extra_content":{"google":{"thought_signature":""}}}]}`, toolA},
+			changed:  map[int]string{1: `{"role":"assistant","tool_calls":[{"id":"call_a","type":"function","function":{"name":"read_file","arguments":"{}"},"extra_content":` + placeholderExtra + `}]}`},
+		},
+		{
+			name:     "tool calls outside assistant messages are untouched",
+			messages: []string{`{"role":"user","content":"read a.go","tool_calls":[` + callA + `]}`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"model":"gemini-3-flash-preview","messages":[` + strings.Join(tt.messages, ",") + `]}`
+			for method, upstream := range upstreamBodies(t, body) {
+				got := messagesOf(t, upstream)
+				if len(got) != len(tt.messages) {
+					t.Fatalf("%s upstream has %d messages, want %d: %s", method, len(got), len(tt.messages), upstream)
+				}
+				for i, message := range tt.messages {
+					if want, ok := tt.changed[i]; ok {
+						if !jsonEqual(t, got[i], []byte(want)) {
+							t.Errorf("%s upstream message %d = %s, want %s", method, i, got[i], want)
+						}
+					} else if string(got[i]) != message {
+						t.Errorf("%s upstream message %d = %s, want it byte-identical: %s", method, i, got[i], message)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProvider_PlaceholderNeverReplacesRealSignature(t *testing.T) {
+	t.Parallel()
+	const signed = `{"google" : {"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}`
+	// The second message is a Gemini parallel step: only its first call carries a signature.
+	body := `{"model":"gemini-3-flash-preview","messages":[` +
+		`{"role":"user","content":"read a.go and b.go"},` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"function-call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"},"extra_content":` + signed + `},{"id":"function-call-2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.go\"}"}}]},` +
+		`{"role":"tool","tool_call_id":"function-call-1","content":"package a"},` +
+		`{"role":"tool","tool_call_id":"function-call-2","content":"package b"}]}`
+	for method, upstream := range upstreamBodies(t, body) {
+		if string(upstream) != body {
+			t.Errorf("%s upstream body = %s, want it byte-identical: %s", method, upstream, body)
+		}
+	}
+}
+
+func TestProvider_BodyWithoutToolCallsIsForwardedUnchanged(t *testing.T) {
+	t.Parallel()
+	body := `{ "model" : "gemini/gemini-3-flash-preview", "messages" : [ {"role":"system","content":"be brief"}, {"role":"user","content":"hi <b>&</b>"} ], "tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}], "temperature" : 0.2 }`
+	want := strings.Replace(body, `"gemini/gemini-3-flash-preview"`, `"gemini-3-flash-preview"`, 1)
+	for method, upstream := range upstreamBodies(t, body) {
+		if string(upstream) != want {
+			t.Errorf("%s upstream body = %s, want %s", method, upstream, want)
+		}
+	}
+}
+
+func TestProvider_MalformedToolCallsErrorOmitsBody(t *testing.T) {
+	t.Parallel()
+	const sentinel = "sentinel-tool-history-c2lnbmF0dXJl"
+	var called atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called.Store(true) }))
+	defer srv.Close()
+	p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, toolCalls string }{
+		{"tool_calls is not an array", `"` + sentinel + `"`},
+		{"tool call is not an object", `["` + sentinel + `"]`},
+		{"extra_content is not an object", `[{"id":"call_a","extra_content":"` + sentinel + `"}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: []byte(`{"model":"gemini-3-flash-preview","messages":[{"role":"assistant","tool_calls":` + tt.toolCalls + `}]}`)}
+			_, chatErr := p.Chat(t.Context(), req)
+			_, streamErr := p.ChatStream(t.Context(), req)
+			for method, err := range map[string]error{"Chat": chatErr, "ChatStream": streamErr} {
+				if !errors.Is(err, providers.ErrBadRequest) || strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), providerKey) {
+					t.Errorf("%s error = %v; want ErrBadRequest without body content or key", method, err)
+				}
+			}
+		})
+	}
+	t.Cleanup(func() {
+		if called.Load() {
+			t.Error("malformed tool history reached Gemini")
+		}
+	})
 }

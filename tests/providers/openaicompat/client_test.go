@@ -675,8 +675,8 @@ func TestClient_MalformedMessagesErrorOmitsBody(t *testing.T) {
 	_, chatErr := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body})
 	_, streamErr := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body})
 	for method, err := range map[string]error{"Chat": chatErr, "ChatStream": streamErr} {
-		if err == nil {
-			t.Errorf("%s error = nil, want malformed messages error", method)
+		if !errors.Is(err, providers.ErrBadRequest) {
+			t.Errorf("%s error = %v, want ErrBadRequest for malformed messages", method, err)
 			continue
 		}
 		if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), providerKey) {
