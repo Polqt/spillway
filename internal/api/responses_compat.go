@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -140,6 +141,10 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 			}
 			messages = append(messages, map[string]any{"role": entry.Role, "content": content})
 		case "function_call":
+			ref, err := parseClientToolCallID(entry.CallID)
+			if err != nil {
+				return nil, errors.New("function_call.call_id is invalid")
+			}
 			name := entry.Name
 			for chatName, namespace := range namespaces {
 				if namespace.Namespace == entry.Namespace && namespace.Name == entry.Name {
@@ -147,9 +152,7 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 					break
 				}
 			}
-			call := map[string]any{"id": entry.CallID, "type": "function", "function": map[string]any{
-				"name": name, "arguments": string(entry.Arguments),
-			}}
+			call := chatToolCall(ref, name, string(entry.Arguments))
 			if last := len(messages) - 1; last >= 0 && messages[last]["role"] == "assistant" {
 				calls, _ := messages[last]["tool_calls"].([]map[string]any)
 				messages[last]["tool_calls"] = append(calls, call)
@@ -163,11 +166,15 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 			if entry.CallID == "" {
 				return nil, errors.New("function_call_output requires call_id")
 			}
+			ref, err := parseClientToolCallID(entry.CallID)
+			if err != nil {
+				return nil, errors.New("function_call_output.call_id is invalid")
+			}
 			output, err := responseOutputText(entry.Output)
 			if err != nil {
 				return nil, err
 			}
-			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": entry.CallID, "content": output})
+			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": ref.ID, "content": output})
 		default:
 			return nil, fmt.Errorf("input item type %q is not supported", entry.Type)
 		}
@@ -393,8 +400,9 @@ type chatCompletionResponse struct {
 			Content   *string `json:"content"`
 			Refusal   string  `json:"refusal"`
 			ToolCalls []struct {
-				ID       string `json:"id"`
-				Function struct {
+				ID           string             `json:"id"`
+				ExtraContent googleExtraContent `json:"extra_content"`
+				Function     struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
@@ -417,7 +425,7 @@ func decodeChatCompletion(raw []byte) (chatCompletionResponse, error) {
 	return response, nil
 }
 
-func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace) ([]byte, error) {
+func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace, logger *slog.Logger, provider string) ([]byte, error) {
 	chat, err := decodeChatCompletion(raw)
 	if err != nil {
 		return nil, err
@@ -437,7 +445,11 @@ func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace) 
 		output = append(output, map[string]any{"id": "msg_" + chat.ID, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": contentType, "text": text, "annotations": []any{}}}})
 	}
 	for _, call := range choice.Message.ToolCalls {
-		output = append(output, responsesFunctionCall(call.ID, call.Function.Name, call.Function.Arguments, "completed", namespaces))
+		ref := toolCallRef{ID: call.ID, ThoughtSignature: call.ExtraContent.Google.ThoughtSignature}
+		if reason := signatureIssue(ref); reason != "" && logger != nil {
+			logger.Warn("thought signature not forwarded", "provider", provider, "reason", reason, "bytes", len(ref.ThoughtSignature))
+		}
+		output = append(output, responsesFunctionCall(ref, call.Function.Name, call.Function.Arguments, "completed", namespaces))
 	}
 	status := "completed"
 	var incomplete any
@@ -452,8 +464,9 @@ func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace) 
 	})
 }
 
-func responsesFunctionCall(id, name, arguments, status string, namespaces map[string]responseToolNamespace) map[string]any {
-	item := map[string]any{"id": id, "type": "function_call", "status": status, "call_id": id, "name": name, "arguments": arguments}
+func responsesFunctionCall(ref toolCallRef, name, arguments, status string, namespaces map[string]responseToolNamespace) map[string]any {
+	callID, _ := clientToolCallID(ref)
+	item := map[string]any{"id": ref.ID, "type": "function_call", "status": status, "call_id": callID, "name": name, "arguments": arguments}
 	if namespace, ok := namespaces[name]; ok {
 		item["namespace"] = namespace.Namespace
 		item["name"] = namespace.Name
@@ -537,7 +550,7 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		if tool == nil {
 			tool = &responseToolStream{ID: delta.ID}
 			s.tools[delta.Index] = tool
-			w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": delta.Index + 1, "item": responsesFunctionCall(delta.ID, delta.Function.Name, "", "in_progress", w.toolNamespaces)}))
+			w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": delta.Index + 1, "item": responsesFunctionCall(toolCallRef{ID: delta.ID}, delta.Function.Name, "", "in_progress", w.toolNamespaces)}))
 		}
 		if delta.ID != "" {
 			tool.ID = delta.ID
@@ -572,7 +585,7 @@ func (s *responsesStreamState) finish(w *clientCompatibilityWriter) {
 	for _, index := range indexes {
 		tool := s.tools[index]
 		w.writeEvent("response.function_call_arguments.done", s.event(map[string]any{"type": "response.function_call_arguments.done", "item_id": tool.ID, "output_index": index + 1, "arguments": tool.Arguments.String()}))
-		item := responsesFunctionCall(tool.ID, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
+		item := responsesFunctionCall(toolCallRef{ID: tool.ID}, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
 		output = append(output, item)
 		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": index + 1, "item": item}))
 	}

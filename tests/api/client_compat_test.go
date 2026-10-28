@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -200,6 +201,258 @@ func TestResponses_ToolOnlyAssistantHasNullContent(t *testing.T) {
 	}
 	if len(translated.Messages) != 3 || string(translated.Messages[1].Content) != "null" {
 		t.Fatalf("assistant content = %s, want null", translated.Messages[1].Content)
+	}
+}
+
+func TestResponses_SignedToolCallRoundTripsThoughtSignature(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "gemini-signed-tool-call.json"))
+	if err != nil {
+		t.Fatal("read signed tool-call fixture:", err)
+	}
+	var got providers.ChatRequest
+	calls := 0
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		calls++
+		got = req
+		if calls == 1 {
+			return providers.ChatResponse{Body: fixture}, nil
+		}
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-done","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	first := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool."}`})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body %s", first.Code, first.Body)
+	}
+	var output struct {
+		Output []struct {
+			ID     string `json:"id"`
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &output); err != nil {
+		t.Fatal("decode first response:", err)
+	}
+	if len(output.Output) != 1 || output.Output[0].ID != "function-call-1" || !strings.HasPrefix(output.Output[0].CallID, "spwts1_") {
+		t.Fatalf("function call output = %#v, want provider item ID and signed call ID", output.Output)
+	}
+	secondBody, err := json.Marshal(map[string]any{"model": "fake/model", "input": []any{
+		map[string]any{"type": "function_call", "call_id": output.Output[0].CallID, "name": "lookup", "arguments": `{"query":"docs"}`},
+		map[string]any{"type": "function_call_output", "call_id": output.Output[0].CallID, "output": "found"},
+	}})
+	if err != nil {
+		t.Fatal("encode replay request:", err)
+	}
+	second := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: string(secondBody)})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body %s", second.Code, second.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID           string `json:"id"`
+				ExtraContent struct {
+					Google struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
+			} `json:"tool_calls"`
+			ToolCallID string `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 2 || len(translated.Messages[0].ToolCalls) != 1 || translated.Messages[0].ToolCalls[0].ID != "function-call-1" || translated.Messages[0].ToolCalls[0].ExtraContent.Google.ThoughtSignature != "c2lnbmF0dXJlLWZvci10ZXN0cw==" || translated.Messages[1].ToolCallID != "function-call-1" {
+		t.Fatalf("translated history = %#v, want restored provider ID and signature", translated.Messages)
+	}
+}
+
+func TestResponses_UnsignedToolCallKeepsProviderID(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-plain","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-plain","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool."}`})
+	var output struct {
+		Output []struct {
+			ID     string `json:"id"`
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &output); err != nil {
+		t.Fatal("decode response:", err)
+	}
+	if rec.Code != http.StatusOK || len(output.Output) != 1 || output.Output[0].ID != "call-plain" || output.Output[0].CallID != "call-plain" {
+		t.Fatalf("response = %d %#v, want unchanged provider ID", rec.Code, output.Output)
+	}
+}
+
+func TestResponses_ParallelCallsSignOnlyTheFirst(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	fixture := []byte(`{"id":"chatcmpl-parallel","object":"chat.completion","created":1761609600,"model":"gemini","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"function-call-1","type":"function","function":{"name":"first","arguments":"{}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}},{"id":"function-call-2","type":"function","function":{"name":"second","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)
+	var got providers.ChatRequest
+	calls := 0
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		calls++
+		got = req
+		if calls == 1 {
+			return providers.ChatResponse{Body: fixture}, nil
+		}
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-done","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	first := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use two tools."}`})
+	var output struct {
+		Output []struct {
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &output); err != nil {
+		t.Fatal("decode first response:", err)
+	}
+	if first.Code != http.StatusOK || len(output.Output) != 2 || !strings.HasPrefix(output.Output[0].CallID, "spwts1_") || output.Output[1].CallID != "function-call-2" {
+		t.Fatalf("call IDs = %#v, want only first signed", output.Output)
+	}
+	secondBody, _ := json.Marshal(map[string]any{"model": "fake/model", "input": []any{
+		map[string]any{"type": "function_call", "call_id": output.Output[0].CallID, "name": "first", "arguments": "{}"},
+		map[string]any{"type": "function_call", "call_id": output.Output[1].CallID, "name": "second", "arguments": "{}"},
+	}})
+	second := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: string(secondBody)})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body %s", second.Code, second.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID           string `json:"id"`
+				ExtraContent struct {
+					Google struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode replay request:", err)
+	}
+	if len(translated.Messages) != 1 || len(translated.Messages[0].ToolCalls) != 2 || translated.Messages[0].ToolCalls[0].ID != "function-call-1" || translated.Messages[0].ToolCalls[0].ExtraContent.Google.ThoughtSignature == "" || translated.Messages[0].ToolCalls[1].ID != "function-call-2" || translated.Messages[0].ToolCalls[1].ExtraContent.Google.ThoughtSignature != "" {
+		t.Fatalf("replayed calls = %#v, want signature only on first", translated.Messages)
+	}
+}
+
+func TestResponses_MalformedSignedCallIDIsRejected(t *testing.T) {
+	t.Parallel()
+	unknown := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"call-1","ts":"secret-fragment","unknown":true}`))
+	valid := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"call-1","ts":"sig"}`))
+	emptySignature := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"call-1","ts":""}`))
+	invalidCharacters := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"call-1","ts":"bad*signature"}`))
+	longID := base64.RawURLEncoding.EncodeToString([]byte(`{"id":"` + strings.Repeat("a", 257) + `","ts":"signature"}`))
+	tests := []struct{ name, callID, noLeak string }{
+		{"bad base64", "spwts1_***", "***"},
+		{"padding", "spwts1_" + valid + "=", "call-1"},
+		{"line feed in base64", "spwts1_" + valid[:5] + "\n" + valid[5:], "call-1"},
+		{"carriage return in base64", "spwts1_" + valid[:5] + "\r" + valid[5:], "call-1"},
+		{"unknown JSON field", "spwts1_" + unknown, "secret-fragment"},
+		{"empty signature", "spwts1_" + emptySignature, "call-1"},
+		{"invalid signature characters", "spwts1_" + invalidCharacters, "bad*signature"},
+		{"oversized provider ID", "spwts1_" + longID, strings.Repeat("a", 20)},
+		{"oversized encoded length", "spwts1_" + strings.Repeat("A", 100_000), strings.Repeat("A", 20)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+				t.Fatal("malformed signed ID reached provider")
+				return providers.ChatResponse{}, nil
+			}
+			body, err := json.Marshal(map[string]any{"model": "fake/model", "input": []any{map[string]any{"type": "function_call", "call_id": tt.callID, "name": "lookup", "arguments": "{}"}}})
+			if err != nil {
+				t.Fatal("encode malformed call ID request:", err)
+			}
+			rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: string(body)})
+			var response struct {
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal("decode error response:", err)
+			}
+			if rec.Code != http.StatusBadRequest || response.Error.Type != "invalid_request_error" || strings.Contains(response.Error.Message, tt.callID) || tt.noLeak != "" && strings.Contains(response.Error.Message, tt.noLeak) {
+				t.Fatalf("error = %d %+v; must not disclose client ID or payload", rec.Code, response.Error)
+			}
+		})
+	}
+}
+
+func TestResponses_OversizedUpstreamSignatureIsNotEmbedded(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	signature := strings.Repeat("s", 64<<10+1)
+	body, err := json.Marshal(map[string]any{"id": "chatcmpl-large", "object": "chat.completion", "created": 1761609600, "model": "gemini", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"id": "function-call-large", "type": "function", "function": map[string]any{"name": "lookup", "arguments": "{}"}, "extra_content": map[string]any{"google": map[string]any{"thought_signature": signature}}}}}, "finish_reason": "tool_calls"}}})
+	if err != nil {
+		t.Fatal("encode provider response:", err)
+	}
+	e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: body}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool."}`})
+	var response struct {
+		Output []struct {
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal("decode response:", err)
+	}
+	if rec.Code != http.StatusOK || len(response.Output) != 1 || response.Output[0].CallID != "function-call-large" {
+		t.Fatalf("response = %d %#v, want the plain provider ID", rec.Code, response.Output)
+	}
+	if strings.Contains(e.logs.String(), signature) || !strings.Contains(e.logs.String(), `reason=too_large`) {
+		t.Fatalf("logs = %s, want size warning without signature", e.logs)
+	}
+}
+
+func TestClientCompatibility_ThoughtSignatureAbsentFromLogs(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "gemini-signed-tool-call.json"))
+	if err != nil {
+		t.Fatal("read signed tool-call fixture:", err)
+	}
+	e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+		return providers.ChatResponse{Body: fixture}, nil
+	}
+	first := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool."}`})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body %s", first.Code, first.Body)
+	}
+	var response struct {
+		Output []struct {
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &response); err != nil || len(response.Output) != 1 {
+		t.Fatalf("decode first response: calls=%d, err=%v", len(response.Output), err)
+	}
+	secondBody, err := json.Marshal(map[string]any{"model": "fake/model", "input": []any{
+		map[string]any{"type": "function_call", "call_id": response.Output[0].CallID, "name": "lookup", "arguments": `{"query":"docs"}`},
+		map[string]any{"type": "function_call_output", "call_id": response.Output[0].CallID, "output": "found"},
+	}})
+	if err != nil {
+		t.Fatal("encode replay request:", err)
+	}
+	if rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: string(secondBody)}); rec.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(e.logs.String(), "c2lnbmF0dXJlLWZvci10ZXN0cw==") || strings.Contains(e.logs.String(), "spwts1_") {
+		t.Fatalf("tool signature or signed ID leaked to logs: %s", e.logs)
 	}
 }
 

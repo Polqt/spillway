@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ func (h *clientCompatibilityHandler) ServeHTTP(w http.ResponseWriter, r *http.Re
 		protocol:       h.protocol,
 		stream:         stream,
 		toolNamespaces: toolNamespaces,
+		logger:         h.chat.logger,
 	}
 	h.chat.ServeHTTP(response, request)
 	response.finish()
@@ -106,6 +108,7 @@ type clientCompatibilityWriter struct {
 	protocol       clientProtocol
 	stream         bool
 	toolNamespaces map[string]responseToolNamespace
+	logger         *slog.Logger
 	status         int
 	started        bool
 	failed         bool
@@ -167,7 +170,7 @@ func (w *clientCompatibilityWriter) finish() {
 		_, _ = w.ResponseWriter.Write(clientErrorBody(w.protocol, w.body.Bytes()))
 		return
 	}
-	body, err := translateClientResponse(w.protocol, w.body.Bytes(), w.toolNamespaces)
+	body, err := translateClientResponse(w.protocol, w.body.Bytes(), w.toolNamespaces, w.logger, w.Header().Get("X-Spillway-Provider"))
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.ResponseWriter.WriteHeader(http.StatusBadGateway)
@@ -278,12 +281,12 @@ func clientErrorBody(protocol clientProtocol, raw []byte) []byte {
 	return encoded
 }
 
-func translateClientResponse(protocol clientProtocol, raw []byte, namespaces map[string]responseToolNamespace) ([]byte, error) {
+func translateClientResponse(protocol clientProtocol, raw []byte, namespaces map[string]responseToolNamespace, logger *slog.Logger, provider string) ([]byte, error) {
 	switch protocol {
 	case protocolAnthropic:
 		return anthropicResponse(raw)
 	case protocolResponses:
-		return responsesResponse(raw, namespaces)
+		return responsesResponse(raw, namespaces, logger, provider)
 	default:
 		return nil, errors.New("unsupported client protocol")
 	}
