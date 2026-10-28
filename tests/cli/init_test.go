@@ -220,6 +220,54 @@ func TestRun_InitOverwriteCreatesBackup(t *testing.T) {
 	if err != nil || !bytes.Equal(backup, before) {
 		t.Fatalf("backup = %q, err = %v; want original bytes", backup, err)
 	}
+	info, err := os.Stat(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("backup mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestRun_InitRejectsNonRegularConfigPaths(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	link := filepath.Join(directory, "config-link.yaml")
+	if err := os.Symlink(filepath.Join(directory, "missing-target.yaml"), link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	for name, path := range map[string]string{
+		"directory": directory,
+		"symlink":   link,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path, "-overwrite"}, strings.NewReader(""), &stdout, &stderr, noEnv)
+			if code != 1 || !strings.Contains(stderr.String(), "regular config file") {
+				t.Fatalf("init = %d; stderr %q; want non-regular path error", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRun_InitNoninteractiveOverwriteRequiresFlag(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "existing.yaml")
+	before := []byte("keep these bytes\n")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(t.Context(), []string{"init", "-yes", "-providers", "ollama", "-config", path}, strings.NewReader(""), &stdout, &stderr, noEnv)
+	after, err := readInitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 || !strings.Contains(stderr.String(), "That config file already exists") || !bytes.Equal(after, before) {
+		t.Fatalf("init = %d; stderr %q; config %q; want required overwrite flag and unchanged file", code, stderr.String(), after)
+	}
 }
 
 func TestRun_InitInteractiveOverwriteShowsPreviewAndCanBeCancelled(t *testing.T) {
