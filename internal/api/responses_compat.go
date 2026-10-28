@@ -147,12 +147,17 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 					break
 				}
 			}
+			call := map[string]any{"id": entry.CallID, "type": "function", "function": map[string]any{
+				"name": name, "arguments": string(entry.Arguments),
+			}}
+			if last := len(messages) - 1; last >= 0 && messages[last]["role"] == "assistant" {
+				calls, _ := messages[last]["tool_calls"].([]map[string]any)
+				messages[last]["tool_calls"] = append(calls, call)
+				continue
+			}
 			messages = append(messages, map[string]any{
-				"role":    "assistant",
-				"content": nil,
-				"tool_calls": []map[string]any{{"id": entry.CallID, "type": "function", "function": map[string]any{
-					"name": name, "arguments": string(entry.Arguments),
-				}}},
+				"role": "assistant", "content": nil,
+				"tool_calls": []map[string]any{call},
 			})
 		case "function_call_output":
 			if entry.CallID == "" {

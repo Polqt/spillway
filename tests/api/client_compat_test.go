@@ -92,6 +92,114 @@ func TestResponses_RestoresNamespacedToolHistory(t *testing.T) {
 	}
 }
 
+func TestResponses_GroupsParallelFunctionCallsIntoOneAssistantMessage(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"message","role":"user","content":"Run both."},{"type":"function_call","call_id":"call-1","name":"first","arguments":"{}"},{"type":"function_call","call_id":"call-2","name":"second","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"one"},{"type":"function_call_output","call_id":"call-2","output":"two"}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Role      string            `json:"role"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 4 || translated.Messages[0].Role != "user" || translated.Messages[1].Role != "assistant" || len(translated.Messages[1].ToolCalls) != 2 || translated.Messages[2].Role != "tool" || translated.Messages[3].Role != "tool" {
+		t.Fatalf("translated messages = %#v, want user, one assistant with two calls, and two tool results", translated.Messages)
+	}
+}
+
+func TestResponses_FoldsFunctionCallsIntoPrecedingAssistantText(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"message","role":"user","content":"Check this."},{"type":"message","role":"assistant","content":"Checking."},{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Role      string            `json:"role"`
+			Content   string            `json:"content"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 3 || translated.Messages[1].Role != "assistant" || translated.Messages[1].Content != "Checking." || len(translated.Messages[1].ToolCalls) != 1 || translated.Messages[2].Role != "tool" {
+		t.Fatalf("translated messages = %#v, want assistant text and call grouped before tool result", translated.Messages)
+	}
+}
+
+func TestResponses_KeepsSequentialStepsSeparate(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"message","role":"user","content":"Do two steps."},{"type":"function_call","call_id":"call-1","name":"first","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"one"},{"type":"function_call","call_id":"call-2","name":"second","arguments":"{}"},{"type":"function_call_output","call_id":"call-2","output":"two"}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Role      string            `json:"role"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 5 || len(translated.Messages[1].ToolCalls) != 1 || translated.Messages[2].Role != "tool" || len(translated.Messages[3].ToolCalls) != 1 || translated.Messages[4].Role != "tool" {
+		t.Fatalf("translated messages = %#v, want two assistant steps separated by tool results", translated.Messages)
+	}
+}
+
+func TestResponses_ToolOnlyAssistantHasNullContent(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","input":[{"type":"message","role":"user","content":"Run a tool."},{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 3 || string(translated.Messages[1].Content) != "null" {
+		t.Fatalf("assistant content = %s, want null", translated.Messages[1].Content)
+	}
+}
+
 func TestResponses_AcceptsReplayedAssistantOutputText(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)
