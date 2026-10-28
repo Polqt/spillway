@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,5 +171,112 @@ func TestProvider_TransportErrorDoesNotExposeKey(t *testing.T) {
 	_, err = p.Models(t.Context())
 	if err == nil || strings.Contains(err.Error(), providerKey) {
 		t.Fatalf("Models() error = %v; want transport error without key", err)
+	}
+}
+
+func TestProvider_ForwardsThoughtSignaturesToGemini(t *testing.T) {
+	t.Parallel()
+	const extra = `{ "google" : { "thought_signature" : "c2lnbmF0dXJlLWZvci10ZXN0cw==" } }`
+	body := []byte(`{"model":"gemini/gemini-3-flash-preview","messages":[{"role":"user","content":"read a.go"},{"role":"assistant","content":null,"tool_calls":[{"id":"function-call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"},"extra_content":` + extra + `}]},{"role":"tool","tool_call_id":"function-call-1","content":"package a"}]}`)
+	chatFixture := fixture(t, "chat.json")
+	got := map[string]string{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				ToolCalls []struct {
+					ExtraContent json.RawMessage `json:"extra_content"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Messages) != 3 || len(request.Messages[1].ToolCalls) != 1 {
+			t.Errorf("upstream request = %+v, %v; want the three-message tool history", request, err)
+			return
+		}
+		method := "Chat"
+		if r.Header.Get("Accept") == "text/event-stream" {
+			method = "ChatStream"
+			_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n")
+		} else {
+			_, _ = w.Write(chatFixture)
+		}
+		mu.Lock()
+		got[method] = string(request.Messages[1].ToolCalls[0].ExtraContent)
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Chat(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: body}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	stream, err := p.ChatStream(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: body})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("stream Recv: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, method := range []string{"Chat", "ChatStream"} {
+		if got[method] != extra {
+			t.Errorf("%s upstream extra_content = %s, want %s", method, got[method], extra)
+		}
+	}
+}
+
+func TestProvider_ChatReturnsToolCallSignatureVerbatim(t *testing.T) {
+	t.Parallel()
+	chatFixture := fixture(t, "chat-tool-signature.json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(chatFixture)
+	}))
+	defer srv.Close()
+	p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, err := p.Chat(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: []byte(`{"model":"gemini-3-flash-preview","messages":[{"role":"user","content":"read both"}]}`)})
+	if err != nil || !bytes.Equal(chat.Body, chatFixture) {
+		t.Fatalf("Chat() = %s, %v; want recorded fixture verbatim", chat.Body, err)
+	}
+	if !bytes.Contains(chat.Body, []byte(`"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}`)) {
+		t.Errorf("Chat() body lost the thought signature: %s", chat.Body)
+	}
+}
+
+func TestProvider_ChatStreamDeliversSignatureChunksVerbatim(t *testing.T) {
+	t.Parallel()
+	streamFixture := fixture(t, "stream-tool-signature.sse")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(streamFixture)
+	}))
+	defer srv.Close()
+	p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := p.ChatStream(t.Context(), providers.ChatRequest{Model: "gemini-3-flash-preview", RawBody: []byte(`{"model":"gemini-3-flash-preview","messages":[{"role":"user","content":"read a.go"}],"stream":true}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	// Each chunk must be the next fixture event byte for byte: ID and name, arguments, signature only, finish.
+	rest := string(streamFixture)
+	for i := range 4 {
+		got, err := stream.Recv()
+		event := "data: " + string(got.Data) + "\n\n"
+		if err != nil || !strings.HasPrefix(rest, event) {
+			t.Fatalf("Recv() %d = %s, %v; want the next fixture event verbatim", i, got.Data, err)
+		}
+		rest = rest[len(event):]
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) || rest != "data: [DONE]\n\n" {
+		t.Fatalf("stream end = %v with %q left; want io.EOF after [DONE]", err, rest)
 	}
 }

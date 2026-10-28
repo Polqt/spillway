@@ -36,7 +36,7 @@ func New(o Options) (*Client, error) {
 	}
 	compat, err := openaicompat.New(openaicompat.Options{
 		Name: o.Name, BaseURL: o.BaseURL, APIKey: o.APIKey, Timeout: o.Timeout,
-		ClassifyError: classifyError,
+		ClassifyError: classifyError, KeepToolCallExtraContent: true,
 	})
 	if err != nil {
 		return nil, err

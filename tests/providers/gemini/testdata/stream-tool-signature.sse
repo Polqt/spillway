@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-gemini-tools","object":"chat.completion.chunk","created":1761609600,"model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"function-call-11111111-2222-3333-4444-555555555555","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gemini-tools","object":"chat.completion.chunk","created":1761609600,"model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gemini-tools","object":"chat.completion.chunk","created":1761609600,"model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-gemini-tools","object":"chat.completion.chunk","created":1761609600,"model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

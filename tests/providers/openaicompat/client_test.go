@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -510,6 +513,178 @@ func TestClient_UnknownFieldsPreserveRawValuesAndNeverForwardClientAuth(t *testi
 	}
 	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
 		t.Errorf("stream end = %v, want io.EOF", err)
+	}
+}
+
+// forwardedBodies sends body through Chat and ChatStream and returns the bytes the upstream received for each.
+func forwardedBodies(t *testing.T, options openaicompat.Options, body []byte) map[string][]byte {
+	t.Helper()
+	got := map[string][]byte{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+		}
+		method := "Chat"
+		if r.Header.Get("Accept") == "text/event-stream" {
+			method = "ChatStream"
+			_, _ = io.WriteString(w, "data: {\"object\":\"chat.completion.chunk\"}\n\ndata: [DONE]\n\n")
+		} else {
+			_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+		}
+		mu.Lock()
+		got[method] = data
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	options.BaseURL, options.APIKey, options.Timeout = srv.URL, redact.NewSecret(providerKey), time.Second
+	if options.Name == "" {
+		options.Name = "groq"
+	}
+	c, err := openaicompat.New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	stream, err := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("stream Recv: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return maps.Clone(got)
+}
+
+func TestClient_StripsToolCallExtraContentByDefault(t *testing.T) {
+	t.Parallel()
+	type call struct{ id, name, arguments string }
+	tests := []struct {
+		name  string
+		body  []byte
+		calls []call
+	}{
+		{
+			name:  "one signed call",
+			body:  []byte(`{"model":"groq/upstream","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}]},{"role":"tool","tool_call_id":"function-call-1","content":"found"}],"tools" : [ {"type":"function","function":{"name":"lookup"}} ]}`),
+			calls: []call{{"function-call-1", "lookup", `{"q":"x"}`}},
+		},
+		{
+			name:  "two parallel calls",
+			body:  fixture(t, "request-tool-extra-content.json"),
+			calls: []call{{"function-call-1", "read_file", `{"path":"a.go"}`}, {"function-call-2", "read_file", `{"path":"b.go"}`}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var sent map[string]json.RawMessage
+			if err := json.Unmarshal(tt.body, &sent); err != nil {
+				t.Fatal(err)
+			}
+			for method, data := range forwardedBodies(t, openaicompat.Options{}, tt.body) {
+				if bytes.Contains(data, []byte("extra_content")) || bytes.Contains(data, []byte("thought_signature")) {
+					t.Errorf("%s upstream body kept extra_content: %s", method, data)
+				}
+				var got struct {
+					Messages []struct {
+						ToolCalls []struct {
+							ID       string `json:"id"`
+							Function struct {
+								Name      string `json:"name"`
+								Arguments string `json:"arguments"`
+							} `json:"function"`
+						} `json:"tool_calls"`
+					} `json:"messages"`
+				}
+				if err := json.Unmarshal(data, &got); err != nil {
+					t.Fatalf("%s upstream body is not JSON: %v: %s", method, err, data)
+				}
+				var calls []call
+				for _, message := range got.Messages {
+					for _, c := range message.ToolCalls {
+						calls = append(calls, call{c.ID, c.Function.Name, c.Function.Arguments})
+					}
+				}
+				if fmt.Sprint(calls) != fmt.Sprint(tt.calls) {
+					t.Errorf("%s tool calls = %v, want %v", method, calls, tt.calls)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(data, &fields); err != nil {
+					t.Fatal(err)
+				}
+				for key, want := range sent {
+					if key == "model" || key == "messages" {
+						continue
+					}
+					if !bytes.Equal(fields[key], want) {
+						t.Errorf("%s %s = %s, want raw value %s", method, key, fields[key], want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestClient_BodyWithoutExtraContentIsForwardedUnchanged(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{ "model" : "groq/upstream", "messages" : [ {"role":"assistant","content":null,"tool_calls":[ {"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}} ]}, {"role":"tool","tool_call_id":"call_1","content":"<ok>"} ] }`)
+	want := `{ "model" : "upstream", "messages" : [ {"role":"assistant","content":null,"tool_calls":[ {"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}} ]}, {"role":"tool","tool_call_id":"call_1","content":"<ok>"} ] }`
+	for method, data := range forwardedBodies(t, openaicompat.Options{}, body) {
+		if string(data) != want {
+			t.Errorf("%s upstream body = %s, want %s", method, data, want)
+		}
+	}
+}
+
+func TestClient_KeepsToolCallExtraContentWhenEnabled(t *testing.T) {
+	t.Parallel()
+	const extra = `{ "google" : { "thought_signature" : "c2lnbmF0dXJlLWZvci10ZXN0cw==" } }`
+	body := []byte(`{"model":"gemini/upstream","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":"{}"},"extra_content":` + extra + `}]}]}`)
+	for method, data := range forwardedBodies(t, openaicompat.Options{Name: "gemini", KeepToolCallExtraContent: true}, body) {
+		var got struct {
+			Messages []struct {
+				ToolCalls []struct {
+					ExtraContent json.RawMessage `json:"extra_content"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("%s upstream body is not JSON: %v", method, err)
+		}
+		if len(got.Messages) != 1 || len(got.Messages[0].ToolCalls) != 1 || string(got.Messages[0].ToolCalls[0].ExtraContent) != extra {
+			t.Errorf("%s upstream body = %s, want extra_content %s", method, data, extra)
+		}
+	}
+}
+
+func TestClient_MalformedMessagesErrorOmitsBody(t *testing.T) {
+	t.Parallel()
+	const sentinel = "sentinel-message-body"
+	var reached atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Store(true) }))
+	defer srv.Close()
+	c := client(t, srv.URL)
+	body := []byte(`{"model":"groq/upstream","messages":"` + sentinel + `"}`)
+	_, chatErr := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body})
+	_, streamErr := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: body})
+	for method, err := range map[string]error{"Chat": chatErr, "ChatStream": streamErr} {
+		if err == nil {
+			t.Errorf("%s error = nil, want malformed messages error", method)
+			continue
+		}
+		if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), providerKey) {
+			t.Errorf("%s error exposes request body or key: %v", method, err)
+		}
+	}
+	if reached.Load() {
+		t.Error("malformed request reached the upstream")
 	}
 }
 

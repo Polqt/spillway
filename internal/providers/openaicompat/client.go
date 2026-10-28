@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -34,17 +35,20 @@ type Options struct {
 	Timeout       time.Duration
 	HTTPClient    *http.Client
 	ClassifyError func(status int, body []byte) (error, bool)
+	// KeepToolCallExtraContent forwards extra_content on assistant tool calls; other OpenAI-compatible APIs may reject it.
+	KeepToolCallExtraContent bool
 }
 
 // Client implements providers.Provider using the OpenAI-compatible API.
 type Client struct {
-	name          string
-	baseURL       string
-	key           redact.Secret
-	timeout       time.Duration
-	http          *http.Client
-	clean         *redact.Scrubber
-	classifyError func(status int, body []byte) (error, bool)
+	name                     string
+	baseURL                  string
+	key                      redact.Secret
+	timeout                  time.Duration
+	http                     *http.Client
+	clean                    *redact.Scrubber
+	classifyError            func(status int, body []byte) (error, bool)
+	keepToolCallExtraContent bool
 }
 
 // New validates options and builds a client that never follows redirects.
@@ -77,6 +81,7 @@ func New(o Options) (*Client, error) {
 		name: o.Name, baseURL: strings.TrimRight(o.BaseURL, "/"), key: o.APIKey, timeout: o.Timeout,
 		http:  httpClient,
 		clean: redact.NewScrubber(o.APIKey), classifyError: o.ClassifyError,
+		keepToolCallExtraContent: o.KeepToolCallExtraContent,
 	}, nil
 }
 
@@ -138,7 +143,7 @@ func (c *Client) Models(ctx context.Context) ([]providers.Model, error) {
 func (c *Client) Chat(ctx context.Context, chat providers.ChatRequest) (providers.ChatResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	body, err := requestBody(chat)
+	body, err := requestBody(chat, c.keepToolCallExtraContent)
 	if err != nil {
 		return providers.ChatResponse{}, fmt.Errorf("%s: encode chat request: %w", c.name, err)
 	}
@@ -169,7 +174,7 @@ func (c *Client) Chat(ctx context.Context, chat providers.ChatRequest) (provider
 func (c *Client) ChatStream(ctx context.Context, chat providers.ChatRequest) (providers.Stream, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	timeout := time.AfterFunc(c.timeout, cancel)
-	body, err := requestBody(chat)
+	body, err := requestBody(chat, c.keepToolCallExtraContent)
 	if err != nil {
 		timeout.Stop()
 		cancel()
@@ -352,7 +357,7 @@ func retryAfter(value string, now time.Time) time.Duration {
 	return 0
 }
 
-func requestBody(chat providers.ChatRequest) ([]byte, error) {
+func requestBody(chat providers.ChatRequest, keepToolCallExtraContent bool) ([]byte, error) {
 	data := chat.RawBody
 	if len(chat.RawBody) == 0 {
 		var err error
@@ -365,17 +370,124 @@ func requestBody(chat providers.ChatRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return replaceModel(data, model)
+	members, err := objectMembers(data)
+	if err != nil {
+		return nil, fmt.Errorf("chat request: %w", err)
+	}
+	var edits []valueEdit
+	for _, member := range members {
+		switch member.key {
+		case "model":
+			edits = append(edits, valueEdit{objectMember: member, value: model})
+		case "messages":
+			if keepToolCallExtraContent {
+				continue
+			}
+			messages, changed, err := editArrayItems(data[member.start:member.end], "messages", messageWithoutToolCallExtraContent)
+			if err != nil {
+				return nil, fmt.Errorf("chat request: %w", err)
+			}
+			if changed {
+				edits = append(edits, valueEdit{objectMember: member, value: messages})
+			}
+		}
+	}
+	if !slices.ContainsFunc(members, func(member objectMember) bool { return member.key == "model" }) {
+		return nil, errors.New("chat request is missing model")
+	}
+	return applyEdits(data, edits), nil
 }
 
-func replaceModel(data, model []byte) ([]byte, error) {
+// messageWithoutToolCallExtraContent removes Google's extra_content from a message's tool calls.
+func messageWithoutToolCallExtraContent(index int, message json.RawMessage) (json.RawMessage, bool, error) {
+	members, err := objectMembers(message)
+	if err != nil {
+		return nil, false, fmt.Errorf("message %d: %w", index, err)
+	}
+	var edits []valueEdit
+	for _, member := range members {
+		if member.key != "tool_calls" {
+			continue
+		}
+		calls, changed, err := editArrayItems(message[member.start:member.end], "tool_calls", toolCallWithoutExtraContent)
+		if err != nil {
+			return nil, false, fmt.Errorf("message %d: %w", index, err)
+		}
+		if changed {
+			edits = append(edits, valueEdit{objectMember: member, value: calls})
+		}
+	}
+	return applyEdits(message, edits), len(edits) > 0, nil
+}
+
+// toolCallWithoutExtraContent re-encodes only calls that carry extra_content, so other calls stay byte-identical.
+func toolCallWithoutExtraContent(index int, raw json.RawMessage) (json.RawMessage, bool, error) {
+	var call map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &call); err != nil || call == nil {
+		return nil, false, fmt.Errorf("tool call %d must be a JSON object", index)
+	}
+	if _, ok := call["extra_content"]; !ok {
+		return raw, false, nil
+	}
+	delete(call, "extra_content")
+	var encoded bytes.Buffer
+	enc := json.NewEncoder(&encoded)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(call); err != nil {
+		return nil, false, fmt.Errorf("encode tool call %d: %w", index, err)
+	}
+	return bytes.TrimSuffix(encoded.Bytes(), []byte("\n")), true, nil
+}
+
+// editArrayItems applies edit to each item of a JSON array and returns raw unchanged when no item changes.
+func editArrayItems(raw []byte, name string, edit func(int, json.RawMessage) (json.RawMessage, bool, error)) ([]byte, bool, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, false, fmt.Errorf("%s must be an array", name)
+	}
+	changed := false
+	for i, item := range items {
+		edited, itemChanged, err := edit(i, item)
+		if err != nil {
+			return nil, false, err
+		}
+		if itemChanged {
+			items[i], changed = edited, true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	var out bytes.Buffer
+	out.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		out.Write(item)
+	}
+	out.WriteByte(']')
+	return out.Bytes(), true, nil
+}
+
+// objectMember locates one member's value inside a JSON object so it can be replaced without re-encoding its neighbours.
+type objectMember struct {
+	key        string
+	start, end int
+}
+
+type valueEdit struct {
+	objectMember
+	value []byte
+}
+
+func objectMembers(data []byte) ([]objectMember, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
 	if err != nil || tok != json.Delim('{') {
-		return nil, errors.New("chat request must be a JSON object")
+		return nil, errors.New("must be a JSON object")
 	}
-	type span struct{ start, end int }
-	var spans []span
+	var members []objectMember
 	for dec.More() {
 		keyToken, err := dec.Token()
 		if err != nil {
@@ -383,37 +495,38 @@ func replaceModel(data, model []byte) ([]byte, error) {
 		}
 		key, ok := keyToken.(string)
 		if !ok {
-			return nil, errors.New("chat request contains an invalid field")
+			return nil, errors.New("contains an invalid field")
 		}
-		keyEnd := int(dec.InputOffset())
+		start := int(dec.InputOffset())
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
 			return nil, err
 		}
-		valueEnd := int(dec.InputOffset())
-		if key == "model" {
-			start := keyEnd
-			for start < valueEnd && (data[start] == ' ' || data[start] == '\n' || data[start] == '\r' || data[start] == '\t' || data[start] == ':') {
-				start++
-			}
-			spans = append(spans, span{start: start, end: valueEnd})
+		end := int(dec.InputOffset())
+		for start < end && (data[start] == ' ' || data[start] == '\n' || data[start] == '\r' || data[start] == '\t' || data[start] == ':') {
+			start++
 		}
+		members = append(members, objectMember{key: key, start: start, end: end})
 	}
 	if _, err := dec.Token(); err != nil {
 		return nil, err
 	}
-	if len(spans) == 0 {
-		return nil, errors.New("chat request is missing model")
+	return members, nil
+}
+
+func applyEdits(data []byte, edits []valueEdit) []byte {
+	if len(edits) == 0 {
+		return data
 	}
 	var out bytes.Buffer
 	last := 0
-	for _, part := range spans {
-		out.Write(data[last:part.start])
-		out.Write(model)
-		last = part.end
+	for _, edit := range edits {
+		out.Write(data[last:edit.start])
+		out.Write(edit.value)
+		last = edit.end
 	}
 	out.Write(data[last:])
-	return out.Bytes(), nil
+	return out.Bytes()
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {

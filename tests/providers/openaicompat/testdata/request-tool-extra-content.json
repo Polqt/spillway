@@ -1,0 +1,19 @@
+{
+  "model": "groq/upstream",
+  "messages": [
+    {"role": "user", "content": "Read both files."},
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {"id": "function-call-1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"a.go\"}"}, "extra_content": {"google": {"thought_signature": "c2lnbmF0dXJlLWZvci10ZXN0cw=="}}},
+        {"id": "function-call-2", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"b.go\"}"}}
+      ]
+    },
+    {"role": "tool", "tool_call_id": "function-call-1", "content": "package a"},
+    {"role": "tool", "tool_call_id": "function-call-2", "content": "package b"}
+  ],
+  "tools": [ { "type" : "function", "function" : { "name" : "read_file", "parameters" : { "type" : "object" } } } ],
+  "temperature" : 0.2,
+  "future_field": { "raw" : [1, 2] }
+}
