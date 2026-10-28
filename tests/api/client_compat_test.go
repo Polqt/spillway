@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -454,6 +456,172 @@ func TestClientCompatibility_ThoughtSignatureAbsentFromLogs(t *testing.T) {
 	if strings.Contains(e.logs.String(), "c2lnbmF0dXJlLWZvci10ZXN0cw==") || strings.Contains(e.logs.String(), "spwts1_") {
 		t.Fatalf("tool signature or signed ID leaked to logs: %s", e.logs)
 	}
+}
+
+func TestResponses_StreamEmbedsThoughtSignature(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	chunks := []providers.ChatChunk{
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":"{}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	}
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: chunks}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool.","stream":true}`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	added, done := responseFunctionCallEvents(t, rec.Body.String())
+	if len(added) != 1 || len(done) != 1 || added[0].CallID != done[0].CallID || !strings.HasPrefix(added[0].CallID, "spwts1_") {
+		t.Fatalf("added=%#v done=%#v, want one matching signed call ID", added, done)
+	}
+}
+
+func TestResponses_StreamSignatureAfterArgumentsChunk(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	chunks := []providers.ChatChunk{
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"docs\"}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	}
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: chunks}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool.","stream":true}`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	added, done := responseFunctionCallEvents(t, rec.Body.String())
+	if len(added) != 1 || len(done) != 1 || added[0].CallID != done[0].CallID || !strings.HasPrefix(done[0].CallID, "spwts1_") || !strings.Contains(rec.Body.String(), `"arguments":"{\"query\":\"docs\"}"`) {
+		t.Fatalf("stream = %s, want one signed added/done pair and joined arguments", rec.Body)
+	}
+}
+
+func TestResponses_StreamTextStillStreamsBeforeToolCalls(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	chunks := []providers.ChatChunk{
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"content":"Checking."},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	}
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: chunks}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool.","stream":true}`})
+	textDelta := strings.Index(rec.Body.String(), `event: response.output_text.delta`)
+	toolAdded := strings.Index(rec.Body.String(), `"type":"function_call"`)
+	if rec.Code != http.StatusOK || textDelta < 0 || toolAdded <= textDelta {
+		t.Fatalf("stream = %d %s, want text emitted before completed tool call", rec.Code, rec.Body)
+	}
+}
+
+func TestResponses_StreamUpstreamErrorDuringToolCallEmitsNoFunctionCall(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"error":{"message":"upstream failed"}}`)},
+		}}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool.","stream":true}`})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "event: error\n") || strings.Contains(rec.Body.String(), `"type":"function_call"`) || strings.Contains(rec.Body.String(), "response.completed") {
+		t.Fatalf("stream = %d %s, want error without any partial function call", rec.Code, rec.Body)
+	}
+}
+
+func TestResponses_StreamClientDisconnectClosesUpstream(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	streams := make(chan *gatedStream, 1)
+	e.fake.stream = func(ctx context.Context, _ providers.ChatRequest) (providers.Stream, error) {
+		stream := newGatedStream(ctx, `{"id":"chatcmpl-disconnect","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":null}]}`, `{"id":"chatcmpl-disconnect","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":null}]}`)
+		streams <- stream
+		return stream, nil
+	}
+	srv := httptest.NewServer(e.handler)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/responses", strings.NewReader(`{"model":"fake/model","input":"Use a tool.","stream":true}`))
+	if err != nil {
+		t.Fatal("create streaming request:", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal("send streaming request:", err)
+	}
+	stream := <-streams
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal("read response.created:", err)
+		}
+		if strings.Contains(line, `"type":"response.created"`) {
+			break
+		}
+	}
+	cancel()
+	_ = resp.Body.Close()
+	select {
+	case err := <-stream.ctxErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("upstream Recv error = %v, want context canceled", err)
+		}
+	case <-t.Context().Done():
+		t.Fatal("upstream stream did not observe client disconnect")
+	}
+	select {
+	case <-stream.closed:
+	case <-t.Context().Done():
+		t.Fatal("upstream stream was not closed after client disconnect")
+	}
+}
+
+func responseFunctionCallEvents(t *testing.T, body string) ([]struct{ CallID string }, []struct{ CallID string }) {
+	t.Helper()
+	var added, done []struct{ CallID string }
+	lastSequence := 0
+	for _, frame := range strings.Split(body, "\n\n") {
+		var event struct {
+			Type           string `json:"type"`
+			SequenceNumber int    `json:"sequence_number"`
+			Item           struct {
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+			} `json:"item"`
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+					t.Fatal("decode Responses event:", err)
+				}
+			}
+		}
+		if event.SequenceNumber != 0 {
+			if event.SequenceNumber <= lastSequence {
+				t.Fatalf("sequence_number = %d after %d", event.SequenceNumber, lastSequence)
+			}
+			lastSequence = event.SequenceNumber
+		}
+		if event.Item.Type != "function_call" {
+			continue
+		}
+		value := struct{ CallID string }{event.Item.CallID}
+		switch event.Type {
+		case "response.output_item.added":
+			added = append(added, value)
+		case "response.output_item.done":
+			done = append(done, value)
+		}
+	}
+	return added, done
 }
 
 func TestResponses_AcceptsReplayedAssistantOutputText(t *testing.T) {

@@ -475,9 +475,10 @@ func responsesFunctionCall(ref toolCallRef, name, arguments, status string, name
 }
 
 type responseToolStream struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
+	ID               string
+	Name             string
+	ThoughtSignature string
+	Arguments        strings.Builder
 }
 
 type responsesStreamState struct {
@@ -527,6 +528,7 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent googleExtraContent `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
@@ -550,7 +552,6 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		if tool == nil {
 			tool = &responseToolStream{ID: delta.ID}
 			s.tools[delta.Index] = tool
-			w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": delta.Index + 1, "item": responsesFunctionCall(toolCallRef{ID: delta.ID}, delta.Function.Name, "", "in_progress", w.toolNamespaces)}))
 		}
 		if delta.ID != "" {
 			tool.ID = delta.ID
@@ -560,7 +561,9 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		}
 		if delta.Function.Arguments != "" {
 			tool.Arguments.WriteString(delta.Function.Arguments)
-			w.writeEvent("response.function_call_arguments.delta", s.event(map[string]any{"type": "response.function_call_arguments.delta", "item_id": tool.ID, "output_index": delta.Index + 1, "delta": delta.Function.Arguments}))
+		}
+		if signature := delta.ExtraContent.Google.ThoughtSignature; signature != "" {
+			tool.ThoughtSignature = signature
 		}
 	}
 	if choice.FinishReason != nil {
@@ -584,8 +587,14 @@ func (s *responsesStreamState) finish(w *clientCompatibilityWriter) {
 	sort.Ints(indexes)
 	for _, index := range indexes {
 		tool := s.tools[index]
+		ref := toolCallRef{ID: tool.ID, ThoughtSignature: tool.ThoughtSignature}
+		if reason := signatureIssue(ref); reason != "" && w.logger != nil {
+			w.logger.Warn("thought signature not forwarded", "provider", w.Header().Get("X-Spillway-Provider"), "reason", reason, "bytes", len(ref.ThoughtSignature))
+		}
+		w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": index + 1, "item": responsesFunctionCall(ref, tool.Name, "", "in_progress", w.toolNamespaces)}))
+		w.writeEvent("response.function_call_arguments.delta", s.event(map[string]any{"type": "response.function_call_arguments.delta", "item_id": tool.ID, "output_index": index + 1, "delta": tool.Arguments.String()}))
 		w.writeEvent("response.function_call_arguments.done", s.event(map[string]any{"type": "response.function_call_arguments.done", "item_id": tool.ID, "output_index": index + 1, "arguments": tool.Arguments.String()}))
-		item := responsesFunctionCall(toolCallRef{ID: tool.ID}, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
+		item := responsesFunctionCall(ref, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
 		output = append(output, item)
 		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": index + 1, "item": item}))
 	}
