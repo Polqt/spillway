@@ -224,14 +224,18 @@ func responseOutputText(raw json.RawMessage) (string, error) {
 		return text, nil
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		Cache json.RawMessage `json:"cache_control"`
 	}
 	if err := decodeClientJSON(raw, &parts); err != nil {
 		return "", errors.New("tool output must be text or an array of text parts")
 	}
 	var result strings.Builder
 	for _, part := range parts {
+		if err := validateAnthropicCacheControl(part.Cache); err != nil {
+			return "", err
+		}
 		switch part.Type {
 		case "", "text", "input_text", "output_text":
 			result.WriteString(part.Text)

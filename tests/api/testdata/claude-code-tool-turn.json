@@ -1,0 +1,22 @@
+{
+  "model": "fake/model",
+  "max_tokens": 256,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "thinking", "thinking": "private thought text", "signature": "private-thinking-signature" },
+        { "type": "redacted_thinking", "data": "private-redacted-data" },
+        { "type": "text", "text": "Checking the file." },
+        { "type": "tool_use", "id": "call-1", "name": "read_file", "input": { "path": "README.md" }, "cache_control": { "type": "ephemeral" } }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "call-1", "is_error": true, "content": [{ "type": "text", "text": "file missing", "cache_control": { "type": "ephemeral", "ttl": "1h" } }], "cache_control": { "type": "ephemeral" } },
+        { "type": "text", "text": "Try a different path.", "cache_control": { "type": "ephemeral" } }
+      ]
+    }
+  ]
+}

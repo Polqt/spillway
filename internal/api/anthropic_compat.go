@@ -112,6 +112,10 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 			ToolUseID string          `json:"tool_use_id"`
 			Content   json.RawMessage `json:"content"`
 			Cache     json.RawMessage `json:"cache_control"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
+			IsError   bool            `json:"is_error"`
 			Source    struct {
 				Type      string `json:"type"`
 				MediaType string `json:"media_type"`
@@ -150,24 +154,54 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 			if role != "user" {
 				return nil, errors.New("tool_result blocks are supported only in user messages")
 			}
+			if anthropicToolResultHasImage(block.Content) {
+				return nil, errors.New("image tool results are not supported")
+			}
 			output, err := responseOutputText(block.Content)
 			if err != nil {
 				return nil, err
 			}
 			toolResults = append(toolResults, map[string]any{"role": "tool", "tool_call_id": block.ToolUseID, "content": output})
+		case "thinking", "redacted_thinking":
+			// Client thinking blocks are not forwarded to providers.
 		default:
 			return nil, fmt.Errorf("content block type %q is not supported", block.Type)
 		}
 	}
 	messages := make([]map[string]any, 0, 1+len(toolResults))
+	if role == "user" {
+		messages = append(messages, toolResults...)
+	}
 	if len(content) > 0 || len(toolCalls) > 0 {
-		message := map[string]any{"role": role, "content": content}
+		var messageContent any = content
+		if role == "assistant" && len(toolCalls) > 0 && len(content) == 0 {
+			messageContent = nil
+		}
+		message := map[string]any{"role": role, "content": messageContent}
 		if len(toolCalls) > 0 {
 			message["tool_calls"] = toolCalls
 		}
 		messages = append(messages, message)
 	}
-	return append(messages, toolResults...), nil
+	if role != "user" {
+		messages = append(messages, toolResults...)
+	}
+	return messages, nil
+}
+
+func anthropicToolResultHasImage(raw json.RawMessage) bool {
+	var blocks []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicContent(raw json.RawMessage) (any, error) {

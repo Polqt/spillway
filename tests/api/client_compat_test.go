@@ -850,6 +850,166 @@ func TestAnthropicMessages_DoesNotForwardOrLogMetadataUserID(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessages_AcceptsClaudeCodeToolTurn(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-tool-turn","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	fixture, err := os.ReadFile(filepath.Join("testdata", "claude-code-tool-turn.json"))
+	if err != nil {
+		t.Fatal("read Claude Code tool-turn fixture:", err)
+	}
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: string(fixture)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(string(got.RawBody), "private thought text") || strings.Contains(string(got.RawBody), "private-thinking-signature") || strings.Contains(string(got.RawBody), "private-redacted-data") {
+		t.Fatalf("thinking data reached provider: %s", got.RawBody)
+	}
+	var upstream struct {
+		Messages []struct {
+			Role      string            `json:"role"`
+			Content   json.RawMessage   `json:"content"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
+			ToolID    string            `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &upstream); err != nil {
+		t.Fatal("decode upstream request:", err)
+	}
+	if len(upstream.Messages) != 3 || upstream.Messages[0].Role != "assistant" || len(upstream.Messages[0].ToolCalls) != 1 || !strings.Contains(string(upstream.Messages[0].Content), "Checking the file.") || upstream.Messages[1].Role != "tool" || upstream.Messages[1].ToolID != "call-1" || upstream.Messages[1].Content == nil || upstream.Messages[2].Role != "user" {
+		t.Fatalf("translated messages = %#v, want assistant call, tool result, then user text", upstream.Messages)
+	}
+}
+
+func TestAnthropicMessages_OrdersToolResultsBeforeUserText(t *testing.T) {
+	t.Parallel()
+	for _, content := range []string{
+		`[{"type":"tool_result","tool_use_id":"call-1","content":"done"},{"type":"text","text":"after"}]`,
+		`[{"type":"text","text":"before"},{"type":"tool_result","tool_use_id":"call-1","content":"done"}]`,
+	} {
+		t.Run(content, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			var got providers.ChatRequest
+			e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+				got = req
+				return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-order","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+			}
+			body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"user","content":` + content + `}]}`
+			rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+			var translated struct {
+				Messages []struct {
+					Role string `json:"role"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+				t.Fatal("decode upstream request:", err)
+			}
+			if len(translated.Messages) != 2 || translated.Messages[0].Role != "tool" || translated.Messages[1].Role != "user" {
+				t.Fatalf("translated messages = %#v, want tool before user", translated.Messages)
+			}
+		})
+	}
+}
+
+func TestAnthropicMessages_DropsThinkingBlocksFromHistory(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-thinking","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"private thought","signature":"secret-sig"},{"type":"redacted_thinking","data":"secret-data"},{"type":"text","text":"visible"}]},{"role":"user","content":"continue"}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	for _, forbidden := range []string{"private thought", "secret-sig", "secret-data"} {
+		if strings.Contains(string(got.RawBody), forbidden) {
+			t.Errorf("upstream body contains %q: %s", forbidden, got.RawBody)
+		}
+	}
+}
+
+func TestAnthropicMessages_ToolOnlyAssistantHasNullContent(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-tool-only","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"found"}]}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode upstream request:", err)
+	}
+	if len(translated.Messages) != 2 || string(translated.Messages[0].Content) != "null" {
+		t.Fatalf("assistant content = %s, want null", translated.Messages[0].Content)
+	}
+}
+
+func TestAnthropicMessages_ToolResultIsErrorKeepsContent(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-tool-error","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","is_error":true,"content":"file missing"}]}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode upstream request:", err)
+	}
+	if len(translated.Messages) != 1 || translated.Messages[0].Content != "file missing" {
+		t.Fatalf("tool result = %#v, want preserved error content", translated.Messages)
+	}
+}
+
+func TestAnthropicMessages_ToolResultImageIsRejectedClearly(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":[{"type":"image","source":{"type":"url","url":"https://example.test/image.png"}}]}]}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	var response struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal("decode error response:", err)
+	}
+	if rec.Code != http.StatusBadRequest || response.Error.Type != "invalid_request_error" || !strings.Contains(response.Error.Message, "image tool results") {
+		t.Fatalf("error = %d %+v, want clear image tool result rejection", rec.Code, response.Error)
+	}
+}
+
 func TestAnthropicMessages_UsesXAPIKeyAuthentication(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)
