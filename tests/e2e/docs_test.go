@@ -92,7 +92,13 @@ func TestDocs_ClientsStateSupportedProtocols(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(guide)
-	for _, want := range []string{"/v1/chat/completions", "/v1/models", "/v1/responses", "/v1/messages", "spillway setup opencode", "spillway setup claude", "spillway setup codex"} {
+	for _, want := range []string{
+		"/v1/chat/completions", "/v1/models", "/v1/responses", "/v1/messages",
+		"spillway setup opencode", "spillway setup claude", "spillway setup codex",
+		"Claude Code `thinking`", "`output_config.effort`", "`context_management`", "`metadata`", "`cache_control`",
+		"accepted as hints and are not forwarded", "Unknown or malformed fields are rejected",
+		"thought signature", "signed tool-call IDs", "skip_thought_signature_validator", "Image blocks inside `tool_result`",
+	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("client guide lacks %q", want)
 		}

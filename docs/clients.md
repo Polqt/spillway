@@ -22,6 +22,26 @@ Codex namespace functions are flattened for the provider and restored in Respons
 The Responses `store`, `include`, `client_metadata`, `prompt_cache_key`, `service_tier`, `reasoning.summary`, `text.verbosity`, input-item `id`, and replayed `output_text` `annotations` and `logprobs` fields are accepted for client compatibility. Spillway does not retain Responses objects, return provider-specific included fields, or apply client metadata, cache, service-tier, summary, or verbosity hints; input-item IDs are ignored by the stateless chat adapter.
 Background Responses, `previous_response_id`, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
 
+### Claude Code Messages compatibility
+
+Claude Code `thinking`, `output_config.effort`, `context_management`, `metadata`, and `cache_control` fields are accepted as hints and are not forwarded to providers.
+The accepted thinking types are `adaptive`, `disabled`, `between_tools`, and `enabled`; enabled thinking requires a `budget_tokens` value of at least 1024 and below `max_tokens`.
+The accepted effort values are `low`, `medium`, `high`, `xhigh`, and `max`, and cache control accepts `ephemeral` with an optional `5m` or `1h` TTL.
+These hints do not enable provider features or change model behavior.
+Unknown or malformed fields are rejected with an Anthropic-shaped request error.
+Server tools, background tasks, and other Anthropic features without a Chat Completions equivalent are unsupported.
+Thinking and redacted-thinking blocks in prior assistant messages are ignored during translation.
+Image blocks inside `tool_result` are rejected with a clear request error; send images as user content instead.
+
+### Gemini thought signatures in tool loops
+
+Gemini thought signatures are carried in opaque signed tool-call IDs on Responses and Messages so clients can echo them on the next turn.
+Spillway restores the provider call ID and signature before forwarding replayed tool history to Gemini.
+Unsigned tool history, including history that came from another provider during spillover, receives Google's `skip_thought_signature_validator` placeholder on the first tool call in an assistant step.
+The placeholder lets Gemini validate history without a real signature; it does not reproduce the original reasoning state.
+Signatures larger than 64 KiB are not embedded in IDs, so the placeholder fallback applies when that unsigned history is sent to Gemini.
+The OpenAI Chat Completions endpoint preserves `extra_content.google.thought_signature` as provider-specific extension data.
+
 ## One-command coding client setup
 
 Start with the config that contains your local `default` key.

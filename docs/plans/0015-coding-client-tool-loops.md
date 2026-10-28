@@ -282,7 +282,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
 - Depends on: none (the precondition WIP commit is already in)
 - Tests first: none; documentation only, with no behaviour to test.
 - Acceptance: the ADR states context, the decision (Decisions 1 to 4 and 7), the rejected alternatives, the `spwts1_` format with its bounds, and the promise that `spwts1_` IDs stay decodable within v1; it references ADRs 0001, 0006, 0007 and 0015; `GLOSSARY.md` defines **Thought signature** and **Signed tool call ID** with `_Avoid_` lines; one sentence per line, no em dashes; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T2: provider-side `extra_content` shaping
 - Files: `internal/providers/openaicompat/client.go`, `internal/providers/gemini/gemini.go`, `tests/providers/openaicompat/client_test.go`, `tests/providers/gemini/gemini_test.go`, `tests/providers/gemini/testdata/chat-tool-signature.json` (new), `tests/providers/gemini/testdata/stream-tool-signature.sse` (new), `tests/providers/openaicompat/testdata/request-tool-extra-content.json` (new)
@@ -298,7 +298,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - Fixtures hold fake values only (`sk-test-...` keys, signatures such as base64 of `signature-for-tests`).
   - Mid-stream upstream errors and client disconnect on this unchanged response path stay covered by `TestClient_ChatStreamSurfacesUpstreamFailureAfterChunk` and `TestClient_ClosingChatStreamCancelsUpstream`.
 - Acceptance: `TestClient_UnknownFieldsPreserveRawValuesAndNeverForwardClientAuth` still passes; Groq, OpenRouter and Ollama instances never send `extra_content`; Gemini instances always do when present; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T3: Gemini placeholder signatures for unsigned calls (subject to open question 1)
 - Files: `internal/providers/gemini/gemini.go`, `tests/providers/gemini/gemini_test.go`
@@ -308,7 +308,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestProvider_PlaceholderNeverReplacesRealSignature`: a signed message is forwarded byte-identical.
   - `TestProvider_BodyWithoutToolCallsIsForwardedUnchanged`: upstream bytes equal the input with only `model` replaced.
 - Acceptance: a Groq-shaped tool history sent to the Gemini adapter reaches the fake Gemini with exactly one placeholder per unsigned assistant message; `make check` passes.
-- Status: todo
+- Status: ready-for-human
 
 ### T4: Responses history grouping
 - Files: `internal/api/responses_compat.go`, `tests/api/client_compat_test.go`
@@ -319,7 +319,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestResponses_KeepsSequentialStepsSeparate`: `[user, fc1, out1, fc2, out2]` yields two assistant messages.
   - `TestResponses_ToolOnlyAssistantHasNullContent`: grouped tool-only steps carry `"content": null`.
 - Acceptance: `TestResponses_RestoresNamespacedToolHistory` still passes with namespaces restored inside grouped calls; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T5: signed tool-call IDs on Responses (non-streaming)
 - Files: `internal/api/toolcall_id.go` (new), `internal/api/responses_compat.go`, `internal/api/client_compat.go`, `tests/api/client_compat_test.go`, `tests/api/testdata/gemini-signed-tool-call.json` (new)
@@ -332,7 +332,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestResponses_OversizedUpstreamSignatureIsNotEmbedded`: a signature over the bound yields the plain ID; the log has the warning with `reason=too_large` and lacks the signature.
   - `TestClientCompatibility_ThoughtSignatureAbsentFromLogs`: after a full round trip `e.logs` contains neither the signature nor the signed ID.
 - Acceptance: security properties "signature absent from logs" and "client-supplied ID absent from error text" are proven by the tests above; existing Responses tests pass; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T6: Responses streaming with deferred tool calls
 - Files: `internal/api/responses_compat.go`, `internal/api/client_compat.go`, `tests/api/client_compat_test.go`
@@ -344,7 +344,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestResponses_StreamUpstreamErrorDuringToolCallEmitsNoFunctionCall`: a tool delta followed by an upstream error gives `event: error`, no `response.completed`, and no `function_call` item.
   - `TestResponses_StreamClientDisconnectClosesUpstream`: with a real `httptest.Server` and a gated fake stream, cancelling the client after `response.created` closes the provider stream and cancels its context (pattern of `TestStream_ClientDisconnectCancelsProvider`).
 - Acceptance: `TestResponses_StreamsNamespacedToolCalls` and the `responses` subtest of `TestClientCompatibility_StreamsToolCalls` pass; `sequence_number` stays strictly increasing; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T7: Claude Code request fields on Messages
 - Files: `internal/api/anthropic_compat.go`, `tests/api/client_compat_test.go`, `tests/api/testdata/claude-code-first-turn.json` (new)
@@ -355,7 +355,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestAnthropicMessages_RejectsUnsupportedFieldsWithAnthropicError`: rewritten as a table of unknown `thinking.type`, `budget_tokens` 512, `budget_tokens` not below `max_tokens`, `output_config.format`, unknown `effort`, `cache_control.type` other than `ephemeral`, `container`, `mcp_servers`, and a non-string `user_id`; each is 400 `invalid_request_error` naming the field.
   - `TestAnthropicMessages_DoesNotForwardOrLogMetadataUserID`: the `user_id` value is absent from the upstream body and from `e.logs`.
 - Acceptance: the old `thinking.enabled` rejection is replaced as decided in open question 3; security property "user identifier absent from upstream body and logs" is proven; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T8: Claude Code later-turn shapes on Messages
 - Files: `internal/api/anthropic_compat.go`, `internal/api/responses_compat.go` (`responseOutputText` accepts `cache_control` on text parts), `tests/api/client_compat_test.go`, `tests/api/testdata/claude-code-tool-turn.json` (new)
@@ -368,7 +368,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestAnthropicMessages_ToolResultIsErrorKeepsContent`: content arrives verbatim.
   - `TestAnthropicMessages_ToolResultImageIsRejectedClearly`: 400 naming image tool results (per open question 5).
 - Acceptance: existing Anthropic tests pass; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T9: signed tool_use IDs on Messages (non-streaming and streaming)
 - Files: `internal/api/anthropic_compat.go`, `internal/api/client_compat.go`, `tests/api/client_compat_test.go`
@@ -381,7 +381,7 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestAnthropicMessages_StreamUpstreamErrorDuringToolCallEmitsNoToolUse`: `event: error`, no `message_stop`, no `tool_use` block.
   - `TestAnthropicMessages_StreamClientDisconnectClosesUpstream`.
 - Acceptance: the `anthropic` subtest of `TestClientCompatibility_StreamsToolCalls` and `TestClientCompatibility_StreamErrorDoesNotEmitSuccessTerminalEvent` pass; block indexes are contiguous from 0; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T10: binary-level tool loops and spillover across providers
 - Files: `tests/e2e/thought_signature_test.go` (new)
@@ -394,16 +394,19 @@ ADR 0033 records the signed tool-call ID format, its versioning promise, the `ex
   - `TestBinary_ChatCompletionsForwardsThoughtSignatureVerbatim`: `extra_content` in a `/v1/chat/completions` request reaches the fake Gemini unchanged, and the response's `extra_content` reaches the client unchanged.
   - Every fake asserts its `Authorization` is the configured provider key and never the local key, and every test asserts the server output lacks the signature strings.
 - Acceptance: tests make no external calls; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T11: client documentation
 - Files: `docs/clients.md`, `tests/e2e/docs_test.go` (only if `TestDocs_ClientsStateSupportedProtocols` needs the new statements)
 - Depends on: T10
 - Tests first: extend `TestDocs_ClientsStateSupportedProtocols` to require statements that Claude Code `thinking`, `output_config.effort`, `context_management`, `metadata` and `cache_control` are accepted and not forwarded, and that Gemini thought signatures travel in tool-call IDs.
 - Acceptance: `docs/clients.md` lists accepted, ignored and rejected Anthropic fields, explains signed tool-call IDs and the placeholder fallback, and states the image-in-tool-result limitation; one sentence per line; `make check` passes.
-- Status: todo
+- Status: done
 
 After T11, run `verifier`, `/code-review` since the precondition commit, and `security-auditor` (this plan touches HTTP clients, request shaping and logging), then re-run `verifier` after fixes.
+
+2026-10-28 verification: standards and spec reviews completed, the spec review's CR/LF base64 finding was fixed and covered by a regression test, and `make check` passed.
+The CSO audit was not assessed because its private helper rejected the initial 90-second budget; its one-run rule prohibited retrying with a corrected budget.
 
 ## Manual verification
 
