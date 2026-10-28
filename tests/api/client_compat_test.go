@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1007,6 +1008,254 @@ func TestAnthropicMessages_ToolResultImageIsRejectedClearly(t *testing.T) {
 	}
 	if rec.Code != http.StatusBadRequest || response.Error.Type != "invalid_request_error" || !strings.Contains(response.Error.Message, "image tool results") {
 		t.Fatalf("error = %d %+v, want clear image tool result rejection", rec.Code, response.Error)
+	}
+}
+
+func TestAnthropicMessages_SignedToolUseRoundTripsThoughtSignature(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "gemini-signed-tool-call.json"))
+	if err != nil {
+		t.Fatal("read signed tool-call fixture:", err)
+	}
+	var got providers.ChatRequest
+	calls := 0
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		calls++
+		got = req
+		if calls == 1 {
+			return providers.ChatResponse{Body: fixture}, nil
+		}
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-done","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	first := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}]}`})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200; body %s", first.Code, first.Body)
+	}
+	var response struct {
+		Content []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &response); err != nil {
+		t.Fatal("decode first response:", err)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "tool_use" || !regexp.MustCompile(`^spwts1_[A-Za-z0-9_-]+$`).MatchString(response.Content[0].ID) {
+		t.Fatalf("tool_use = %#v, want alphabet-safe signed ID", response.Content)
+	}
+	secondBody, err := json.Marshal(map[string]any{"model": "fake/model", "max_tokens": 128, "messages": []any{
+		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": response.Content[0].ID, "name": "lookup", "input": map[string]any{"query": "docs"}}}},
+		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": response.Content[0].ID, "content": "found"}}},
+	}})
+	if err != nil {
+		t.Fatal("encode replay request:", err)
+	}
+	second := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: string(secondBody)})
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want 200; body %s", second.Code, second.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID           string `json:"id"`
+				ExtraContent struct {
+					Google struct {
+						ThoughtSignature string `json:"thought_signature"`
+					} `json:"google"`
+				} `json:"extra_content"`
+			} `json:"tool_calls"`
+			ToolID string `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) != 2 || len(translated.Messages[0].ToolCalls) != 1 || translated.Messages[0].ToolCalls[0].ID != "function-call-1" || translated.Messages[0].ToolCalls[0].ExtraContent.Google.ThoughtSignature != "c2lnbmF0dXJlLWZvci10ZXN0cw==" || translated.Messages[1].ToolID != "function-call-1" {
+		t.Fatalf("translated history = %#v, want restored ID and signature", translated.Messages)
+	}
+}
+
+func TestAnthropicMessages_MalformedSignedToolUseIDIsRejected(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, message string }{
+		{"tool_use ID", `{"role":"assistant","content":[{"type":"tool_use","id":"spwts1_***","name":"lookup","input":{}}]}`},
+		{"tool_result ID", `{"role":"user","content":[{"type":"tool_result","tool_use_id":"spwts1_***","content":"found"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+				t.Fatal("malformed signed ID reached provider")
+				return providers.ChatResponse{}, nil
+			}
+			body := `{"model":"fake/model","max_tokens":32,"messages":[` + tt.message + `]}`
+			rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+			var response struct {
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal("decode error response:", err)
+			}
+			if rec.Code != http.StatusBadRequest || response.Error.Type != "invalid_request_error" || strings.Contains(response.Error.Message, "spwts1_***") {
+				t.Fatalf("error = %d %+v, want sanitized invalid request", rec.Code, response.Error)
+			}
+		})
+	}
+}
+
+func TestAnthropicMessages_StreamSignatureAfterArgumentsChunk(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"docs\"}"},"extra_content":{"google":{"thought_signature":"c2lnbmF0dXJlLWZvci10ZXN0cw=="}}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+		}}, nil
+	}
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}],"stream":true}`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var id string
+	var jsonDelta string
+	for _, frame := range strings.Split(rec.Body.String(), "\n\n") {
+		if !strings.Contains(frame, "data: ") {
+			continue
+		}
+		var event struct {
+			Type         string `json:"type"`
+			ContentBlock struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+			} `json:"content_block"`
+			Delta struct {
+				Type        string `json:"type"`
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+					t.Fatal("decode Messages event:", err)
+				}
+			}
+		}
+		if event.Type == "content_block_start" && event.ContentBlock.Type == "tool_use" {
+			id = event.ContentBlock.ID
+		}
+		if event.Type == "content_block_delta" && event.Delta.Type == "input_json_delta" {
+			jsonDelta = event.Delta.PartialJSON
+		}
+	}
+	if !regexp.MustCompile(`^spwts1_[A-Za-z0-9_-]+$`).MatchString(id) || jsonDelta != `{"query":"docs"}` || strings.Count(rec.Body.String(), "event: content_block_start\n") != 1 {
+		t.Fatalf("stream = %s, want one signed tool block with full arguments", rec.Body)
+	}
+}
+
+func TestAnthropicMessages_StreamTextStillStreamsBeforeToolCalls(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"content":"Checking."},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+		}}, nil
+	}
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}],"stream":true}`})
+	textDelta := strings.Index(rec.Body.String(), "event: content_block_delta\n")
+	toolStart := strings.Index(rec.Body.String(), `"type":"tool_use"`)
+	var indexes []int
+	for _, frame := range strings.Split(rec.Body.String(), "\n\n") {
+		if !strings.Contains(frame, "event: content_block_start\n") {
+			continue
+		}
+		var event struct {
+			Index int `json:"index"`
+		}
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(line, "data: ") {
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+					t.Fatal("decode block start:", err)
+				}
+			}
+		}
+		indexes = append(indexes, event.Index)
+	}
+	if rec.Code != http.StatusOK || textDelta < 0 || toolStart <= textDelta || len(indexes) != 2 || indexes[0] != 0 || indexes[1] != 1 {
+		t.Fatalf("stream = %d %s, want text before complete tool call", rec.Code, rec.Body)
+	}
+}
+
+func TestAnthropicMessages_StreamUpstreamErrorDuringToolCallEmitsNoToolUse(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: []providers.ChatChunk{
+			{Data: json.RawMessage(`{"id":"chatcmpl-anthropic-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":null}]}`)},
+			{Data: json.RawMessage(`{"error":{"message":"upstream failed"}}`)},
+		}}, nil
+	}
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}],"stream":true}`})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "event: error\n") || strings.Contains(rec.Body.String(), `"type":"tool_use"`) || strings.Contains(rec.Body.String(), "message_stop") {
+		t.Fatalf("stream = %d %s, want error without partial tool call", rec.Code, rec.Body)
+	}
+}
+
+func TestAnthropicMessages_StreamClientDisconnectClosesUpstream(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	streams := make(chan *gatedStream, 1)
+	e.fake.stream = func(ctx context.Context, _ providers.ChatRequest) (providers.Stream, error) {
+		stream := newGatedStream(ctx, `{"id":"chatcmpl-disconnect","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":null}]}`, `{"id":"chatcmpl-disconnect","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":null}]}`)
+		streams <- stream
+		return stream, nil
+	}
+	srv := httptest.NewServer(e.handler)
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}],"stream":true}`))
+	if err != nil {
+		t.Fatal("create streaming request:", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal("send streaming request:", err)
+	}
+	stream := <-streams
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal("read message_start:", err)
+		}
+		if strings.Contains(line, `"type":"message_start"`) {
+			break
+		}
+	}
+	cancel()
+	_ = resp.Body.Close()
+	select {
+	case err := <-stream.ctxErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("upstream Recv error = %v, want context canceled", err)
+		}
+	case <-t.Context().Done():
+		t.Fatal("upstream stream did not observe client disconnect")
+	}
+	select {
+	case <-stream.closed:
+	case <-t.Context().Done():
+		t.Fatal("upstream stream was not closed after client disconnect")
 	}
 }
 

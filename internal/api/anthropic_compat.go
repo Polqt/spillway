@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -149,7 +150,11 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 			if role != "assistant" {
 				return nil, errors.New("tool_use blocks are supported only in assistant messages")
 			}
-			toolCalls = append(toolCalls, map[string]any{"id": block.ID, "type": "function", "function": map[string]any{"name": block.Name, "arguments": string(block.Input)}})
+			ref, err := parseClientToolCallID(block.ID)
+			if err != nil {
+				return nil, errors.New("tool_use.id is invalid")
+			}
+			toolCalls = append(toolCalls, chatToolCall(ref, block.Name, string(block.Input)))
 		case "tool_result":
 			if role != "user" {
 				return nil, errors.New("tool_result blocks are supported only in user messages")
@@ -157,11 +162,15 @@ func anthropicMessages(role string, raw json.RawMessage) ([]map[string]any, erro
 			if anthropicToolResultHasImage(block.Content) {
 				return nil, errors.New("image tool results are not supported")
 			}
+			ref, err := parseClientToolCallID(block.ToolUseID)
+			if err != nil {
+				return nil, errors.New("tool_result.tool_use_id is invalid")
+			}
 			output, err := responseOutputText(block.Content)
 			if err != nil {
 				return nil, err
 			}
-			toolResults = append(toolResults, map[string]any{"role": "tool", "tool_call_id": block.ToolUseID, "content": output})
+			toolResults = append(toolResults, map[string]any{"role": "tool", "tool_call_id": ref.ID, "content": output})
 		case "thinking", "redacted_thinking":
 			// Client thinking blocks are not forwarded to providers.
 		default:
@@ -379,7 +388,7 @@ func anthropicToolChoice(raw json.RawMessage) (any, error) {
 	}
 }
 
-func anthropicResponse(raw []byte) ([]byte, error) {
+func anthropicResponse(raw []byte, logger *slog.Logger, provider string) ([]byte, error) {
 	chat, err := decodeChatCompletion(raw)
 	if err != nil {
 		return nil, err
@@ -390,11 +399,16 @@ func anthropicResponse(raw []byte) ([]byte, error) {
 		content = append(content, map[string]any{"type": "text", "text": *choice.Message.Content})
 	}
 	for _, call := range choice.Message.ToolCalls {
+		ref := toolCallRef{ID: call.ID, ThoughtSignature: call.ExtraContent.Google.ThoughtSignature}
+		if reason := signatureIssue(ref); reason != "" && logger != nil {
+			logger.Warn("thought signature not forwarded", "provider", provider, "reason", reason, "bytes", len(ref.ThoughtSignature))
+		}
 		var input any
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil || input == nil {
 			input = map[string]any{}
 		}
-		content = append(content, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Function.Name, "input": input})
+		callID, _ := clientToolCallID(ref)
+		content = append(content, map[string]any{"type": "tool_use", "id": callID, "name": call.Function.Name, "input": input})
 	}
 	stop := "end_turn"
 	switch choice.FinishReason {
@@ -413,10 +427,12 @@ func anthropicResponse(raw []byte) ([]byte, error) {
 }
 
 type anthropicStreamTool struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
-	Block     int
+	ID               string
+	Name             string
+	ThoughtSignature string
+	Arguments        strings.Builder
+	Block            int
+	Emitted          bool
 }
 
 type anthropicStreamState struct {
@@ -464,6 +480,7 @@ func (s *anthropicStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`
+				ExtraContent googleExtraContent `json:"extra_content"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
@@ -488,9 +505,7 @@ func (s *anthropicStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		tool := s.tools[delta.Index]
 		if tool == nil {
 			tool = &anthropicStreamTool{ID: delta.ID, Name: delta.Function.Name}
-			tool.Block = s.nextBlock()
 			s.tools[delta.Index] = tool
-			w.writeEvent("content_block_start", map[string]any{"type": "content_block_start", "index": tool.Block, "content_block": map[string]any{"type": "tool_use", "id": tool.ID, "name": tool.Name, "input": map[string]any{}}})
 		}
 		if delta.ID != "" {
 			tool.ID = delta.ID
@@ -500,7 +515,9 @@ func (s *anthropicStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		}
 		if delta.Function.Arguments != "" {
 			tool.Arguments.WriteString(delta.Function.Arguments)
-			w.writeEvent("content_block_delta", map[string]any{"type": "content_block_delta", "index": tool.Block, "delta": map[string]string{"type": "input_json_delta", "partial_json": delta.Function.Arguments}})
+		}
+		if signature := delta.ExtraContent.Google.ThoughtSignature; signature != "" {
+			tool.ThoughtSignature = signature
 		}
 	}
 	if choice.FinishReason != nil {
@@ -514,7 +531,7 @@ func (s *anthropicStreamState) nextBlock() int {
 		max = s.textBlock + 1
 	}
 	for _, tool := range s.tools {
-		if tool.Block >= max {
+		if tool.Emitted && tool.Block >= max {
 			max = tool.Block + 1
 		}
 	}
@@ -536,6 +553,15 @@ func (s *anthropicStreamState) finish(w *clientCompatibilityWriter, stop string)
 	sort.Ints(indexes)
 	for _, index := range indexes {
 		tool := s.tools[index]
+		ref := toolCallRef{ID: tool.ID, ThoughtSignature: tool.ThoughtSignature}
+		if reason := signatureIssue(ref); reason != "" && w.logger != nil {
+			w.logger.Warn("thought signature not forwarded", "provider", w.Header().Get("X-Spillway-Provider"), "reason", reason, "bytes", len(ref.ThoughtSignature))
+		}
+		callID, _ := clientToolCallID(ref)
+		tool.Block = s.nextBlock()
+		tool.Emitted = true
+		w.writeEvent("content_block_start", map[string]any{"type": "content_block_start", "index": tool.Block, "content_block": map[string]any{"type": "tool_use", "id": callID, "name": tool.Name, "input": map[string]any{}}})
+		w.writeEvent("content_block_delta", map[string]any{"type": "content_block_delta", "index": tool.Block, "delta": map[string]string{"type": "input_json_delta", "partial_json": tool.Arguments.String()}})
 		w.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": tool.Block})
 	}
 	w.writeEvent("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]int{"output_tokens": s.usageOut}})

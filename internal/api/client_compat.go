@@ -284,7 +284,7 @@ func clientErrorBody(protocol clientProtocol, raw []byte) []byte {
 func translateClientResponse(protocol clientProtocol, raw []byte, namespaces map[string]responseToolNamespace, logger *slog.Logger, provider string) ([]byte, error) {
 	switch protocol {
 	case protocolAnthropic:
-		return anthropicResponse(raw)
+		return anthropicResponse(raw, logger, provider)
 	case protocolResponses:
 		return responsesResponse(raw, namespaces, logger, provider)
 	default:
