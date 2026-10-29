@@ -490,15 +490,16 @@ type responseToolStream struct {
 }
 
 type responsesStreamState struct {
-	started  bool
-	finished bool
-	id       string
-	model    string
-	created  int64
-	text     strings.Builder
-	tools    map[int]*responseToolStream
-	usage    map[string]int
-	sequence int
+	started     bool
+	finished    bool
+	messageOpen bool
+	id          string
+	model       string
+	created     int64
+	text        strings.Builder
+	tools       map[int]*responseToolStream
+	usage       map[string]int
+	sequence    int
 }
 
 func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk map[string]json.RawMessage) {
@@ -514,8 +515,6 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		w.writeEvent("response.created", s.event(map[string]any{"type": "response.created", "response": map[string]any{
 			"id": s.id, "object": "response", "created_at": s.created, "status": "in_progress", "model": s.model, "output": []any{}, "usage": nil,
 		}}))
-		w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"id": "msg_" + s.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}}))
-		w.writeEvent("response.content_part.added", s.event(map[string]any{"type": "response.content_part.added", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}))
 	}
 	var usage struct {
 		Prompt     int `json:"prompt_tokens"`
@@ -549,6 +548,7 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 	}
 	choice := choices[0]
 	if choice.Delta.Content != "" {
+		s.openMessage(w)
 		s.text.WriteString(choice.Delta.Content)
 		w.writeEvent("response.output_text.delta", s.event(map[string]any{"type": "response.output_text.delta", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "delta": choice.Delta.Content}))
 	}
@@ -584,10 +584,18 @@ func (s *responsesStreamState) finish(w *clientCompatibilityWriter) {
 		return
 	}
 	s.finished = true
-	w.writeEvent("response.output_text.done", s.event(map[string]any{"type": "response.output_text.done", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "text": s.text.String()}))
-	w.writeEvent("response.content_part.done", s.event(map[string]any{"type": "response.content_part.done", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}))
-	w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{"id": "msg_" + s.id, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}}}))
-	output := []any{map[string]any{"id": "msg_" + s.id, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}}}
+	// Like the non-streaming reply, a tool-only answer has no message item, but a reply with neither text nor tools still has an empty one.
+	if len(s.tools) == 0 {
+		s.openMessage(w)
+	}
+	output := make([]any, 0, 1+len(s.tools))
+	if s.messageOpen {
+		w.writeEvent("response.output_text.done", s.event(map[string]any{"type": "response.output_text.done", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "text": s.text.String()}))
+		w.writeEvent("response.content_part.done", s.event(map[string]any{"type": "response.content_part.done", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}))
+		message := map[string]any{"id": "msg_" + s.id, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}}
+		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": message}))
+		output = append(output, message)
+	}
 	indexes := make([]int, 0, len(s.tools))
 	for index := range s.tools {
 		indexes = append(indexes, index)
@@ -595,22 +603,32 @@ func (s *responsesStreamState) finish(w *clientCompatibilityWriter) {
 	sort.Ints(indexes)
 	for _, index := range indexes {
 		tool := s.tools[index]
+		outputIndex := len(output)
 		ref := toolCallRef{ID: tool.ID, ThoughtSignature: tool.ThoughtSignature}
 		if reason := signatureIssue(ref); reason != "" && w.logger != nil {
 			w.logger.Warn("thought signature not forwarded", "provider", w.Header().Get("X-Spillway-Provider"), "reason", reason, "bytes", len(ref.ThoughtSignature))
 		}
-		w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": index + 1, "item": responsesFunctionCall(ref, tool.Name, "", "in_progress", w.toolNamespaces)}))
-		w.writeEvent("response.function_call_arguments.delta", s.event(map[string]any{"type": "response.function_call_arguments.delta", "item_id": tool.ID, "output_index": index + 1, "delta": tool.Arguments.String()}))
-		w.writeEvent("response.function_call_arguments.done", s.event(map[string]any{"type": "response.function_call_arguments.done", "item_id": tool.ID, "output_index": index + 1, "arguments": tool.Arguments.String()}))
+		w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": outputIndex, "item": responsesFunctionCall(ref, tool.Name, "", "in_progress", w.toolNamespaces)}))
+		w.writeEvent("response.function_call_arguments.delta", s.event(map[string]any{"type": "response.function_call_arguments.delta", "item_id": tool.ID, "output_index": outputIndex, "delta": tool.Arguments.String()}))
+		w.writeEvent("response.function_call_arguments.done", s.event(map[string]any{"type": "response.function_call_arguments.done", "item_id": tool.ID, "output_index": outputIndex, "arguments": tool.Arguments.String()}))
 		item := responsesFunctionCall(ref, tool.Name, tool.Arguments.String(), "completed", w.toolNamespaces)
 		output = append(output, item)
-		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": index + 1, "item": item}))
+		w.writeEvent("response.output_item.done", s.event(map[string]any{"type": "response.output_item.done", "output_index": outputIndex, "item": item}))
 	}
 	if s.usage == nil {
 		s.usage = map[string]int{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 	}
 	response := map[string]any{"id": s.id, "object": "response", "created_at": s.created, "status": "completed", "error": nil, "incomplete_details": nil, "model": s.model, "output": output, "usage": s.usage}
 	w.writeEvent("response.completed", s.event(map[string]any{"type": "response.completed", "response": response}))
+}
+
+func (s *responsesStreamState) openMessage(w *clientCompatibilityWriter) {
+	if s.messageOpen {
+		return
+	}
+	s.messageOpen = true
+	w.writeEvent("response.output_item.added", s.event(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"id": "msg_" + s.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}}))
+	w.writeEvent("response.content_part.added", s.event(map[string]any{"type": "response.content_part.added", "item_id": "msg_" + s.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}))
 }
 
 func (s *responsesStreamState) event(value map[string]any) map[string]any {

@@ -680,6 +680,36 @@ func TestResponses_StreamTextStillStreamsBeforeToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponses_StreamToolOnlyReplyMatchesNonStreamingOutput(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	chunks := []providers.ChatChunk{
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	}
+	e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &compatTestStream{chunks: chunks}, nil
+	}
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool.","stream":true}`})
+	var completed struct {
+		Response struct {
+			Output []struct {
+				Type string `json:"type"`
+			} `json:"output"`
+		} `json:"response"`
+	}
+	for frame := range strings.SplitSeq(rec.Body.String(), "\n\n") {
+		if data, ok := strings.CutPrefix(frame, "event: response.completed\ndata: "); ok {
+			if err := json.Unmarshal([]byte(data), &completed); err != nil {
+				t.Fatal("decode response.completed:", err)
+			}
+		}
+	}
+	if rec.Code != http.StatusOK || len(completed.Response.Output) != 1 || completed.Response.Output[0].Type != "function_call" || strings.Contains(rec.Body.String(), `"type":"message"`) || !strings.Contains(rec.Body.String(), `"output_index":0,"sequence_number":2,"type":"response.output_item.added"`) {
+		t.Fatalf("stream = %d %s, want only the function call at output index 0", rec.Code, rec.Body)
+	}
+}
+
 func TestResponses_StreamUpstreamErrorDuringToolCallEmitsNoFunctionCall(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)
