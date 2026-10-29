@@ -30,20 +30,31 @@ func TestExamples_DockerConfigValidates(t *testing.T) {
 	if err := os.WriteFile(configPath, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadWithEnv(configPath, func(name string) (string, bool) {
+		return "sk-test-docker-local", name == "SPILLWAY_LOCAL_KEY"
+	})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Server.Listen != "0.0.0.0:8080" {
 		t.Errorf("Listen = %q, want 0.0.0.0:8080", cfg.Server.Listen)
 	}
-	if len(cfg.Server.APIKeys) != 1 || !strings.HasPrefix(cfg.Server.APIKeys[0].Key.Reveal(), "sk-test-") {
-		t.Errorf("api_keys = %v, want one fake local key", cfg.Server.APIKeys)
+	if len(cfg.Server.APIKeys) != 1 || cfg.Server.APIKeys[0].Key.Reveal() != "sk-test-docker-local" {
+		t.Errorf("api_keys = %v, want the key from SPILLWAY_LOCAL_KEY", cfg.Server.APIKeys)
 	}
 	if _, ok := cfg.Providers["ollama"]; !ok || len(cfg.Providers) != 1 {
 		t.Errorf("providers = %v, want only ollama", cfg.Providers)
 	}
 	if cfg.Store == nil || filepath.Dir(cfg.Store.Path) != storeDir {
 		t.Errorf("store = %+v, want a file under %q", cfg.Store, storeDir)
+	}
+}
+
+// The image config listens on all interfaces, so it must not ship a usable published key.
+func TestExamples_DockerConfigRequiresLocalKeyFromEnvironment(t *testing.T) {
+	t.Parallel()
+	_, err := config.LoadWithEnv(filepath.Join("..", "..", "examples", "config.docker.yaml"), func(string) (string, bool) { return "", false })
+	if err == nil || !strings.Contains(err.Error(), "SPILLWAY_LOCAL_KEY") {
+		t.Fatalf("Load error = %v, want one naming SPILLWAY_LOCAL_KEY", err)
 	}
 }

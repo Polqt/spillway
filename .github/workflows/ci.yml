@@ -139,7 +139,7 @@ jobs:
             exit 1
           fi
           docker volume create "$volume"
-          docker run --detach --name "$name" --read-only --tmpfs /tmp --publish 127.0.0.1:18080:8080 --volume "$GITHUB_WORKSPACE/.docker-context/examples/config.docker.yaml:/etc/spillway/config.yaml:ro" --volume "$volume:/var/lib/spillway" "$image"
+          docker run --detach --name "$name" --read-only --tmpfs /tmp --publish 127.0.0.1:18080:8080 --env SPILLWAY_LOCAL_KEY=sk-test-spillway-docker --volume "$GITHUB_WORKSPACE/.docker-context/examples/config.docker.yaml:/etc/spillway/config.yaml:ro" --volume "$volume:/var/lib/spillway" "$image"
           for attempt in $(seq 1 30); do
             if curl --silent --fail http://127.0.0.1:18080/healthz >/dev/null; then
               break

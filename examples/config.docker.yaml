@@ -1,11 +1,11 @@
-# Ollama container config. Replace the local key before exposing the API.
-# Publish only to host loopback with -p 127.0.0.1:8080:8080.
-# A local key is mandatory because the container listens on 0.0.0.0.
+# Ollama container config. Publish only to host loopback with -p 127.0.0.1:8080:8080.
+# The container listens on 0.0.0.0, so the local key comes from SPILLWAY_LOCAL_KEY
+# and the server refuses to start without it.
 server:
   listen: "0.0.0.0:8080"
   api_keys:
     - name: demo
-      key: "sk-test-spillway-docker"
+      key: "${SPILLWAY_LOCAL_KEY}"
 providers:
   ollama: {}
 tiers:

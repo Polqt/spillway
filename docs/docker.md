@@ -4,14 +4,15 @@ Spillway's image is distroless and runs as uid 65532. It has no shell or package
 
 ## Run with persistent storage
 
-Create a private config file based on `examples/config.docker.yaml`. Replace its demo local key with a strong random local key before starting the container. Keep provider keys in the container environment and reference them as `${VARIABLE}` in the config; do not put provider key values in YAML.
+Create a private config file based on `examples/config.docker.yaml`. Its local key is read from `SPILLWAY_LOCAL_KEY`, and the server refuses to start when that variable is unset. Keep provider keys in the container environment too and reference them as `${VARIABLE}` in the config; do not put key values in YAML.
 
-For example, after setting `config.docker.yaml` and its local key, and choosing a provider reachable from the container:
+For example, after choosing a provider reachable from the container, put a strong random `SPILLWAY_LOCAL_KEY=...` line and any provider key variables in a private `spillway.env` file:
 
 ```sh
 docker volume create spillway-data
 docker run --rm --read-only --stop-timeout 10 \
   -p 127.0.0.1:8080:8080 \
+  --env-file spillway.env \
   -v "$(pwd)/config.docker.yaml:/etc/spillway/config.yaml:ro" \
   -v spillway-data:/var/lib/spillway \
   ghcr.io/polqt/spillway:1.0.0
@@ -21,7 +22,7 @@ The example config stores the optional SQLite database under `/var/lib/spillway`
 
 The published port is bound to `127.0.0.1` on the host. A local API key is required even though the container listens on all interfaces. Container requests do not get the loopback-only `Host` header protection used by a loopback host process; keep the published port private and require local keys.
 
-If the config uses a provider key, provide the referenced variable to the container with Docker's `--env-file` or `-e` option. Keep that environment file private and out of source control.
+Docker's `-e` option can set `SPILLWAY_LOCAL_KEY` and provider key variables instead of an env file. Keep `spillway.env` private and out of source control.
 
 ## Ollama limitation
 
