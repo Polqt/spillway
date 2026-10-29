@@ -245,6 +245,72 @@ providers:
 	}
 }
 
+func TestParse_QuotaDomainChildWithTwoParentsIsRejected(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, service, first, second, wantError string
+	}{
+		{"gemini project in two billing accounts", "gemini", "{project: shared-project, billing_account: billing-a}", "{project: shared-project, billing_account: billing-b}", "providers.second-instance.quota_domains.project matches providers.first-instance but names a different billing_account"},
+		{"groq project in two organizations", "groq", "{project: shared-project, organization: org-a}", "{project: shared-project, organization: org-b}", "providers.second-instance.quota_domains.project matches providers.first-instance but names a different organization"},
+		{"openrouter key in two workspaces", "openrouter", "{key: shared-key, workspace: ws-a}", "{key: shared-key, workspace: ws-b}", "providers.second-instance.quota_domains.key matches providers.first-instance but names a different workspace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := fmt.Sprintf(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  first-instance:
+    type: %[1]s
+    api_key: "${FIRST_API_KEY}"
+    quota_domains: %[2]s
+  second-instance:
+    type: %[1]s
+    api_key: "${SECOND_API_KEY}"
+    quota_domains: %[3]s
+`, tt.service, tt.first, tt.second)
+			_, err := config.ParseWithEnv([]byte(input), func(name string) (string, bool) {
+				return "sk-test-" + strings.ToLower(name), true
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("ParseWithEnv error = %v, want substring %q", err, tt.wantError)
+			}
+			for _, hidden := range []string{"sk-test-", "shared-", "billing-", "org-", "ws-"} {
+				if strings.Contains(err.Error(), hidden) {
+					t.Errorf("error exposed a credential or domain label: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestParse_QuotaDomainChildMayOmitItsParent(t *testing.T) {
+	t.Parallel()
+	input := []byte(`
+server:
+  api_keys: [sk-test-local-ci]
+providers:
+  gemini-research:
+    type: gemini
+    api_key: "${GEMINI_RESEARCH_API_KEY}"
+    quota_domains: {project: shared-project, billing_account: billing-a}
+  gemini-staging:
+    type: gemini
+    api_key: "${GEMINI_STAGING_API_KEY}"
+    quota_domains: {project: shared-project}
+  groq-research:
+    type: groq
+    api_key: "${GROQ_RESEARCH_API_KEY}"
+    quota_domains: {project: shared-project, organization: org-a}
+`)
+	if _, err := config.ParseWithEnv(input, func(name string) (string, bool) {
+		return "sk-test-" + strings.ToLower(name), true
+	}); err != nil {
+		t.Fatalf("ParseWithEnv: %v", err)
+	}
+}
+
 func TestParse_ProviderInstanceNamesAndDomains(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

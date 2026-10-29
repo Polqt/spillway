@@ -596,6 +596,53 @@ func validateProviders(ps map[string]Provider) error {
 			credentialEnvAt[preset.Name][provider.APIKeyEnv] = name
 		}
 	}
+	return validateQuotaDomainParents(names, ps)
+}
+
+// quotaScopeParents lists, per service, the enclosing scopes a child scope belongs to exactly one of.
+var quotaScopeParents = map[string]map[string][]string{
+	"gemini":     {"project": {"billing_account"}},
+	"groq":       {"project": {"organization"}},
+	"openrouter": {"workspace": {"account"}, "member": {"account"}, "key": {"workspace", "member"}},
+}
+
+// validateQuotaDomainParents rejects one child label placed under two parent labels, which would make shared cooldown state ambiguous.
+func validateQuotaDomainParents(names []string, ps map[string]Provider) error {
+	type declared struct{ label, instance string }
+	parentsOf := make(map[string]map[string]declared)
+	for _, name := range names {
+		provider := ps[name]
+		serviceType := provider.Type
+		if serviceType == "" {
+			serviceType = name
+		}
+		children := make([]string, 0, len(quotaScopeParents[serviceType]))
+		for child := range quotaScopeParents[serviceType] {
+			children = append(children, child)
+		}
+		slices.Sort(children)
+		for _, child := range children {
+			label, ok := provider.QuotaDomains[child]
+			if !ok {
+				continue
+			}
+			key := serviceType + "/" + child + "/" + label
+			if parentsOf[key] == nil {
+				parentsOf[key] = make(map[string]declared)
+			}
+			for _, parent := range quotaScopeParents[serviceType][child] {
+				parentLabel, ok := provider.QuotaDomains[parent]
+				if !ok {
+					continue
+				}
+				if first, seen := parentsOf[key][parent]; seen && first.label != parentLabel {
+					return fmt.Errorf("providers.%s.quota_domains.%s matches providers.%s but names a different %s; one %s belongs to one %s", name, child, first.instance, parent, child, parent)
+				} else if !seen {
+					parentsOf[key][parent] = declared{label: parentLabel, instance: name}
+				}
+			}
+		}
+	}
 	return nil
 }
 

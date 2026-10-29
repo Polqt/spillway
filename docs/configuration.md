@@ -93,6 +93,7 @@ router:
 
 The aliases in `quota_domains` are opaque local labels to join instances that share a provider-documented quota scope.
 Do not put actual project, account or organization identifiers there.
+A child scope sits under one parent, so `check` rejects one Gemini or Groq `project` alias paired with two different `billing_account` or `organization` aliases, and likewise an OpenRouter `key`, `workspace` or `member` alias with two different parents.
 If the upstream response does not identify its quota scope, Spillway applies a provider-service-wide cooldown, even when multiple credentials are configured.
 A documented model-scoped limit is shared for that service and model; other models remain eligible only when the provider's policy permits it.
 The per-instance budget is an additional restriction; the process-wide daily and monthly budgets remain the aggregate spending ceiling across every instance and spill attempt.
