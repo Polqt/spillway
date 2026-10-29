@@ -16,6 +16,12 @@ Spillway is a single Go binary. It has no telemetry and sends requests only to p
   <img src="assets/spillway-flow.png" alt="Your app sends a request to Spillway, which routes it to an AI provider and can spill over to a backup provider. Your provider keys stay local." width="900">
 </p>
 
+<p align="center">
+  <img src="assets/spillway-providers.png" alt="Spillway routes a request to Gemini, with Groq, OpenRouter, and Ollama available as other provider services. Spillover goes to a different provider service." width="900">
+</p>
+
+Spillway can spill over between different services, such as Gemini and Groq. It does not switch between Gemini accounts to get around shared limits.
+
 ## Install
 
 The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
