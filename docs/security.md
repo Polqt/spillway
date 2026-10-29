@@ -8,7 +8,8 @@ Use short, non-identifying aliases for instances and quota domains; do not put e
 Multiple instances are for legitimate workload isolation only when provider terms permit it.
 A new key or account does not establish independent quota or authorize use beyond shared provider limits.
 Unknown quota scope is treated as provider-service-wide, and quota failures never cause automatic same-service instance rotation.
-Explicit model references select one instance, subject to the same authentication, endpoint-security, quota, budget and provider-policy checks as routed requests.
+Explicit model references select one instance and pass through to it with the same authentication, endpoint-security, budget and provider-policy checks as routed requests (ADR 0028).
+They skip Spillway's cooldowns, because each is one operator-chosen attempt that is never retried or moved to another instance; the provider still enforces its own limits.
 
 Spillway has no telemetry and makes no background network requests.
 Network calls happen only when a configured provider is used, when the operator runs `spillway catalog` or `spillway eval`, when the optional local classifier is enabled, or when the operator runs `spillway doctor` (unauthenticated requests to the configured listen address only).
