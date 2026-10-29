@@ -52,6 +52,8 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 		names = append(names, name)
 	}
 	slices.Sort(names)
+	// One unreachable provider, such as a stopped local Ollama, must not hide the others' suggestions.
+	var failures []error
 	for _, name := range names {
 		provider, enabled := cfg.Providers[name]
 		if !enabled {
@@ -74,11 +76,13 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 				body, _ := json.Marshal(map[string]string{"model": ref.Model})
 				data, err := fetch(ctx, client, provider, base, "/api/show", http.MethodPost, body)
 				if err != nil {
-					return fmt.Errorf("fetch ollama catalog for %s: %w", ref.Model, err)
+					failures = append(failures, fmt.Errorf("fetch ollama catalog for %s: %w", ref.Model, err))
+					continue
 				}
 				item, err := parseOllama(data)
 				if err != nil {
-					return fmt.Errorf("decode ollama catalog for %s: %w", ref.Model, err)
+					failures = append(failures, fmt.Errorf("decode ollama catalog for %s: %w", ref.Model, err))
+					continue
 				}
 				item.source = "Ollama /api/show"
 				item.inputPrice, item.outputPrice = "0", "0"
@@ -88,11 +92,13 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 		}
 		data, err := fetch(ctx, client, provider, base, "/models", http.MethodGet, nil)
 		if err != nil {
-			return fmt.Errorf("fetch %s catalog: %w", name, err)
+			failures = append(failures, fmt.Errorf("fetch %s catalog: %w", name, err))
+			continue
 		}
 		items, err := parseOpenAIList(data, serviceType)
 		if err != nil {
-			return fmt.Errorf("decode %s catalog: %w", name, err)
+			failures = append(failures, fmt.Errorf("decode %s catalog: %w", name, err))
+			continue
 		}
 		for _, item := range items {
 			key := name + "/" + item.id
@@ -101,7 +107,7 @@ func Discover(ctx context.Context, cfg config.Config, out io.Writer, options Opt
 			}
 		}
 	}
-	return writeOutput(out, cfg, refs, found)
+	return errors.Join(writeOutput(out, cfg, refs, found), errors.Join(failures...))
 }
 
 func configuredRefs(cfg config.Config) map[string]providers.ModelRef {

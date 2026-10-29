@@ -89,6 +89,32 @@ func TestDiscover_BoundsResponses(t *testing.T) {
 	}
 }
 
+func TestDiscover_ReportsOtherProvidersWhenOneIsUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write(mustFixture(t, "groq-models.json"))
+	}))
+	defer server.Close()
+	cfg := config.Config{
+		Providers: map[string]config.Provider{
+			"groq":   {APIKey: redact.NewSecret("sk-test-groq"), BaseURL: server.URL, Timeout: time.Second},
+			"ollama": {BaseURL: server.URL, Timeout: time.Second},
+		},
+		Tiers: map[string]config.Tier{"free": {Models: []string{"groq/llama-3.3-70b-versatile", "ollama/llama3.2:3b"}}},
+	}
+	var out bytes.Buffer
+	err := catalog.Discover(t.Context(), cfg, &out, catalog.Options{HTTPClient: server.Client()})
+	if err == nil || !strings.Contains(err.Error(), "ollama") {
+		t.Fatalf("Discover error = %v, want one naming the unreachable ollama provider", err)
+	}
+	if !strings.Contains(out.String(), "context_window: 131072") || !strings.Contains(out.String(), "# no catalog result for ollama/llama3.2:3b") {
+		t.Fatalf("output = %s, want Groq suggestions and a note for the Ollama model", out.String())
+	}
+}
+
 func TestDiscover_UsesProviderTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
