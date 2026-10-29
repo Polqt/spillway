@@ -120,6 +120,38 @@ func TestProvider_ResourceExhaustedMapsToRateLimited(t *testing.T) {
 	}
 }
 
+// The status decides before Gemini's RESOURCE_EXHAUSTED body, so a 413 spills without a cooldown (ADR 0034).
+func TestProvider_RequestSizeErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		fixture string
+		status  int
+		want    error
+	}{
+		{"request-too-large.json", http.StatusRequestEntityTooLarge, providers.ErrRequestTooLarge},
+		{"invalid-argument-token-count.json", http.StatusBadRequest, providers.ErrBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			t.Parallel()
+			body := fixture(t, tt.fixture)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write(body)
+			}))
+			defer srv.Close()
+			p, err := gemini.New(gemini.Options{APIKey: redact.NewSecret(providerKey), BaseURL: srv.URL + "/v1beta/openai", Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Chat(t.Context(), providers.ChatRequest{Model: "gemini-3.5-flash", RawBody: []byte(`{"model":"gemini-3.5-flash","messages":[]}`)})
+			if !errors.Is(err, tt.want) || errors.Is(err, providers.ErrRateLimited) || strings.Contains(err.Error(), providerKey) {
+				t.Fatalf("Chat() error = %v; want only scrubbed %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestProvider_ResourceExhaustedRetryInfo(t *testing.T) {
 	tests := []struct {
 		name      string

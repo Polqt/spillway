@@ -264,7 +264,9 @@ func (c *Client) responseError(resp *http.Response) error {
 
 func (c *Client) responseErrorBody(resp *http.Response) ([]byte, error) {
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes+int64(len(c.key.Reveal()))))
-	if c.classifyError != nil {
+	// The status decides before any body code or preset classifier: Groq's per-request TPM 413 says rate_limit_exceeded, yet waiting never helps it (ADR 0034).
+	tooLarge := resp.StatusCode == http.StatusRequestEntityTooLarge || resp.StatusCode == http.StatusBadRequest && isContextLengthCode(errorCode(body))
+	if c.classifyError != nil && !tooLarge {
 		if kind, ok := c.classifyError(resp.StatusCode, body); ok {
 			message := fmt.Errorf("%s: upstream status %d: %s", c.name, resp.StatusCode, errorMessage(body, c.clean))
 			if readErr != nil {
@@ -282,9 +284,7 @@ func (c *Client) responseErrorBody(resp *http.Response) ([]byte, error) {
 		message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
 	}
 	switch {
-	// The status decides before any body code: Groq's per-request TPM 413 says rate_limit_exceeded, yet waiting never helps it (ADR 0034).
-	case resp.StatusCode == http.StatusRequestEntityTooLarge,
-		resp.StatusCode == http.StatusBadRequest && isContextLengthCode(errorCode(body)):
+	case tooLarge:
 		return body, fmt.Errorf("%w: %w", providers.ErrRequestTooLarge, message)
 	case resp.StatusCode == http.StatusPaymentRequired:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
