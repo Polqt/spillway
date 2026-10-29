@@ -12,6 +12,10 @@ Spillway is a self-hosted LLM gateway with OpenAI Chat Completions, OpenAI Respo
 
 Spillway is a single Go binary. It has no telemetry and sends requests only to providers you configure. You bring your own provider keys; Spillway stores no provider credentials for you.
 
+<p align="center">
+  <img src="assets/spillway-flow.png" alt="Your app sends a request to Spillway, which routes it to an AI provider and can spill over to a backup provider. Your provider keys stay local." width="900">
+</p>
+
 ## Install
 
 The current stable release is `v1.0.0`. Download the archive for Linux, macOS or Windows from the [v1.0.0 release page](https://github.com/Polqt/spillway/releases/tag/v1.0.0), then verify it before extracting it. See [install and verify](docs/install.md) for SHA-256 and GitHub artifact attestation steps.
