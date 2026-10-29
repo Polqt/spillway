@@ -129,6 +129,11 @@ The user's `free_tier: true` config claim that their Groq account has no paid pl
 Spillway cannot verify the claim or detect billing changes.
 _Avoid_: verified free tier
 
+**Request-size rejection**:
+A provider's refusal of one request because it is larger than the model's context window or a per-request token limit, signalled by HTTP 413 or a 400 with code `context_length_exceeded`.
+It spills to the next candidate and leaves cooldowns and circuit breakers unchanged (ADR 0034).
+_Avoid_: context overflow, payload too large
+
 **Exhaustion**:
 The state where every candidate in a tier is unavailable or failed for a request.
 Spillway reports each candidate and its reason in an OpenAI-shaped error.

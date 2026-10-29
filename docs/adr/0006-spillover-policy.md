@@ -36,3 +36,10 @@ ADRs 0028 and 0029 supersede two assumptions from this ADR while preserving its 
 
 The spill-triggering failure list, candidate order, one-attempt-per-candidate rule, retry-after handling, OpenAI error behavior, and stream commit point remain in force.
 The no-quota-evasion rule continues to prohibit automatic same-service instance rotation.
+
+## Relationship to request-size rejections (ADR 0034)
+
+ADR 0034 amends the non-spilling statuses above for request-size rejections only.
+An upstream 413, or a 400 whose structured code is `context_length_exceeded`, now spills to the next candidate without changing cooldowns, circuit breakers or any other quota state.
+Every other 400, and every 422, still does not spill.
+The commit point, candidate order and one-attempt-per-candidate rule are unchanged, and direct model references still never spill.
