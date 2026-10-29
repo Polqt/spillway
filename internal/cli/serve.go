@@ -196,7 +196,7 @@ func newHandler(ctx context.Context, cfg config.Config, logger *slog.Logger, usa
 				Name: name, APIKey: providerConfig.APIKey, BaseURL: baseURL, Timeout: providerConfig.Timeout,
 			})
 			if err != nil {
-				return nil, fmt.Errorf("build provider gemini: %w", err)
+				return nil, fmt.Errorf("build provider %s: %w", name, err)
 			}
 			ps = append(ps, p)
 		case "groq", "openrouter", "ollama":
