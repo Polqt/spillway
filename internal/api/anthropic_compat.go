@@ -320,22 +320,21 @@ func validateAnthropicHints(request anthropicCreateRequest) error {
 			return fmt.Errorf("output_config is invalid: %w", err)
 		}
 		switch output.Effort {
-		case "low", "medium", "high", "xhigh", "max":
+		case "", "low", "medium", "high", "xhigh", "max":
 		default:
 			return errors.New("output_config.effort is not supported")
 		}
 	}
 	if len(request.Context) > 0 && string(request.Context) != "null" {
+		// Edit parameters vary by edit type and are dropped, so only the type is checked.
 		var management struct {
-			Edits []struct {
-				Type *string `json:"type"`
-			} `json:"edits"`
+			Edits []map[string]json.RawMessage `json:"edits"`
 		}
 		if err := decodeClientJSON(request.Context, &management); err != nil {
 			return fmt.Errorf("context_management is invalid: %w", err)
 		}
 		for _, edit := range management.Edits {
-			if edit.Type == nil {
+			if kind := edit["type"]; len(kind) == 0 || kind[0] != '"' {
 				return errors.New("context_management.edits[].type must be a string")
 			}
 		}
