@@ -252,9 +252,8 @@ func startThoughtSignatureBinary(t *testing.T, geminiURL, groqURL, tierModels st
 	t.Setenv("SPILLWAY_E2E_LOCAL_KEY", thoughtSignatureLocalKey)
 	t.Setenv("SPILLWAY_E2E_GEMINI_KEY", thoughtSignatureGeminiKey)
 	t.Setenv("SPILLWAY_E2E_GROQ_KEY", thoughtSignatureGroqKey)
-	workDir := t.TempDir()
-	addr := freeLoopbackAddr(t)
-	config := fmt.Sprintf(`server:
+	return startConfiguredBinary(t, func(addr string) string {
+		return fmt.Sprintf(`server:
   listen: %q
   api_keys:
     - name: default
@@ -276,16 +275,24 @@ models:
 router:
   auto: [demo]
 `, addr, geminiURL, groqURL, tierModels)
+	})
+}
+
+// startConfiguredBinary serves the config that config returns for a free loopback address and stops it at cleanup.
+func startConfiguredBinary(t *testing.T, config func(addr string) string) (string, *synchronizedBuffer) {
+	t.Helper()
+	workDir := t.TempDir()
+	addr := freeLoopbackAddr(t)
 	configPath := filepath.Join(workDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
-		t.Fatal("write thought-signature config:", err)
+	if err := os.WriteFile(configPath, []byte(config(addr)), 0o600); err != nil { // #nosec G703 -- configPath is inside t.TempDir.
+		t.Fatal("write binary config:", err)
 	}
 	command := exec.CommandContext(t.Context(), spillwayBinary, "serve", "-config", configPath) //nolint:gosec // TestMain built this executable and configPath is inside t.TempDir.
 	command.Dir = workDir
 	output := &synchronizedBuffer{}
 	command.Stdout, command.Stderr = output, output
 	if err := command.Start(); err != nil {
-		t.Fatal("start thought-signature binary:", err)
+		t.Fatal("start binary:", err)
 	}
 	wait := make(chan error, 1)
 	waitDone := make(chan struct{})
