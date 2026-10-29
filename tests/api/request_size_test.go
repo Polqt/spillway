@@ -27,7 +27,7 @@ const (
 var (
 	sizeFirst  = providers.ModelRef{Provider: "first", Model: "one"}
 	sizeSecond = providers.ModelRef{Provider: "second", Model: "two"}
-	sizeError  = fmt.Errorf("first: upstream status 413: Request too large in organization %s, key sk-test-local-cursor: %w", sizeProviderMarker, providers.ErrRequestTooLarge)
+	errSize    = fmt.Errorf("first: upstream status 413: Request too large in organization %s, key sk-test-local-cursor: %w", sizeProviderMarker, providers.ErrRequestTooLarge)
 )
 
 type sizeEnv struct {
@@ -77,9 +77,9 @@ func sizeRejectingProvider(name string) *countingProvider {
 	return &countingProvider{
 		name: name,
 		chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
-			return providers.ChatResponse{}, sizeError
+			return providers.ChatResponse{}, errSize
 		},
-		stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) { return nil, sizeError },
+		stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) { return nil, errSize },
 	}
 }
 
@@ -219,7 +219,7 @@ func (s *sizeAfterChunkStream) Recv() (providers.ChatChunk, error) {
 		s.sent = true
 		return providers.ChatChunk{Data: json.RawMessage(`{"id":"chatcmpl-part","object":"chat.completion.chunk","created":1760000000,"model":"one","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)}, nil
 	}
-	return providers.ChatChunk{}, sizeError
+	return providers.ChatChunk{}, errSize
 }
 
 func (*sizeAfterChunkStream) Close() error { return nil }

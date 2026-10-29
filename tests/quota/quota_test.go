@@ -448,7 +448,7 @@ func TestTracker_RequestTooLargeLeavesStateUnchanged(t *testing.T) {
 			}
 			tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
 			if _, until, _ := tracker.Available(ref); !until.Equal(time.Now().Add(30 * time.Second)) {
-				t.Fatalf("second rate-limit cooldown ends at %v, want 30s as if no success happened", until.Sub(time.Now()))
+				t.Fatalf("second rate-limit cooldown ends at %v, want 30s as if no success happened", time.Until(until))
 			}
 		}},
 	}
