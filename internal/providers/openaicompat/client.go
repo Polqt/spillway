@@ -266,14 +266,14 @@ func (c *Client) responseErrorBody(resp *http.Response) ([]byte, error) {
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes+int64(len(c.key.Reveal()))))
 	if c.classifyError != nil {
 		if kind, ok := c.classifyError(resp.StatusCode, body); ok {
-			message := fmt.Errorf("%s: upstream status %d: %s", c.name, resp.StatusCode, c.clean.Scrub(errorMessage(body)))
+			message := fmt.Errorf("%s: upstream status %d: %s", c.name, resp.StatusCode, errorMessage(body, c.clean))
 			if readErr != nil {
 				message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
 			}
 			return body, fmt.Errorf("%w: %w", kind, message)
 		}
 	}
-	detail := c.clean.Scrub(errorMessage(body))
+	detail := errorMessage(body, c.clean)
 	if detail == "" {
 		detail = http.StatusText(resp.StatusCode)
 	}
@@ -324,7 +324,8 @@ func responseUsageOnly(body []byte) []byte {
 	return encoded
 }
 
-func errorMessage(body []byte) string {
+// errorMessage scrubs before truncating, because a cut through a key would hide it from the scrubber.
+func errorMessage(body []byte, clean *redact.Scrubber) string {
 	var payload struct {
 		Error struct {
 			Message string `json:"message"`
@@ -337,9 +338,12 @@ func errorMessage(body []byte) string {
 			message = payload.Message
 		}
 		if message != "" {
-			message = strings.TrimSpace(message)
+			message = strings.TrimSpace(clean.Scrub(message))
 			if len(message) > 512 {
 				message = message[:512]
+				for !utf8.ValidString(message) {
+					message = message[:len(message)-1]
+				}
 			}
 			return message
 		}
@@ -595,7 +599,7 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 				Code json.RawMessage `json:"code"`
 			}
 			_ = json.Unmarshal(payload.Error, &upstreamError)
-			return providers.ChatChunk{}, s.streamError(streamErrorKind(upstreamError.Code), errorMessage(data))
+			return providers.ChatChunk{}, s.streamError(streamErrorKind(upstreamError.Code), errorMessage(data, s.clean))
 		}
 		var chunk struct {
 			Usage *struct {

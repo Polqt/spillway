@@ -726,6 +726,35 @@ func TestClient_MapsStatusAndScrubsProviderKey(t *testing.T) {
 	}
 }
 
+func TestClient_ScrubsProviderKeyCrossingTheMessageLimit(t *testing.T) {
+	t.Parallel()
+	message := strings.Repeat("x", 500) + providerKey + " tail"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "text/event-stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"error":{"message":"`+message+`"}}`+"\n\n")
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"`+message+`"}}`)
+	}))
+	defer srv.Close()
+	c := client(t, srv.URL)
+	_, chatErr := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+	stream, err := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[],"stream":true}`)})
+	if err != nil {
+		t.Fatal("open stream:", err)
+	}
+	defer func() { _ = stream.Close() }()
+	_, streamErr := stream.Recv()
+	keyPrefix := providerKey[:len(providerKey)/2]
+	for name, err := range map[string]error{"chat": chatErr, "stream": streamErr} {
+		if err == nil || strings.Contains(err.Error(), keyPrefix) {
+			t.Errorf("%s error = %v, want an error without any part of the provider key", name, err)
+		}
+	}
+}
+
 func TestClient_FailedChatReturnsUsageOnlyForCostAccounting(t *testing.T) {
 	body := fixture(t, "openrouter-error-with-usage.json")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
