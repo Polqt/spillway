@@ -1,6 +1,6 @@
 # Local Config Discovery and Opening
 
-Status: implementation complete on 2026-10-23; release remains separate.
+Status: complete; shipped in v1.0.0
 
 ## Goal
 

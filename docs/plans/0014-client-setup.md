@@ -1,5 +1,7 @@
 # Spillway coding client setup
 
+Status: complete; shipped in v1.0.0 (#21)
+
 ## Objective
 
 Make Spillway usable from OpenCode, Claude Code, and Codex with one global setup command per client, while preserving existing client settings and keeping local keys out of command output.

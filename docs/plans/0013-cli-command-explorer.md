@@ -1,5 +1,7 @@
 # 1.3 CLI command explorer and interactive command browsers
 
+Status: complete; shipped in v1.0.0 (#19)
+
 ## Goal
 
 Make interactive command discovery and read-only management flows feel as deliberate as `spillway init` while preserving the stable behavior of commands in scripts and non-interactive terminals.

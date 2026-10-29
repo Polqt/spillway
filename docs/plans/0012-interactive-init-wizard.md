@@ -1,5 +1,7 @@
 # Plan 0012: Interactive Init Wizard
 
+Status: complete; shipped in v1.0.0
+
 ## Goal
 
 Replace the interactive `spillway init` questionnaire with a keyboard-first full-screen wizard while preserving the existing config contract and automation paths.

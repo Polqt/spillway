@@ -1,5 +1,7 @@
 # Plan 0012: Confirmed CLI install-path replacement
 
+Status: complete; shipped in v1.0.0 (#14)
+
 ## Goal
 
 Let users upgrading from a release archive replace the existing Spillway executable found on `PATH` with the downloaded binary through one confirmed command.

@@ -1,5 +1,7 @@
 # Init config overwrite and provider cleanup
 
+Status: complete; shipped in v1.0.0 (#21); follow-up commits `ed91d7a` and `a50a100` are not yet on `origin/main`
+
 ## Goal
 
 Let `spillway init` replace an existing config after an explicit review, while preserving a private backup.

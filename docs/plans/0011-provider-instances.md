@@ -1,6 +1,6 @@
 # Provider Instances
 
-Status: implementation complete locally on `feat/provider-instances`; local `make check` and code/spec review passed. Cross-platform CI and release verification remain pending.
+Status: complete; shipped in v1.0.0 (#15); cross-platform CI passes on `main`
 
 ## Goal
 

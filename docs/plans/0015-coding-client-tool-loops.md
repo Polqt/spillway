@@ -1,6 +1,6 @@
 # Coding client tool loops: Gemini thought signatures and Claude Code requests
 
-Status: approved (2026-10-27; all open questions resolved with the recommended defaults)
+Status: implemented on local `main` (9d4c650); release blocked by local ticket 15 (live checks), 14 recommended (verifier 2026-10-29)
 Milestone: v1.0.x client compatibility fixes (additive under ADR 0015; may ship in v1.1.0 instead)
 
 ## Goal
