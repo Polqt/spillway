@@ -77,6 +77,7 @@ client app (OpenAI SDK)
 4. **Filter** candidates by quota headroom, budget, and circuit-breaker state.
 5. Call the first candidate through its adapter and stream the response back.
 6. On a 429, 5xx, or timeout, update the relevant instance and shared quota-domain state, then **spill over** only to a candidate from another provider service.
+   A provider's request-size rejection (413, or 400 `context_length_exceeded`) also spills, but changes no quota state (ADR 0034).
 7. Log usage, cost, latency, and the routing decision with its reason. Update quota state.
 
 ## 6. Routing Design (v0.3-v0.5)

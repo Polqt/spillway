@@ -170,6 +170,7 @@ func TestDocs_TroubleshootingCoversCLIRecoveryCases(t *testing.T) {
 		{name: "address already in use", want: "Another process (possibly an older Spillway)"},
 		{name: "newer store schema", want: "newer Spillway binary that wrote this database"},
 		{name: "start after config check", want: "spillway serve -config"},
+		{name: "request too large", want: "context_length_exceeded"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if !strings.Contains(string(guide), tt.want) {

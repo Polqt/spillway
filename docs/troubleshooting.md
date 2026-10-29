@@ -98,6 +98,15 @@ On a loopback listener, Spillway rejects a request whose `Host` is not a loopbac
 
 The selected virtual model (`auto` or `spillway/<tier>`) has no eligible candidate for the request's detected requirements. Check `x-spillway-route`, the ordered tiers, and each candidate's `models.<provider/model>.capabilities` declaration. Declare the model's supported `tools`, `vision`, `json_mode` or `structured_outputs` capabilities accurately, or select a model that supports the request. Direct model references bypass capability filtering.
 
+## `context_length_exceeded`
+
+The request is too large for the candidates that could serve it.
+Spillway returns this 400 in two cases: every candidate was skipped before sending because the estimated prompt exceeds its declared `context_window`, or every candidate that was tried rejected the request as too large (an upstream 413, or a 400 with code `context_length_exceeded`).
+The error message lists each candidate with its reason, such as `context too small` or `request too large`, and never includes provider text.
+A provider's size rejection spills to the next candidate and does not cool that provider down, so smaller requests keep using it; free tiers with low tokens-per-minute limits, such as Groq's, often reject long coding-agent requests this way.
+To fix it, shorten or compact the conversation, add a model with a larger context window or token limit to the tier, or declare `context_window` so a small model is skipped up front.
+A direct `provider/model` reference never spills and returns the same code from that one provider.
+
 ## HTTP 429 and budget errors
 
 A provider quota/rate-limit response and a local budget cap both use HTTP 429, but have different causes. A provider's quota error can include a provider name and `Retry-After`; configure another provider candidate if you want cross-provider spillover. A local budget rejection uses error code `insufficient_quota` and `Retry-After` until the next budget period. Check `/api/budget` with a dashboard key. Budgets are soft caps on estimated spend recorded by this process; they can overshoot for in-flight requests and do not include external usage.

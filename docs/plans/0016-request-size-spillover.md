@@ -1,6 +1,6 @@
 # Request-size rejections spill over to the next candidate
 
-Status: draft
+Status: implemented on local `main`; ADR 0034 stays proposed until the owner confirms open questions 1 to 3, and manual checks 1 to 5 need the owner's keys
 Milestone: v1.1.0 (behaviour change for virtual models; see open question 1 on ADR 0015)
 
 ## Goal
@@ -214,7 +214,7 @@ Status and code choice for rule 1, with rejected alternatives:
   - ADR 0006 keeps its Decision text and gains a section `## Relationship to request-size rejections (ADR 0034)` saying that upstream 413 and 400 `context_length_exceeded` now spill without changing quota state, that every other 400 and 422 still does not spill, and that the commit point, ordering and one-attempt rule are unchanged.
   - `GLOSSARY.md` gains **Request-size rejection** under Delivery: "A provider's refusal of one request because it is larger than the model's context window or a per-request token limit, signalled by HTTP 413 or a 400 with code `context_length_exceeded`. It spills to the next candidate and leaves cooldowns and circuit breakers unchanged (ADR 0034). _Avoid_: context overflow, payload too large".
   - `make check` passes.
-- Status: todo
+- Status: done
 
 ### T2: `ErrRequestTooLarge` and tracker neutrality
 
@@ -229,7 +229,7 @@ Status and code choice for rule 1, with rejected alternatives:
     - with a sibling instance of the same service type configured: the sibling stays available.
   - `TestTracker_RequestTooLargeIgnoresRateLimitHint`: `Observe(ref, ErrRequestTooLarge, RateLimit{Known: true, RemainingTokens: 0, ResetTokens: time.Minute})` leaves the candidate available.
 - Acceptance: tests pass; `Observe`'s doc comment names request-size rejections as state-neutral; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T3: spill on request-size rejection, non-streaming, and the direct answer
 
@@ -247,7 +247,7 @@ Status and code choice for rule 1, with rejected alternatives:
     Logs contain `msg="tier candidate failed"`, `error_kind=request_too_large` and `attempts=2`, and contain none of the prompt marker, the key or the provider marker.
   - `TestUsage_RequestTooLargeAttemptOutcome` in `usage_test.go`: the recorded request has two attempts with outcomes `request_too_large` and `success`, and an empty request `error_kind`.
 - Acceptance: tests pass; `isSpillable`, `candidateErrorKind`, `candidateReason` and `providerError` handle the new kind; `TestChat_TierDoesNotSpillOnUpstreamClientStatuses` still passes unchanged because the adapter does not yet emit the new kind; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T4: exhaustion outcome with request-size rejections
 
@@ -263,7 +263,7 @@ Status and code choice for rule 1, with rejected alternatives:
     - size rejection plus a budget-blocked paid candidate: 429 with usage `error_kind` `budget_exceeded`.
   - `TestChat_AutoPlanSizeSkipPlusRuntimeRequestTooLarge`: `auto` with candidate A declared `context_window: 1` (plan skip `context too small`) and candidate B returning the size error; asserts 400 `context_length_exceeded`, route `auto; tier free; exhausted (1 eligible)`, and a message containing both `context too small` and `request too large`.
 - Acceptance: tests pass; existing `TestChat_TierCooldownExhaustionUsesEarliestRetryAfter` and `TestChat_TierExhaustionIsBoundedAndDoesNotLeakProviderText` pass unchanged; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T5: streaming paths
 
@@ -281,7 +281,7 @@ Status and code choice for rule 1, with rejected alternatives:
     Asserts an error event with code `upstream_unavailable`, no `[DONE]`, and one breaker strike on `second` only.
   - `TestStream_TierAllRequestTooLargeIsPlainHTTPError`: both reject on open; asserts a JSON 400 `context_length_exceeded`, not an event stream.
 - Acceptance: tests pass with `-race`; no goroutine outlives a test (existing leak checks in `stream_test.go` stay green); `make check` passes.
-- Status: todo
+- Status: done
 
 ### T6: adapter classification
 
@@ -309,7 +309,7 @@ Status and code choice for rule 1, with rejected alternatives:
   - `TestChat_TierSpillsOnUpstreamRequestTooLarge`: a real `openaicompat` client against `httptest.Server` returning `groq-413-tpm.json`, then `context-length-400.json`; each spills to `second` with exactly one upstream call.
   - `TestGroq_UpstreamErrorsBecomeOpenAIErrors`: new row 413 to 400 `context_length_exceeded`.
 - Acceptance: tests pass; classification never reads `error.message`; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T7: binary-level replay of the OpenCode run
 
@@ -325,7 +325,7 @@ Status and code choice for rule 1, with rejected alternatives:
     Asserts 400 on each; `error.code == "context_length_exceeded"` on chat and responses; Anthropic shape `{"type":"error","error":{"type":"invalid_request_error",...}}` on messages; no provider marker in any body.
   - `TestBinary_DirectRequestTooLargeMakesOneCall`: `model: groq/openai/gpt-oss-120b` gets 400 `context_length_exceeded`, route `direct`, Groq called once, Gemini and Ollama zero times.
 - Acceptance: tests pass on Windows and Linux CI; `make check` passes.
-- Status: todo
+- Status: done
 
 ### T8: user documentation
 
@@ -341,7 +341,7 @@ Status and code choice for rule 1, with rejected alternatives:
   - `docs/providers/groq.md` notes that a single request larger than the account's tokens-per-minute limit is rejected with 413 and spills to the next candidate without cooling Groq down.
   - `git grep -n -E "does not spill on 400, 413" -- docs README.md CONTEXT.md` matches only ADR 0006's original Decision text.
   - `make check` passes.
-- Status: todo
+- Status: done
 
 ## Manual verification
 
