@@ -151,6 +151,138 @@ func TestRun_RetriesOnlyNamedFailedTrial(t *testing.T) {
 	}
 }
 
+func rulesBenchmarkPromptSet() evaluation.PromptSet {
+	return rulesBenchmarkPromptSetWithCounts(30, 30, 30)
+}
+
+func rulesBenchmarkPromptSetWithCounts(simple, moderate, hard int) evaluation.PromptSet {
+	set := evaluation.PromptSet{Version: 1}
+	for difficulty, count := range map[string]int{"simple": simple, "moderate": moderate, "hard": hard} {
+		for index := range count {
+			set.Prompts = append(set.Prompts, evaluation.Prompt{
+				ID: fmt.Sprintf("%s-%02d", difficulty, index), Category: "general", Difficulty: difficulty, Prompt: "Evaluate this example.",
+			})
+		}
+	}
+	return set
+}
+
+func TestRun_RulesBenchmarkRunsPairedMockArmsAndRecordsAttestation(t *testing.T) {
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = fmt.Fprintln(w, `{"data":[{"id":"mock/echo"},{"id":"auto"}]}`)
+			return
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-spillway-provider", "mock")
+		_, _ = fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	})
+	baseline := httptest.NewServer(handler)
+	defer baseline.Close()
+	rules := httptest.NewServer(handler)
+	defer rules.Close()
+	const candidateDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	output := filepath.Join(t.TempDir(), "run")
+	err := evaluation.Run(t.Context(), baseline.Client(), rulesBenchmarkPromptSet(), evaluation.Options{
+		Endpoint: baseline.URL,
+		Arms: []evaluation.Arm{
+			{Name: "current-auto", Model: "auto", Endpoint: baseline.URL},
+			{Name: "rules", Model: "auto", Endpoint: rules.URL},
+		},
+		Repeats: 3, Seed: 42, Output: output, RulesBenchmark: true, BenchmarkPilot: true, CandidateSetSHA256: candidateDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 540 {
+		t.Fatalf("benchmark requests = %d, want 540", calls.Load())
+	}
+	// #nosec G304 -- output is a test-owned temporary directory.
+	data, err := os.ReadFile(filepath.Join(output, "metrics.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report evaluation.Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Trials) != 540 || report.Seed != 42 || report.CandidateSetSHA256 != candidateDigest || report.SettingsSHA256 == "" || report.BenchmarkMode != "pilot" || !report.RulesBenchmark {
+		t.Fatalf("benchmark metadata = trials:%d seed:%d candidate:%q settings:%q mode:%q rules:%t", len(report.Trials), report.Seed, report.CandidateSetSHA256, report.SettingsSHA256, report.BenchmarkMode, report.RulesBenchmark)
+	}
+}
+
+func TestRun_RulesBenchmarkBlocksUnapprovedLiveRunBeforeRequests(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	err := evaluation.Run(t.Context(), server.Client(), rulesBenchmarkPromptSet(), evaluation.Options{
+		Endpoint: server.URL,
+		Arms: []evaluation.Arm{
+			{Name: "current-auto", Model: "auto", Endpoint: server.URL},
+			{Name: "rules", Model: "auto", Endpoint: server.URL + "/rules"},
+		},
+		Repeats: 3, Seed: 42, Output: t.TempDir(), RulesBenchmark: true, BenchmarkLive: true,
+		CandidateSetSHA256: strings.Repeat("a", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "separate run, candidate-set, T19 recovery, and cost-ceiling approvals") {
+		t.Fatalf("unapproved live run error = %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("unapproved live run made %d requests", calls.Load())
+	}
+}
+
+func TestRun_RulesBenchmarkRequiresPilotReportBeforeLiveRequests(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	err := evaluation.Run(t.Context(), server.Client(), rulesBenchmarkPromptSet(), evaluation.Options{
+		Endpoint: server.URL,
+		Arms: []evaluation.Arm{
+			{Name: "current-auto", Model: "auto", Endpoint: server.URL},
+			{Name: "rules", Model: "auto", Endpoint: server.URL + "/rules"},
+		},
+		Repeats: 3, Seed: 42, Output: t.TempDir(), RulesBenchmark: true, BenchmarkLive: true,
+		LiveRunApproved: true, CandidateSetApproved: true, T19RecoveryApproved: true, MockPilotInspected: true,
+		MockPilotReport: filepath.Join(t.TempDir(), "missing.json"), CostCeilingUSD: 5, CandidateSetSHA256: strings.Repeat("a", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "open mock pilot report") {
+		t.Fatalf("live run without a pilot report error = %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("live run without a pilot report made %d requests", calls.Load())
+	}
+}
+
+func TestRun_RulesPilotRejectsNonMockEndpointBeforeChat(t *testing.T) {
+	var chatCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = fmt.Fprintln(w, `{"data":[{"id":"openai/example"}]}`)
+			return
+		}
+		chatCalls.Add(1)
+	}))
+	defer server.Close()
+	err := evaluation.Run(t.Context(), server.Client(), rulesBenchmarkPromptSetWithCounts(1, 1, 1), evaluation.Options{
+		Endpoint: server.URL,
+		Arms: []evaluation.Arm{
+			{Name: "current-auto", Model: "auto", Endpoint: server.URL},
+			{Name: "rules", Model: "auto", Endpoint: server.URL + "/rules"},
+		},
+		Repeats: 1, Seed: 42, Output: t.TempDir(), RulesBenchmark: true, BenchmarkPilot: true, CandidateSetSHA256: strings.Repeat("a", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "includes a non-mock model") {
+		t.Fatalf("non-mock pilot error = %v", err)
+	}
+	if chatCalls.Load() != 0 {
+		t.Fatalf("non-mock pilot made %d chat requests", chatCalls.Load())
+	}
+}
+
 func TestRun_ClassifiesIncompleteStreamAndRecordsFallbackRoute(t *testing.T) {
 	set, err := evaluation.LoadPromptSet(strings.NewReader(`{"version":1,"prompts":[{"id":"p1","category":"coding","difficulty":"simple","prompt":"stream test"}]}`))
 	if err != nil {

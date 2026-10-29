@@ -236,10 +236,10 @@
     const selection = candidateMatch
       ? Number(candidateMatch[1]) > 1
         ? status < 400
-          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered. Earlier candidates were skipped or failed.`
+          ? `Spillway spilled over to candidate ${candidateMatch[1]} of ${candidateMatch[2]} after earlier candidates were unavailable.`
           : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
         : status < 400
-          ? `Candidate ${candidateMatch[1]} of ${candidateMatch[2]} answered.`
+        ? `Spillway selected candidate ${candidateMatch[1]} of ${candidateMatch[2]}.`
           : `Spillway tried candidate ${candidateMatch[1]} of ${candidateMatch[2]}; the request failed.`
       : "";
     if (parts[0] === "direct") return status >= 400 ? "Spillway handled this as a direct-model request, but it failed before a successful response." : "Spillway sent the requested model directly to its provider.";

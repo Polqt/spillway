@@ -46,17 +46,27 @@ type Price struct {
 
 // Options configures one paired evaluation run.
 type Options struct {
-	Endpoint        string
-	APIKey          string
-	Arms            []Arm
-	Repeats         int
-	Seed            int64
-	Timeout         time.Duration
-	Prices          map[string]Price
-	Output          string
-	ReviewExportDir string
-	Resume          bool
-	RetryFailedIDs  []string
+	Endpoint             string
+	APIKey               string
+	Arms                 []Arm
+	Repeats              int
+	Seed                 int64
+	Timeout              time.Duration
+	Prices               map[string]Price
+	Output               string
+	ReviewExportDir      string
+	Resume               bool
+	RetryFailedIDs       []string
+	RulesBenchmark       bool
+	CandidateSetSHA256   string
+	BenchmarkPilot       bool
+	BenchmarkLive        bool
+	LiveRunApproved      bool
+	CandidateSetApproved bool
+	T19RecoveryApproved  bool
+	MockPilotInspected   bool
+	MockPilotReport      string
+	CostCeilingUSD       float64
 }
 
 // CostSource identifies how a trial's cost was determined.
@@ -153,6 +163,8 @@ type Trial struct {
 	StartedAtUTC      string     `json:"started_at_utc,omitempty"`
 	EndedAtUTC        string     `json:"ended_at_utc,omitempty"`
 	HTTPStatusClass   string     `json:"http_status_class,omitempty"`
+	RouteReason       string     `json:"route_reason,omitempty"`
+	Provider          string     `json:"provider,omitempty"`
 	SpilloverSelected bool       `json:"spillover_selected,omitempty"`
 	RatedForReview    bool       `json:"rated_for_review,omitempty"`
 }
@@ -200,16 +212,34 @@ type Metrics struct {
 
 // Report is the content-free machine-readable output of a run.
 type Report struct {
-	FormatVersion    int         `json:"format_version"`
-	PromptSetVersion int         `json:"prompt_set_version"`
-	PromptCount      int         `json:"prompt_count"`
-	Categories       []string    `json:"categories"`
-	CandidateSet     []Arm       `json:"candidate_set"`
-	SettingsSHA256   string      `json:"settings_sha256"`
-	Seed             int64       `json:"seed"`
-	Environment      Environment `json:"environment"`
-	Trials           []Trial     `json:"trials"`
-	Metrics          []Metrics   `json:"metrics"`
+	FormatVersion          int         `json:"format_version"`
+	PromptSetVersion       int         `json:"prompt_set_version"`
+	PromptCount            int         `json:"prompt_count"`
+	Categories             []string    `json:"categories"`
+	CandidateSet           []Arm       `json:"candidate_set"`
+	SettingsSHA256         string      `json:"settings_sha256"`
+	CandidateSetSHA256     string      `json:"candidate_set_attestation_sha256,omitempty"`
+	RulesBenchmark         bool        `json:"rules_benchmark,omitempty"`
+	BenchmarkMode          string      `json:"benchmark_mode,omitempty"`
+	LiveRunApproved        bool        `json:"live_run_approved,omitempty"`
+	CandidateSetApproved   bool        `json:"candidate_set_approved,omitempty"`
+	T19RecoveryApproved    bool        `json:"t19_recovery_approved,omitempty"`
+	MockPilotInspected     bool        `json:"mock_pilot_inspected,omitempty"`
+	ApprovedCostCeilingUSD float64     `json:"approved_cost_ceiling_usd,omitempty"`
+	Seed                   int64       `json:"seed"`
+	Environment            Environment `json:"environment"`
+	Trials                 []Trial     `json:"trials"`
+	Metrics                []Metrics   `json:"metrics"`
+}
+
+func benchmarkMode(options Options) string {
+	if options.BenchmarkPilot {
+		return "pilot"
+	}
+	if options.BenchmarkLive {
+		return "live"
+	}
+	return ""
 }
 
 // Environment records the settings needed to identify and repeat one run.
@@ -274,11 +304,16 @@ func Run(ctx context.Context, client *http.Client, set PromptSet, options Option
 		settingsArms[index] = settingsArm{Name: arm.Name, Model: arm.Model, Endpoint: endpoint}
 	}
 	settingsData, err := json.Marshal(struct {
-		Arms           []settingsArm    `json:"arms"`
-		Repeats        int              `json:"repeats"`
-		Prices         map[string]Price `json:"prices,omitempty"`
-		ReviewSchedule string           `json:"review_schedule"`
-	}{settingsArms, options.Repeats, options.Prices, "sha256-seed-prompt-arm-v1"})
+		Arms               []settingsArm    `json:"arms"`
+		Repeats            int              `json:"repeats"`
+		Prices             map[string]Price `json:"prices,omitempty"`
+		RulesBenchmark     bool             `json:"rules_benchmark,omitempty"`
+		CandidateSetSHA256 string           `json:"candidate_set_sha256,omitempty"`
+		BenchmarkPilot     bool             `json:"benchmark_pilot,omitempty"`
+		BenchmarkLive      bool             `json:"benchmark_live,omitempty"`
+		CostCeilingUSD     float64          `json:"approved_cost_ceiling_usd,omitempty"`
+		ReviewSchedule     string           `json:"review_schedule"`
+	}{settingsArms, options.Repeats, options.Prices, options.RulesBenchmark, options.CandidateSetSHA256, options.BenchmarkPilot, options.BenchmarkLive, options.CostCeilingUSD, "sha256-seed-prompt-arm-v1"})
 	if err != nil {
 		return errors.New("encode evaluation settings fingerprint")
 	}
@@ -297,6 +332,16 @@ func Run(ctx context.Context, client *http.Client, set PromptSet, options Option
 		endpoints[arm.Name] = endpoint
 		endpointHosts[arm.Name] = endpoint.Host
 	}
+	if options.BenchmarkPilot {
+		if err := verifyMockEndpoints(ctx, client, endpoints, options.APIKey); err != nil {
+			return err
+		}
+	}
+	if options.BenchmarkLive {
+		if err := verifyMockPilotReport(ctx, options.MockPilotReport, options.CandidateSetSHA256, options.Arms); err != nil {
+			return err
+		}
+	}
 	trials := make([]Trial, 0, len(set.Prompts)*options.Repeats*len(options.Arms))
 	answers := make([]Answer, 0, cap(trials))
 	assignments := make([]Assignment, 0, cap(trials))
@@ -309,13 +354,21 @@ func Run(ctx context.Context, client *http.Client, set PromptSet, options Option
 		promptIDs[prompt.ID] = fmt.Sprintf("prompt-%06d", i+1)
 	}
 	report := Report{
-		FormatVersion:    3,
-		PromptSetVersion: set.Version,
-		PromptCount:      len(set.Prompts),
-		Categories:       categories(set),
-		CandidateSet:     append([]Arm(nil), options.Arms...),
-		SettingsSHA256:   settingsFingerprint,
-		Seed:             seed,
+		FormatVersion:          3,
+		PromptSetVersion:       set.Version,
+		PromptCount:            len(set.Prompts),
+		Categories:             categories(set),
+		CandidateSet:           append([]Arm(nil), options.Arms...),
+		SettingsSHA256:         settingsFingerprint,
+		CandidateSetSHA256:     options.CandidateSetSHA256,
+		RulesBenchmark:         options.RulesBenchmark,
+		BenchmarkMode:          benchmarkMode(options),
+		LiveRunApproved:        options.LiveRunApproved,
+		CandidateSetApproved:   options.CandidateSetApproved,
+		T19RecoveryApproved:    options.T19RecoveryApproved,
+		MockPilotInspected:     options.MockPilotInspected,
+		ApprovedCostCeilingUSD: options.CostCeilingUSD,
+		Seed:                   seed,
 		Environment: Environment{
 			StartedAtUTC: startedAt.Format(time.RFC3339), GoVersion: runtime.Version(), OS: runtime.GOOS,
 			Architecture: runtime.GOARCH, EndpointHosts: endpointHosts, PromptSetSHA256: fmt.Sprintf("%x", setHash),
@@ -785,6 +838,7 @@ func runTrial(ctx context.Context, client *http.Client, endpoint *url.URL, apiKe
 	if err != nil {
 		return Trial{}, "", fmt.Errorf("send request: %w", err)
 	}
+	routeHeader := resp.Header.Get("x-spillway-route")
 	defer func() {
 		if err := resp.Body.Close(); err != nil && retErr == nil {
 			retErr = errors.New("close evaluation response body")
@@ -796,8 +850,10 @@ func runTrial(ctx context.Context, client *http.Client, endpoint *url.URL, apiKe
 		if routeIsExhausted(resp.Header.Get("x-spillway-route")) {
 			outcome = OutcomeExhausted
 		}
-		return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: outcome, HTTPStatusClass: statusClass(resp.StatusCode), SpilloverSelected: routeUsedFallback(resp.Header.Get("x-spillway-route")), LatencyMS: time.Since(started).Milliseconds()}, "", fmt.Errorf("endpoint returned HTTP %d", resp.StatusCode)
+		return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: outcome, HTTPStatusClass: statusClass(resp.StatusCode), SpilloverSelected: routeUsedFallback(routeHeader), LatencyMS: time.Since(started).Milliseconds()}, "", fmt.Errorf("endpoint returned HTTP %d", resp.StatusCode)
 	}
+	routeReason := safeRouteReason(routeHeader)
+	providerName := safeProviderName(resp.Header.Get("x-spillway-provider"))
 	reader := bufio.NewReader(io.LimitReader(resp.Body, maxResponseBytes+1))
 	var content strings.Builder
 	var promptTokens, completionTokens int64
@@ -848,13 +904,13 @@ func runTrial(ctx context.Context, client *http.Client, endpoint *url.URL, apiKe
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: OutcomeIncompleteStream, HTTPStatusClass: statusClass(resp.StatusCode), SpilloverSelected: routeUsedFallback(resp.Header.Get("x-spillway-route")), LatencyMS: time.Since(started).Milliseconds()}, "", requestFailure{outcome: OutcomeIncompleteStream, err: errors.New("endpoint ended the stream before [DONE]")}
+				return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: OutcomeIncompleteStream, HTTPStatusClass: statusClass(resp.StatusCode), RouteReason: routeReason, Provider: providerName, SpilloverSelected: routeUsedFallback(routeReason), LatencyMS: time.Since(started).Milliseconds()}, "", requestFailure{outcome: OutcomeIncompleteStream, err: errors.New("endpoint ended the stream before [DONE]")}
 			}
 			outcome := failureOutcome(ctx, readErr)
 			if outcome == OutcomeProviderError {
 				outcome = OutcomeTransportFailure
 			}
-			return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: outcome, HTTPStatusClass: statusClass(resp.StatusCode), SpilloverSelected: routeUsedFallback(resp.Header.Get("x-spillway-route")), LatencyMS: time.Since(started).Milliseconds()}, "", requestFailure{outcome: outcome, err: errors.New("read evaluation stream")}
+			return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, CostSource: CostUnknown, Outcome: outcome, HTTPStatusClass: statusClass(resp.StatusCode), RouteReason: routeReason, Provider: providerName, SpilloverSelected: routeUsedFallback(routeReason), LatencyMS: time.Since(started).Milliseconds()}, "", requestFailure{outcome: outcome, err: errors.New("read evaluation stream")}
 		}
 	}
 	latency := time.Since(started)
@@ -885,7 +941,7 @@ func runTrial(ctx context.Context, client *http.Client, endpoint *url.URL, apiKe
 	default:
 		cost, costSource = 0, "unknown"
 	}
-	return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, LatencyMS: latency.Milliseconds(), FirstTokenMS: firstToken.Milliseconds(), PromptTokens: promptTokens, CompletionTokens: completionTokens, CostUSD: cost, CostSource: costSource, Outcome: OutcomeSucceeded, HTTPStatusClass: statusClass(resp.StatusCode), SpilloverSelected: routeUsedFallback(resp.Header.Get("x-spillway-route"))}, content.String(), nil
+	return Trial{AnswerID: answerID, PromptID: prompt.ID, Category: prompt.Category, Difficulty: prompt.Difficulty, Arm: arm.Name, Repeat: repeat, LatencyMS: latency.Milliseconds(), FirstTokenMS: firstToken.Milliseconds(), PromptTokens: promptTokens, CompletionTokens: completionTokens, CostUSD: cost, CostSource: costSource, Outcome: OutcomeSucceeded, HTTPStatusClass: statusClass(resp.StatusCode), RouteReason: routeReason, Provider: providerName, SpilloverSelected: routeUsedFallback(routeReason)}, content.String(), nil
 }
 
 func statusClass(status int) string {
@@ -916,6 +972,86 @@ func routeUsedFallback(reason string) bool {
 		return false
 	}
 	return false
+}
+
+func safeRouteReason(reason string) string {
+	if len(reason) == 0 || len(reason) > 256 {
+		return ""
+	}
+	parts := strings.Split(reason, ";")
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+		part := parts[index]
+		switch {
+		case index == 0 && (part == "direct" || part == "auto" || part == "rules" || part == "classifier"):
+		case index == 0 && strings.HasPrefix(part, "tier ") && safeRouteLabel(strings.TrimPrefix(part, "tier ")):
+		case part == "default" || part == "classifier fallback" || part == "no capable model":
+		case strings.HasPrefix(part, "rule ") && positiveRouteNumber(strings.TrimPrefix(part, "rule ")):
+		case strings.HasPrefix(part, "difficulty ") && safeDifficulty(strings.TrimPrefix(part, "difficulty ")):
+		case strings.HasPrefix(part, "tier ") && safeRouteLabel(strings.TrimPrefix(part, "tier ")):
+		case strings.HasPrefix(part, "fallback ") && safeRouteLabel(strings.TrimPrefix(part, "fallback ")):
+		case strings.HasPrefix(part, "candidate ") && safeCandidatePosition(strings.TrimPrefix(part, "candidate ")):
+		case strings.HasPrefix(part, "exhausted (") && strings.HasSuffix(part, " eligible") && nonNegativeRouteNumber(strings.TrimSuffix(strings.TrimPrefix(part, "exhausted ("), " eligible")):
+		case strings.HasPrefix(part, "needs ") && safeNeedsList(strings.TrimPrefix(part, "needs ")):
+		default:
+			return ""
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func safeProviderName(value string) string {
+	if safeRouteLabel(value) {
+		return value
+	}
+	return ""
+}
+
+func safeRouteLabel(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z', char >= '0' && char <= '9', char == '-', char == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func safeDifficulty(value string) bool {
+	return value == "simple" || value == "moderate" || value == "hard"
+}
+
+func safeNeedsList(value string) bool {
+	for _, need := range strings.Split(value, ", ") {
+		if need != "tools" && need != "vision" && need != "json_mode" && need != "structured_outputs" {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func safeCandidatePosition(value string) bool {
+	positionText, totalText, ok := strings.Cut(value, "/")
+	if !ok {
+		return false
+	}
+	position, positionErr := strconv.Atoi(positionText)
+	total, totalErr := strconv.Atoi(totalText)
+	return positionErr == nil && totalErr == nil && position > 0 && total >= position
+}
+
+func positiveRouteNumber(value string) bool {
+	parsed, err := strconv.Atoi(value)
+	return err == nil && parsed > 0
+}
+
+func nonNegativeRouteNumber(value string) bool {
+	parsed, err := strconv.Atoi(value)
+	return err == nil && parsed >= 0
 }
 
 func routeIsExhausted(reason string) bool {

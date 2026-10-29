@@ -81,8 +81,8 @@ textarea { resize: vertical; }
 .next-card p { margin-bottom: 12px; }
 .client-examples { min-width: 0; }
 .client-tabs { display: flex; flex-wrap: wrap; gap: 3px; margin: 16px 0 0; border-bottom: 1px solid var(--line); }
-.client-tab { min-height: 40px; padding: 0 10px; border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font-size: 13px; }
-.client-tab[aria-selected="true"] { background: var(--green-soft); color: var(--green); }
+.client-tab { min-height: 40px; padding: 0 10px; border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font-size: 13px; transition: none; }
+.client-tab[aria-selected="true"] { background: var(--text); color: var(--surface); }
 .client-tab:focus-visible { position: relative; z-index: 1; }
 .client-examples pre { min-height: 140px; max-height: 260px; overflow: auto; }
 .client-examples #client-example-panel button { min-height: 40px; }

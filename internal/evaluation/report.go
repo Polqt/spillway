@@ -81,6 +81,7 @@ type GateReport struct {
 	Results          []GateResult     `json:"results"`
 	Cost             []ArmCostSummary `json:"cost"`
 	Agreement        RaterAgreement   `json:"inter_rater_agreement"`
+	RoutingFindings  []RoutingFinding `json:"routing_findings,omitempty"`
 }
 
 type promptCluster struct {
@@ -171,6 +172,10 @@ func BuildGateReport(ctx context.Context, run Report, assignments []Assignment, 
 	}
 	gates := gateNames()
 	result.Cost = summarizeCost(clusters, armNames, difficulties, categories)
+	result.RoutingFindings, err = routingFindings(ctx, run, clusters, options)
+	if err != nil {
+		return GateReport{}, err
+	}
 	for _, difficulty := range difficulties {
 		for _, category := range categories {
 			selected := selectClusters(clusters, difficulty, category)

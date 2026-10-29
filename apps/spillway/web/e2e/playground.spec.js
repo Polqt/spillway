@@ -104,7 +104,7 @@ for (const build of ["embedded", "fallback"]) test(`${build} request playground 
   await expect(page.getByLabel("Assistant response")).toContainText("mock response text");
   await expect(page.getByLabel("Routing explanation")).toContainText("mock/paid");
   await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 2/3");
-  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Candidate 2 of 3 answered. Earlier candidates were skipped or failed.");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway used the requested demo tier. Spillway spilled over to candidate 2 of 3 after earlier candidates were unavailable.");
   await expect(page.getByLabel("Routing explanation").getByRole("link", { name: "Cooldown" })).toHaveAttribute("href", "#cooldown-definition");
   await expect(page.getByLabel("Routing explanation")).toContainText("miss");
   expect(chatRequest.postDataJSON()).toEqual({
@@ -215,7 +215,7 @@ for (const build of ["embedded", "fallback"]) test(`${build} explains the final 
 
   await page.getByRole("button", { name: "Send request" }).click();
   await expect(page.getByLabel("Routing explanation")).toContainText("tier demo; candidate 3/3");
-  await expect(page.getByLabel("Routing explanation")).toContainText("Candidate 3 of 3 answered. Earlier candidates were skipped or failed.");
+  await expect(page.getByLabel("Routing explanation")).toContainText("Spillway spilled over to candidate 3 of 3 after earlier candidates were unavailable.");
 
   routeReason = "provider supplied unknown marker";
   await page.getByRole("button", { name: "Send request" }).click();

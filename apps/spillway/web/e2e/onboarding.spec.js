@@ -143,7 +143,7 @@ test("Go install fallback connects and stays usable without usage storage", asyn
   await expect(page.locator("#playground-route")).toContainText("A routing rule selected the hard difficulty in the free tier, then spilled over to the strong fallback tier.");
   fallbackRoute = "tier demo; candidate 2/3";
   await page.getByRole("button", { name: "Send request" }).click();
-  await expect(page.locator("#playground-route")).toContainText("Spillway used the requested demo tier. Candidate 2 of 3 answered. Earlier candidates were skipped or failed.");
+  await expect(page.locator("#playground-route")).toContainText("Spillway used the requested demo tier. Spillway spilled over to candidate 2 of 3 after earlier candidates were unavailable.");
   await expect(page.locator("#playground-route").getByRole("link", { name: "Circuit breaker" })).toHaveAttribute("href", "#circuit-breaker-definition");
   await expect(page.locator("#cooldown-definition + dd")).toContainText("A period during which a candidate is skipped after a rate limit or another temporary failure.");
   const dimensions = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, content: document.documentElement.scrollWidth }));

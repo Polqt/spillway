@@ -35,6 +35,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 	reviewExport := fs.String("review-export-dir", "", "explicit temporary directory for blinded prompt and response review material")
 	resume := fs.Bool("resume", false, "resume an existing run after verifying its corpus and settings fingerprint")
 	retryFailed := fs.String("retry-failed", "", "comma-separated exact failed trial IDs to retry; duplicate provider charges may occur")
+	rulesBenchmark := fs.Bool("rules-benchmark", false, "validate sample size, repeats, seed and arms for a rules benchmark")
+	candidateSetSHA256 := fs.String("candidate-set-sha256", "", "operator-attested shared candidate-set SHA-256 digest")
+	benchmarkPilot := fs.Bool("benchmark-pilot", false, "run a zero-spend mock rules benchmark pilot")
+	benchmarkLive := fs.Bool("benchmark-live", false, "run a paid rules benchmark after required approvals")
+	approveLiveRun := fs.Bool("approve-live-run", false, "record separate owner approval for this live benchmark run")
+	approveCandidateSet := fs.Bool("approve-candidate-set", false, "record separate owner approval for the candidate set")
+	approveT19Recovery := fs.Bool("approve-t19-recovery", false, "record resolution of T19 or approval of its documented recovery path")
+	mockPilotReport := fs.String("mock-pilot-report", "", "completed zero-spend mock pilot report required for a live benchmark")
+	mockPilotInspected := fs.Bool("mock-pilot-inspected", false, "confirm the zero-spend mock pilot was inspected")
+	costCeilingUSD := fs.Float64("cost-ceiling-usd", 0, "separately approved estimated-cost ceiling for the live run in USD")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -99,7 +109,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, lookupEnv
 			retryIDs[i] = strings.TrimSpace(retryIDs[i])
 		}
 	}
-	err = evaluation.Run(ctx, client, set, evaluation.Options{Endpoint: *endpoint, APIKey: key, Arms: arms, Repeats: *repeats, Seed: *seed, Timeout: *timeout, Prices: prices, Output: *output, ReviewExportDir: *reviewExport, Resume: *resume, RetryFailedIDs: retryIDs})
+	err = evaluation.Run(ctx, client, set, evaluation.Options{
+		Endpoint: *endpoint, APIKey: key, Arms: arms, Repeats: *repeats, Seed: *seed, Timeout: *timeout,
+		Prices: prices, Output: *output, ReviewExportDir: *reviewExport, Resume: *resume, RetryFailedIDs: retryIDs,
+		RulesBenchmark: *rulesBenchmark, CandidateSetSHA256: *candidateSetSHA256, BenchmarkPilot: *benchmarkPilot,
+		BenchmarkLive: *benchmarkLive, LiveRunApproved: *approveLiveRun, CandidateSetApproved: *approveCandidateSet,
+		T19RecoveryApproved: *approveT19Recovery, MockPilotReport: *mockPilotReport,
+		MockPilotInspected: *mockPilotInspected, CostCeilingUSD: *costCeilingUSD,
+	})
 	if err != nil {
 		report(stderr, "spillway: eval: %v\n", err)
 		return 1
