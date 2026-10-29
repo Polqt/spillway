@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/Polqt/spillway/internal/api"
+	"github.com/Polqt/spillway/internal/budget"
+	"github.com/Polqt/spillway/internal/config"
 	"github.com/Polqt/spillway/internal/providers"
 	"github.com/Polqt/spillway/internal/quota"
 	"github.com/Polqt/spillway/internal/redact"
+	"github.com/Polqt/spillway/internal/router"
+	"github.com/Polqt/spillway/internal/store"
 )
 
 const (
@@ -38,7 +43,8 @@ type sizeEnv struct {
 	second  *countingProvider
 }
 
-func newSizeEnv(t *testing.T, first, second *countingProvider) sizeEnv {
+// newSizeEnv serves tier demo of first then second; adjust may add options such as a budget gate or usage recorder.
+func newSizeEnv(t *testing.T, first, second *countingProvider, adjust ...func(*api.Options)) sizeEnv {
 	t.Helper()
 	set, err := providers.NewSet(first, second)
 	if err != nil {
@@ -49,14 +55,18 @@ func newSizeEnv(t *testing.T, first, second *countingProvider) sizeEnv {
 		t.Fatal(err)
 	}
 	logs := &syncBuffer{}
-	h, err := api.NewHandler(api.Options{
+	options := api.Options{
 		Providers: set,
 		LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
 		Logger:    slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Tiers:     map[string][]providers.ModelRef{"demo": {sizeFirst, sizeSecond}},
 		Tracker:   tracker,
 		Now:       time.Now,
-	})
+	}
+	for _, change := range adjust {
+		change(&options)
+	}
+	h, err := api.NewHandler(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +117,7 @@ func assertNoSizeLeak(t *testing.T, label, text string) {
 	}
 }
 
+// errorCode returns the OpenAI error as type/code.
 func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	var body struct {
@@ -200,6 +211,104 @@ func TestChat_TierRequestTooLargeMixedExhaustionStatus(t *testing.T) {
 	}
 }
 
+func TestChat_TierRequestTooLargeWithCoolingCandidateIsRateLimited(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newSizeEnv(t, sizeRejectingProvider("first"), servingProvider("second"))
+		e.tracker.Observe(sizeSecond, providers.RetryAfterError{After: 20 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
+		rec := e.post(t, "spillway/demo", false)
+		if rec.Code != http.StatusTooManyRequests || errorCode(t, rec) != "api_error/rate_limit_exceeded" || rec.Header().Get("Retry-After") != "20" {
+			t.Fatalf("response = %d Retry-After %q %s, want 429 Retry-After 20 from the cooling candidate", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+		}
+		if e.second.calls.Load() != 0 {
+			t.Fatal("cooling candidate was called")
+		}
+	})
+}
+
+func TestChat_TierRequestTooLargeWithBudgetBlockedCandidateIsBudgetExceeded(t *testing.T) {
+	now := time.Date(2026, time.June, 12, 8, 0, 0, 0, time.UTC)
+	cfg := config.Config{
+		Providers: map[string]config.Provider{"first": {Type: "ollama"}, "second": {}},
+		Pricing:   map[string]config.Price{"second/two": {InputMicroUSDPerMillion: 1_000_000, OutputMicroUSDPerMillion: 1_000_000}},
+	}
+	gate, err := budget.NewGate(t.Context(), budget.GateOptions{Limits: config.Budgets{DailyMicroUSD: 1}, Providers: cfg.Providers, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.Charge(now, 1)
+	var recorded store.Request
+	e := newSizeEnv(t, sizeRejectingProvider("first"), servingProvider("second"), func(o *api.Options) {
+		o.BudgetGate, o.CostEstimator, o.Now = gate, budget.NewPricer(cfg), func() time.Time { return now }
+		o.UsageRecorder = usageRecorderFunc(func(_ context.Context, request store.Request) error {
+			recorded = request
+			return nil
+		})
+	})
+	rec := e.post(t, "spillway/demo", false)
+	if rec.Code != http.StatusTooManyRequests || errorCode(t, rec) != "api_error/rate_limit_exceeded" || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("response = %d Retry-After %q %s, want 429 until the budget resets", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+	if recorded.ErrorKind != "budget_exceeded" || e.second.calls.Load() != 0 {
+		t.Fatalf("usage error_kind = %q, second calls %d; want budget_exceeded and no paid call", recorded.ErrorKind, e.second.calls.Load())
+	}
+}
+
+// A candidate cooled by a concurrent request still reports why it failed this one.
+func TestChat_TierRequestTooLargeReasonSurvivesConcurrentCooldown(t *testing.T) {
+	t.Parallel()
+	var tracker *quota.Tracker
+	first := &countingProvider{name: "first", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+		tracker.Observe(sizeFirst, providers.RetryAfterError{After: 30 * time.Second, Kind: providers.ErrRateLimited}, providers.RateLimit{})
+		return providers.ChatResponse{}, errSize
+	}}
+	e := newSizeEnv(t, first, sizeRejectingProvider("second"))
+	tracker = e.tracker
+	rec := e.post(t, "spillway/demo", false)
+	if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "invalid_request_error/context_length_exceeded" || !strings.Contains(rec.Body.String(), "first/one request too large") {
+		t.Fatalf("response = %d %s, want 400 context_length_exceeded naming first/one request too large", rec.Code, rec.Body)
+	}
+}
+
+func TestChat_RequestTooLargeUsageRecord(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		second        *countingProvider
+		wantStatus    int
+		wantErrorKind string
+		wantOutcomes  []string
+	}{
+		{"spill then success", servingProvider("second"), http.StatusOK, "", []string{"request_too_large", "success"}},
+		{"all too large", sizeRejectingProvider("second"), http.StatusBadRequest, "context_length_exceeded", []string{"request_too_large", "request_too_large"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var recorded store.Request
+			e := newSizeEnv(t, sizeRejectingProvider("first"), tt.second, func(o *api.Options) {
+				o.UsageRecorder = usageRecorderFunc(func(_ context.Context, request store.Request) error {
+					recorded = request
+					return nil
+				})
+			})
+			rec := e.post(t, "spillway/demo", false)
+			if rec.Code != tt.wantStatus || recorded.ErrorKind != tt.wantErrorKind {
+				t.Fatalf("status %d error_kind %q, want %d %q", rec.Code, recorded.ErrorKind, tt.wantStatus, tt.wantErrorKind)
+			}
+			outcomes := make([]string, 0, len(recorded.Attempts))
+			for _, attempt := range recorded.Attempts {
+				outcomes = append(outcomes, attempt.Outcome)
+			}
+			if !slices.Equal(outcomes, tt.wantOutcomes) {
+				t.Fatalf("attempt outcomes = %v, want %v", outcomes, tt.wantOutcomes)
+			}
+			if tt.wantStatus != http.StatusOK && rec.Header().Get("X-Spillway-Provider") != "" {
+				t.Fatalf("X-Spillway-Provider = %q on an exhausted tier", rec.Header().Get("X-Spillway-Provider"))
+			}
+		})
+	}
+}
+
 func TestStream_TierRequestTooLargeOnOpenSpills(t *testing.T) {
 	t.Parallel()
 	e := newSizeEnv(t, sizeRejectingProvider("first"), servingProvider("second"))
@@ -212,30 +321,42 @@ func TestStream_TierRequestTooLargeOnOpenSpills(t *testing.T) {
 	}
 }
 
-type sizeAfterChunkStream struct{ sent bool }
+// chunkThenErrorStream sends one "partial" chunk unless sent is already true, then fails with err.
+type chunkThenErrorStream struct {
+	sent   bool
+	err    error
+	closed atomic.Bool
+}
 
-func (s *sizeAfterChunkStream) Recv() (providers.ChatChunk, error) {
+func (s *chunkThenErrorStream) Recv() (providers.ChatChunk, error) {
 	if !s.sent {
 		s.sent = true
 		return providers.ChatChunk{Data: json.RawMessage(`{"id":"chatcmpl-part","object":"chat.completion.chunk","created":1760000000,"model":"one","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)}, nil
 	}
-	return providers.ChatChunk{}, errSize
+	return providers.ChatChunk{}, s.err
 }
 
-func (*sizeAfterChunkStream) Close() error { return nil }
+func (s *chunkThenErrorStream) Close() error {
+	s.closed.Store(true)
+	return nil
+}
 
 func TestStream_TierRequestTooLargeFirstEventSpillsButAfterChunkDoesNot(t *testing.T) {
 	t.Parallel()
+	rejected := &chunkThenErrorStream{sent: true, err: errSize}
 	firstEvent := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
-		return &sizeAfterChunkStream{sent: true}, nil
+		return rejected, nil
 	}}
 	e := newSizeEnv(t, firstEvent, servingProvider("second"))
 	if rec := e.post(t, "spillway/demo", true); rec.Code != http.StatusOK || rec.Header().Get("X-Spillway-Model") != "two" {
 		t.Fatalf("first-event size error = %d %v %s, want a spill to second", rec.Code, rec.Header(), rec.Body)
 	}
+	if !rejected.closed.Load() {
+		t.Fatal("the size-rejected first stream was not closed before spilling")
+	}
 
 	afterChunk := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
-		return &sizeAfterChunkStream{}, nil
+		return &chunkThenErrorStream{err: errSize}, nil
 	}}
 	e = newSizeEnv(t, afterChunk, servingProvider("second"))
 	rec := e.post(t, "spillway/demo", true)
@@ -246,6 +367,77 @@ func TestStream_TierRequestTooLargeFirstEventSpillsButAfterChunkDoesNot(t *testi
 	assertNoSizeLeak(t, "stream", body)
 }
 
+func TestStream_TierUpstreamErrorMidStreamAfterSizeSpill(t *testing.T) {
+	t.Parallel()
+	second := &countingProvider{name: "second", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		return &chunkThenErrorStream{err: providers.ErrUpstreamUnavailable}, nil
+	}}
+	e := newSizeEnv(t, sizeRejectingProvider("first"), second)
+	rec := e.post(t, "spillway/demo", true)
+	body := rec.Body.String()
+	if rec.Header().Get("X-Spillway-Route") != "tier demo; candidate 2/2" || !strings.Contains(body, "partial") || !strings.Contains(body, `"error"`) || strings.Contains(body, "[DONE]") {
+		t.Fatalf("stream = %v %s, want second's chunk then an error event without [DONE]", rec.Header(), body)
+	}
+	assertNoSizeLeak(t, "stream", body)
+}
+
+func TestStream_ClientDisconnectAfterSizeRejectionStopsSpilling(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	first := &countingProvider{name: "first", stream: func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+		cancel()
+		return nil, errSize
+	}}
+	var recorded store.Request
+	e := newSizeEnv(t, first, servingProvider("second"), func(o *api.Options) {
+		o.UsageRecorder = usageRecorderFunc(func(_ context.Context, request store.Request) error {
+			recorded = request
+			return nil
+		})
+	})
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"spillway/demo","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+keyCI)
+	e.handler.ServeHTTP(httptest.NewRecorder(), req)
+	if e.second.calls.Load() != 0 || recorded.ErrorKind != "client_disconnected" {
+		t.Fatalf("second calls %d, usage error_kind %q; want no spill and client_disconnected", e.second.calls.Load(), recorded.ErrorKind)
+	}
+}
+
+func TestChat_AutoRequestTooLargeSpillRoute(t *testing.T) {
+	t.Parallel()
+	planner, err := router.New(router.Options{Tiers: map[string][]providers.ModelRef{"demo": {sizeFirst, sizeSecond}}, Auto: []string{"demo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newSizeEnv(t, sizeRejectingProvider("first"), servingProvider("second"), func(o *api.Options) { o.Router = planner })
+	rec := e.post(t, "auto", false)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Spillway-Route") != "auto; tier demo; candidate 2/2" {
+		t.Fatalf("auto = %d %v %s, want auto; tier demo; candidate 2/2", rec.Code, rec.Header(), rec.Body)
+	}
+}
+
+func TestChat_AutoPlanSizeSkipPlusRuntimeRequestTooLarge(t *testing.T) {
+	t.Parallel()
+	planner, err := router.New(router.Options{
+		Tiers:        map[string][]providers.ModelRef{"demo": {sizeFirst, sizeSecond}},
+		Auto:         []string{"demo"},
+		Declarations: map[providers.ModelRef]router.Declaration{sizeFirst: {ContextWindow: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newSizeEnv(t, servingProvider("first"), sizeRejectingProvider("second"), func(o *api.Options) { o.Router = planner })
+	rec := e.post(t, "auto", false)
+	body := rec.Body.String()
+	if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "invalid_request_error/context_length_exceeded" || rec.Header().Get("X-Spillway-Route") != "auto; exhausted (1 eligible)" {
+		t.Fatalf("auto = %d %v %s, want 400 context_length_exceeded with one eligible candidate", rec.Code, rec.Header(), body)
+	}
+	if !strings.Contains(body, "context too small") || !strings.Contains(body, "second/two request too large") || e.first.calls.Load() != 0 {
+		t.Fatalf("body = %s, first calls %d; want the plan skip and the runtime rejection, first never called", body, e.first.calls.Load())
+	}
+}
+
 func TestStream_TierAllRequestTooLargeIsPlainHTTPError(t *testing.T) {
 	t.Parallel()
 	e := newSizeEnv(t, sizeRejectingProvider("first"), sizeRejectingProvider("second"))
@@ -254,5 +446,3 @@ func TestStream_TierAllRequestTooLargeIsPlainHTTPError(t *testing.T) {
 		t.Fatalf("response = %d %v %s, want a JSON 400 context_length_exceeded", rec.Code, rec.Header(), rec.Body)
 	}
 }
-
-var _ io.Closer = (*sizeAfterChunkStream)(nil)

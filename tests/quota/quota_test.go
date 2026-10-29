@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -413,6 +414,31 @@ func TestTracker_ConcurrentObserveAndAvailable(t *testing.T) {
 }
 
 // A request-size rejection is a property of the request, so it must leave every counter where it was (ADR 0034).
+func TestTracker_RequestTooLargeLeavesSnapshotAndSiblingUnchanged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ref := providers.ModelRef{Provider: "groq", Model: "one"}
+		sibling := providers.ModelRef{Provider: "groq-staging", Model: "one"}
+		tracker, err := quota.New(quota.Options{
+			Now:          time.Now,
+			Candidates:   []providers.ModelRef{ref, sibling},
+			ServiceTypes: map[string]string{"groq": "groq", "groq-staging": "groq"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := tracker.Snapshot()
+		for range 5 {
+			tracker.Observe(ref, fmt.Errorf("groq: upstream status 413: %w", providers.ErrRequestTooLarge), providers.RateLimit{Known: true, RemainingTokens: 0, ResetTokens: time.Minute})
+		}
+		if after := tracker.Snapshot(); !reflect.DeepEqual(before, after) {
+			t.Fatalf("snapshot changed after request-size rejections: before %+v after %+v", before, after)
+		}
+		if available, _, reason := tracker.Available(sibling); !available {
+			t.Fatalf("sibling instance unavailable (%s) after request-size rejections", reason)
+		}
+	})
+}
+
 func TestTracker_RequestTooLargeLeavesStateUnchanged(t *testing.T) {
 	tooLarge := fmt.Errorf("groq: upstream status 413: %w", providers.ErrRequestTooLarge)
 	tests := []struct {

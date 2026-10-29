@@ -15,7 +15,6 @@ const (
 	sizeGroqKey        = "sk-test-size-groq"
 	sizeProviderMarker = "org_test_marker"
 	sizePromptMarker   = "PROMPT-MARKER-7f3a"
-	groqTPM413Body     = `{"error":{"message":"Request too large for model openai/gpt-oss-120b in organization org_test_marker service tier on_demand on tokens per minute (TPM): Limit 8000, Requested 35112, please reduce your message size and try again.","type":"tokens","code":"rate_limit_exceeded"}}`
 )
 
 type sizeUpstream struct {
@@ -105,7 +104,7 @@ func assertNoSizeBinaryLeak(t *testing.T, label, text string) {
 // Replays the 2026-10-29 OpenCode run: Gemini 503, Groq's free-tier TPM 413, then Ollama serves (ADR 0034).
 func TestBinary_RequestTooLargeSpillsLikeLiveOpenCodeRun(t *testing.T) {
 	gemini := newSizeUpstream(t, sizeGeminiKey, sizeStatus(http.StatusServiceUnavailable, `{"error":{"message":"overloaded"}}`))
-	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, groqTPM413Body))
+	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, string(groqFixture(t, "providers/openaicompat/testdata/groq-413-tpm.json"))))
 	ollama := newSizeUpstream(t, "", ollamaStreamReply)
 	baseURL, output := startSizeBinary(t, gemini, groq, ollama)
 	body := fmt.Sprintf(`{"model":"spillway/free","stream":true,"messages":[{"role":"user","content":"%s %s"}]}`, sizePromptMarker, strings.Repeat("context ", 5000))
@@ -128,18 +127,23 @@ func TestBinary_RequestTooLargeSpillsLikeLiveOpenCodeRun(t *testing.T) {
 
 func TestBinary_RequestTooLargeEverywhereIsContextLengthExceeded(t *testing.T) {
 	gemini := newSizeUpstream(t, sizeGeminiKey, sizeStatus(http.StatusRequestEntityTooLarge, `{"error":{"message":"too large org_test_marker"}}`))
-	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, groqTPM413Body))
+	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, string(groqFixture(t, "providers/openaicompat/testdata/groq-413-tpm.json"))))
 	ollama := newSizeUpstream(t, "", sizeStatus(http.StatusBadRequest, `{"error":{"message":"too long org_test_marker","type":"invalid_request_error","code":"context_length_exceeded"}}`))
 	baseURL, output := startSizeBinary(t, gemini, groq, ollama)
-	tests := []struct{ path, body, want string }{
-		{"/v1/chat/completions", `{"model":"spillway/free","messages":[{"role":"user","content":"` + sizePromptMarker + `"}]}`, `"code":"context_length_exceeded"`},
-		{"/v1/responses", `{"model":"spillway/free","input":"` + sizePromptMarker + `"}`, `"code":"context_length_exceeded"`},
-		{"/v1/messages", `{"model":"spillway/free","max_tokens":16,"messages":[{"role":"user","content":"` + sizePromptMarker + `"}]}`, `"type":"invalid_request_error"`},
+	tests := []struct {
+		path, body string
+		want       []string
+	}{
+		{"/v1/chat/completions", `{"model":"spillway/free","messages":[{"role":"user","content":"` + sizePromptMarker + `"}]}`, []string{`"code":"context_length_exceeded"`}},
+		{"/v1/responses", `{"model":"spillway/free","input":"` + sizePromptMarker + `"}`, []string{`"code":"context_length_exceeded"`}},
+		{"/v1/messages", `{"model":"spillway/free","max_tokens":16,"messages":[{"role":"user","content":"` + sizePromptMarker + `"}]}`, []string{`"type":"error"`, `"type":"invalid_request_error"`}},
 	}
 	for _, tt := range tests {
 		reply := requestBinaryAPIDetails(t, baseURL, tt.path, tt.body, http.StatusBadRequest)
-		if !strings.Contains(reply.Body, tt.want) || !strings.Contains(reply.Body, "request too large") {
-			t.Errorf("%s = %s, want %s with per-candidate reasons", tt.path, reply.Body, tt.want)
+		for _, want := range append(tt.want, "request too large") {
+			if !strings.Contains(reply.Body, want) {
+				t.Errorf("%s = %s, want %s with per-candidate reasons", tt.path, reply.Body, want)
+			}
 		}
 		assertNoSizeBinaryLeak(t, tt.path, reply.Body)
 	}
@@ -148,7 +152,7 @@ func TestBinary_RequestTooLargeEverywhereIsContextLengthExceeded(t *testing.T) {
 
 func TestBinary_DirectRequestTooLargeMakesOneCall(t *testing.T) {
 	gemini := newSizeUpstream(t, sizeGeminiKey, sizeStatus(http.StatusOK, `{}`))
-	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, groqTPM413Body))
+	groq := newSizeUpstream(t, sizeGroqKey, sizeStatus(http.StatusRequestEntityTooLarge, string(groqFixture(t, "providers/openaicompat/testdata/groq-413-tpm.json"))))
 	ollama := newSizeUpstream(t, "", ollamaStreamReply)
 	baseURL, _ := startSizeBinary(t, gemini, groq, ollama)
 	reply := requestBinaryAPIDetails(t, baseURL, "/v1/chat/completions", `{"model":"groq/openai/gpt-oss-120b","messages":[{"role":"user","content":"hi"}]}`, http.StatusBadRequest)

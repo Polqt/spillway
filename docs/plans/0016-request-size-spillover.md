@@ -261,7 +261,7 @@ Status and code choice for rule 1, with rejected alternatives:
     - size rejection plus `RetryAfterError{After: 7s, Kind: ErrRateLimited}`: 429 `rate_limit_exceeded` with `Retry-After: 7`;
     - candidate already cooling for 20s (skipped at runtime) plus a size rejection: 429 with `Retry-After: 20`;
     - size rejection plus a budget-blocked paid candidate: 429 with usage `error_kind` `budget_exceeded`.
-  - `TestChat_AutoPlanSizeSkipPlusRuntimeRequestTooLarge`: `auto` with candidate A declared `context_window: 1` (plan skip `context too small`) and candidate B returning the size error; asserts 400 `context_length_exceeded`, route `auto; tier free; exhausted (1 eligible)`, and a message containing both `context too small` and `request too large`.
+  - `TestChat_AutoPlanSizeSkipPlusRuntimeRequestTooLarge`: `auto` with candidate A declared `context_window: 1` (plan skip `context too small`) and candidate B returning the size error; asserts 400 `context_length_exceeded`, route `auto; exhausted (1 eligible)`, the existing auto exhaustion grammar, and a message containing both `context too small` and `request too large`.
 - Acceptance: tests pass; existing `TestChat_TierCooldownExhaustionUsesEarliestRetryAfter` and `TestChat_TierExhaustionIsBoundedAndDoesNotLeakProviderText` pass unchanged; `make check` passes.
 - Status: done
 
@@ -339,9 +339,23 @@ Status and code choice for rule 1, with rejected alternatives:
   - `docs/troubleshooting.md` has a section `## context_length_exceeded` covering the plan-time case (declared `context_window`) and the runtime case (every candidate rejected for size), how to read the per-candidate reasons, and the fixes: shorten or compact the conversation, add a model with a larger limit, or declare `context_window` to skip a small model up front.
   - `docs/limitations.md` gains a bullet: only 413 and 400 `context_length_exceeded` are recognised; Gemini's and OpenRouter's over-long-input errors have no distinct code and do not spill.
   - `docs/providers/groq.md` notes that a single request larger than the account's tokens-per-minute limit is rejected with 413 and spills to the next candidate without cooling Groq down.
-  - `git grep -n -E "does not spill on 400, 413" -- docs README.md CONTEXT.md` matches only ADR 0006's original Decision text.
+  - `git grep -n -E "does not spill on 400, 413" -- docs README.md CONTEXT.md` matches only ADR 0006's original Decision text and ADR 0034's quotation of it.
   - `make check` passes.
 - Status: done
+
+## Implementation notes
+
+The 2026-10-29 review found planned tests missing; they were added or folded as follows.
+
+- T2: the hint row is the first row of `TestTracker_RequestTooLargeLeavesStateUnchanged`; the `Snapshot()` comparison and the sibling-instance row are `TestTracker_RequestTooLargeLeavesSnapshotAndSiblingUnchanged`.
+- T3: route strings are asserted by `TestChat_TierRequestTooLargeSpillsWithoutCooldown` (tier) and `TestChat_AutoRequestTooLargeSpillRoute` (auto); rules mode builds its route through the same `candidateRoute`, so it has no separate row.
+  The log assertions of `TestChat_RequestTooLargeAttemptIsLoggedWithoutContent` live in `TestChat_TierRequestTooLargeSpillsWithoutCooldown`, and the usage test is `TestChat_RequestTooLargeUsageRecord` in `tests/api/request_size_test.go`, which also checks `error_kind` `context_length_exceeded` and no `X-Spillway-Provider` on exhaustion.
+- T4: the cooling and budget rows are `TestChat_TierRequestTooLargeWithCoolingCandidateIsRateLimited` and `TestChat_TierRequestTooLargeWithBudgetBlockedCandidateIsBudgetExceeded`.
+  `TestChat_TierRequestTooLargeReasonSurvivesConcurrentCooldown` locks a fix found in review: a size-rejected candidate cooled by a concurrent request still reports `request too large`.
+- T5: first-event and after-chunk cases share `TestStream_TierRequestTooLargeFirstEventSpillsButAfterChunkDoesNot`, which also checks the rejected stream is closed; the disconnect test is `TestStream_ClientDisconnectAfterSizeRejectionStopsSpilling`.
+- T6: partial writes are covered by `TestClient_ChatStreamFirstEventRequestTooLarge`, which splits each event across three flushes.
+  The Gemini test is `TestProvider_RequestSizeErrors` with fixtures `request-too-large.json` and `invalid-argument-token-count.json`; it found that Gemini's `RESOURCE_EXHAUSTED` classifier ran before the status rule, so the 413 check now runs first.
+  Upstream bodies live in `tests/providers/openaicompat/testdata/groq-413-tpm.json`, `groq-413-documented.json` and `context-length-400.json`, shared by the adapter, API and binary tests.
 
 ## Manual verification
 

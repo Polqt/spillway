@@ -304,22 +304,16 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 			rec.usage.ErrorKind = "client_disconnected"
 			return
 		}
+		failure := candidateFailure{ref: ref, reason: candidateReason(err), tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
 		if h.tracker != nil {
 			h.tracker.Observe(ref, err, providers.RateLimit{})
-			if available, until, reason := h.tracker.Available(ref); !available {
-				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until, tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
-				failures = append(failures, failure)
-				eligibleFailures = append(eligibleFailures, failure)
-			} else {
-				failure := candidateFailure{ref: ref, reason: candidateReason(err), tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
-				failures = append(failures, failure)
-				eligibleFailures = append(eligibleFailures, failure)
+			// A size rejection explains this request even when a concurrent request cooled the candidate.
+			if available, until, reason := h.tracker.Available(ref); !available && !failure.tooLarge {
+				failure.reason, failure.until = cooldownReason(reason, until, h.now()), until
 			}
-		} else {
-			failure := candidateFailure{ref: ref, reason: candidateReason(err), tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
-			failures = append(failures, failure)
-			eligibleFailures = append(eligibleFailures, failure)
 		}
+		failures = append(failures, failure)
+		eligibleFailures = append(eligibleFailures, failure)
 		h.logCandidateFailure(r, candidateTier, ref, candidateErrorKind(err))
 		if !isSpillable(err) {
 			rec.setError(err)
@@ -343,7 +337,8 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		writeError(w, http.StatusBadRequest, message, typeInvalidRequest, "context_length_exceeded")
 		return
 	}
-	if retryAfter, allCooling := earliestCooldown(retryable, len(candidates)-(len(eligibleFailures)-len(retryable)), h.now()); allCooling {
+	sizeRejected := len(eligibleFailures) - len(retryable)
+	if retryAfter, allCooling := earliestCooldown(retryable, len(candidates)-sizeRejected, h.now()); allCooling {
 		if allBudgetBlocked(retryable) {
 			rec.usage.ErrorKind = "budget_exceeded"
 		} else {

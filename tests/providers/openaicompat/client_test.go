@@ -975,17 +975,16 @@ func TestClient_DoesNotFollowRedirect(t *testing.T) {
 // Request-size rejections are classified by status and structured code only, never by message text (ADR 0034).
 func TestClient_MapsRequestSizeRejections(t *testing.T) {
 	t.Parallel()
-	groqTPM := `{"error":{"message":"Request too large for model openai/gpt-oss-120b in organization org_test_marker on tokens per minute (TPM): Limit 8000, Requested 35112 ` + providerKey + `","type":"tokens","code":"rate_limit_exceeded"}}`
 	tests := []struct {
 		name   string
 		status int
 		body   string
 		want   error
 	}{
-		{"Groq TPM 413 with a rate-limit body", http.StatusRequestEntityTooLarge, groqTPM, providers.ErrRequestTooLarge},
-		{"documented 413", http.StatusRequestEntityTooLarge, `{"error":{"message":"Request body too large","type":"invalid_request_error","code":413}}`, providers.ErrRequestTooLarge},
+		{"Groq TPM 413 with a rate-limit body", http.StatusRequestEntityTooLarge, string(fixture(t, "groq-413-tpm.json")), providers.ErrRequestTooLarge},
+		{"documented 413", http.StatusRequestEntityTooLarge, string(fixture(t, "groq-413-documented.json")), providers.ErrRequestTooLarge},
 		{"empty 413", http.StatusRequestEntityTooLarge, ``, providers.ErrRequestTooLarge},
-		{"400 context_length_exceeded", http.StatusBadRequest, `{"error":{"message":"Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`, providers.ErrRequestTooLarge},
+		{"400 context_length_exceeded", http.StatusBadRequest, string(fixture(t, "context-length-400.json")), providers.ErrRequestTooLarge},
 		{"400 that only says so in text", http.StatusBadRequest, `{"error":{"message":"maximum context length is 8192 tokens","type":"invalid_request_error","code":"invalid_request"}}`, providers.ErrBadRequest},
 		{"OpenRouter numeric code 400", http.StatusBadRequest, `{"error":{"code":400,"message":"This endpoint's maximum context length is 131072 tokens."}}`, providers.ErrBadRequest},
 		{"422", http.StatusUnprocessableEntity, `{"error":{"message":"unprocessable","code":"context_length_exceeded"}}`, providers.ErrBadRequest},

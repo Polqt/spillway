@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1547,21 +1549,26 @@ func TestNewServer_Timeouts(t *testing.T) {
 
 func TestChat_TierSpillsOnUpstreamRequestTooLarge(t *testing.T) {
 	t.Parallel()
+	// Replays the adapter's recorded upstream rejections through the API.
 	bodies := map[string]struct {
-		status int
-		body   string
+		status  int
+		fixture string
 	}{
-		"Groq TPM 413":                {http.StatusRequestEntityTooLarge, `{"error":{"message":"Request too large in organization org_test_marker","type":"tokens","code":"rate_limit_exceeded"}}`},
-		"400 context_length_exceeded": {http.StatusBadRequest, `{"error":{"message":"too long","type":"invalid_request_error","code":"context_length_exceeded"}}`},
+		"Groq TPM 413":                {http.StatusRequestEntityTooLarge, "groq-413-tpm.json"},
+		"400 context_length_exceeded": {http.StatusBadRequest, "context-length-400.json"},
 	}
 	for name, upstreamReply := range bodies {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
+			body, err := os.ReadFile(filepath.Join("..", "providers", "openaicompat", "testdata", upstreamReply.fixture)) // #nosec G304 -- fixed fixture names.
+			if err != nil {
+				t.Fatal(err)
+			}
 			var upstreamCalls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				upstreamCalls.Add(1)
 				w.WriteHeader(upstreamReply.status)
-				_, _ = io.WriteString(w, upstreamReply.body)
+				_, _ = w.Write(body)
 			}))
 			defer upstream.Close()
 			first, err := openaicompat.New(openaicompat.Options{Name: "first", BaseURL: upstream.URL, APIKey: redact.NewSecret(keyCursor), Timeout: time.Second})
