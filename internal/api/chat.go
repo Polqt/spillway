@@ -186,6 +186,8 @@ type candidateFailure struct {
 	ref    providers.ModelRef
 	reason string
 	until  time.Time
+	// tooLarge marks a request-size rejection: this candidate can never serve this request, whatever its cooldown.
+	tooLarge bool
 }
 
 func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan router.Plan, body chatBody, cacheBypass bool) {
@@ -305,16 +307,16 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 		if h.tracker != nil {
 			h.tracker.Observe(ref, err, providers.RateLimit{})
 			if available, until, reason := h.tracker.Available(ref); !available {
-				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until}
+				failure := candidateFailure{ref: ref, reason: cooldownReason(reason, until, h.now()), until: until, tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
 				failures = append(failures, failure)
 				eligibleFailures = append(eligibleFailures, failure)
 			} else {
-				failure := candidateFailure{ref: ref, reason: candidateReason(err)}
+				failure := candidateFailure{ref: ref, reason: candidateReason(err), tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
 				failures = append(failures, failure)
 				eligibleFailures = append(eligibleFailures, failure)
 			}
 		} else {
-			failure := candidateFailure{ref: ref, reason: candidateReason(err)}
+			failure := candidateFailure{ref: ref, reason: candidateReason(err), tooLarge: errors.Is(err, providers.ErrRequestTooLarge)}
 			failures = append(failures, failure)
 			eligibleFailures = append(eligibleFailures, failure)
 		}
@@ -329,8 +331,20 @@ func (h *chatHandler) servePlan(w http.ResponseWriter, r *http.Request, plan rou
 	setRoute(w, r, exhaustedRoute(plan, lastTier, len(candidates)))
 	message := exhaustionMessage(tier, failures)
 	rec.err = errors.New("no candidate available")
-	if retryAfter, allCooling := earliestCooldown(eligibleFailures, len(candidates), h.now()); allCooling {
-		if allBudgetBlocked(eligibleFailures) {
+	// A size-rejected candidate cannot serve this request at any time, so it never decides between 429 and 503 (ADR 0034).
+	retryable := make([]candidateFailure, 0, len(eligibleFailures))
+	for _, failure := range eligibleFailures {
+		if !failure.tooLarge {
+			retryable = append(retryable, failure)
+		}
+	}
+	if len(eligibleFailures) > 0 && len(retryable) == 0 {
+		rec.usage.ErrorKind = "context_length_exceeded"
+		writeError(w, http.StatusBadRequest, message, typeInvalidRequest, "context_length_exceeded")
+		return
+	}
+	if retryAfter, allCooling := earliestCooldown(retryable, len(candidates)-(len(eligibleFailures)-len(retryable)), h.now()); allCooling {
+		if allBudgetBlocked(retryable) {
 			rec.usage.ErrorKind = "budget_exceeded"
 		} else {
 			rec.usage.ErrorKind = "rate_limit_exceeded"
@@ -627,6 +641,8 @@ func candidateErrorKind(err error) string {
 		return "model_not_found"
 	case errors.Is(err, providers.ErrUpstreamUnavailable):
 		return "upstream_unavailable"
+	case errors.Is(err, providers.ErrRequestTooLarge):
+		return "request_too_large"
 	case errors.Is(err, providers.ErrBadRequest):
 		return "bad_request"
 	default:
@@ -646,6 +662,8 @@ func candidateReason(err error) string {
 		return "model not found"
 	case "upstream_unavailable":
 		return "unavailable"
+	case "request_too_large":
+		return "request too large"
 	case "bad_request":
 		return "bad request"
 	default:
@@ -656,7 +674,7 @@ func candidateReason(err error) string {
 func isSpillable(err error) bool {
 	return errors.Is(err, providers.ErrRateLimited) || errors.Is(err, providers.ErrPaymentRequired) ||
 		errors.Is(err, providers.ErrUnauthorized) || errors.Is(err, providers.ErrModelNotFound) ||
-		errors.Is(err, providers.ErrUpstreamUnavailable)
+		errors.Is(err, providers.ErrUpstreamUnavailable) || errors.Is(err, providers.ErrRequestTooLarge)
 }
 
 func exhaustionMessage(tier string, failures []candidateFailure) string {
@@ -789,6 +807,12 @@ func providerError(ref providers.ModelRef, err error) (int, errorDetail) {
 		return http.StatusTooManyRequests, errorDetail{Message: fmt.Sprintf("Provider %q is rate limited; retry later or use another model.", ref.Provider), Type: typeAPI, Code: "rate_limit_exceeded"}
 	case errors.Is(err, providers.ErrUnauthorized):
 		return http.StatusBadGateway, errorDetail{Message: fmt.Sprintf("Provider %q rejected its configured key.", ref.Provider), Type: typeAPI, Code: "upstream_unauthorized"}
+	case errors.Is(err, providers.ErrRequestTooLarge):
+		return http.StatusBadRequest, errorDetail{
+			Message: fmt.Sprintf("Provider %q rejected the request as too large for its context window or token limit; shorten the request or use a model with a larger limit.", ref.Provider),
+			Type:    typeInvalidRequest,
+			Code:    "context_length_exceeded",
+		}
 	case errors.Is(err, providers.ErrBadRequest):
 		return http.StatusBadRequest, errorDetail{Message: fmt.Sprintf("Provider %q rejected the request.", ref.Provider), Type: typeInvalidRequest, Code: "provider_bad_request"}
 	default:
