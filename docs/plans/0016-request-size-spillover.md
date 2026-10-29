@@ -384,6 +384,13 @@ post() { curl -s -D - -o /tmp/body.json -H "Authorization: Bearer $KEY" -H 'Cont
    Record the route header, the attempt lines, whether Ollama's answer shows signs of a truncated prompt (open question 5), and whether OpenCode reacts to a `context_length_exceeded` answer by compacting (open question 7).
 5. Copy the Groq 413 message from the server log of step 1, replace the organization ID with `org_test_marker`, and compare it with `tests/providers/openaicompat/testdata/groq-413-tpm.json` (open question 4).
 
+Live result, 2026-10-29, free-tier Groq `openai/gpt-oss-120b` and Gemini `gemini-3.5-flash` with a ~36k-token prompt:
+- Step 1: 200 from `gemini-3.5-flash`, route `tier sizecheck; candidate 2/2`, one `error_kind=request_too_large` line for Groq.
+- Step 2: 400 `context_length_exceeded`, route `tier groqonly; exhausted (1 eligible)`, message `groq/openai/gpt-oss-120b request too large` without Groq text; the small request right after got 200 from Groq.
+- Step 3: 400 `context_length_exceeded`, route `direct`, one Groq attempt.
+- Step 5: Groq's 413 message reads "Request too large for model `openai/gpt-oss-120b` in organization `org_...` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 36092, please reduce ...", matching the reconstructed fixture's wording; classification uses only the status, so the body's `type` and `code` were not needed.
+- Step 4 (OpenCode re-run) is still open.
+
 ## Open questions
 
 1. Does ADR 0015 allow this in a minor release?
