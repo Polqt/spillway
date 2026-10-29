@@ -56,6 +56,15 @@ func anthropicRequest(raw []byte) ([]byte, bool, error) {
 		if err := decodeClientJSON(rawMessage, &message); err != nil {
 			return nil, false, fmt.Errorf("message is invalid: %w", err)
 		}
+		if message.Role == "system" {
+			// Claude Code sends mid-conversation system messages; Chat Completions keeps them in place.
+			content, err := anthropicContent(message.Content)
+			if err != nil {
+				return nil, false, err
+			}
+			messages = append(messages, map[string]any{"role": "system", "content": content})
+			continue
+		}
 		if message.Role != "user" && message.Role != "assistant" {
 			return nil, false, fmt.Errorf("message role %q is not supported", message.Role)
 		}
@@ -254,6 +263,8 @@ func anthropicTools(raw []json.RawMessage) ([]map[string]any, error) {
 			Description string          `json:"description"`
 			Schema      json.RawMessage `json:"input_schema"`
 			Cache       json.RawMessage `json:"cache_control"`
+			// Chat Completions has no deferred tool loading, so deferred tools are sent up front.
+			DeferLoading bool `json:"defer_loading"`
 		}
 		if err := decodeClientJSON(rawTool, &tool); err != nil {
 			return nil, errors.New("tool requires a name and input_schema")

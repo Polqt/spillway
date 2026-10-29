@@ -833,6 +833,39 @@ func TestAnthropicMessages_AcceptsClaudeCodeFirstTurn(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessages_AcceptsClaudeCodeSystemMessagesAndDeferredTools(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"system":[{"type":"text","text":"Top system."}],"messages":[{"role":"user","content":"hello"},{"role":"system","content":[{"type":"text","text":"Mid system."}]}],"tools":[{"name":"Read","description":"Read a file","input_schema":{"type":"object"}},{"name":"Later","description":"Loaded on demand","input_schema":{"type":"object","properties":{}},"defer_loading":true}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var upstream struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Function map[string]json.RawMessage `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(got.RawBody, &upstream); err != nil {
+		t.Fatal("decode upstream body:", err)
+	}
+	if len(upstream.Messages) != 3 || upstream.Messages[2].Role != "system" || upstream.Messages[2].Content != "Mid system." {
+		t.Fatalf("upstream messages = %#v, want the mid-conversation system message kept in order", upstream.Messages)
+	}
+	if len(upstream.Tools) != 2 || strings.Contains(string(got.RawBody), "defer_loading") {
+		t.Fatalf("upstream tools = %s, want both tools without defer_loading", got.RawBody)
+	}
+}
+
 func TestAnthropicMessages_AcceptsHintFields(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, fields string }{
