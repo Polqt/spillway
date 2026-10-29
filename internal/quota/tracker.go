@@ -208,8 +208,8 @@ func (t *Tracker) Snapshot() []CandidateSnapshot {
 	return result
 }
 
-// Observe records an outcome for a configured candidate. Cancellation and
-// request errors leave the cooldown state unchanged.
+// Observe records an outcome for a configured candidate. Cancellation, request
+// errors and request-size rejections leave the cooldown state unchanged.
 func (t *Tracker) Observe(ref providers.ModelRef, err error, hint providers.RateLimit) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -185,5 +186,15 @@ func assertJSONEqual(t *testing.T, got, want []byte) {
 	wb, _ := json.Marshal(w)
 	if string(gb) != string(wb) {
 		t.Errorf("JSON mismatch\n got: %s\nwant: %s", gb, wb)
+	}
+}
+
+func TestErrors_RequestTooLargeIsDistinctFromBadRequest(t *testing.T) {
+	t.Parallel()
+	if errors.Is(providers.ErrRequestTooLarge, providers.ErrBadRequest) || errors.Is(providers.ErrBadRequest, providers.ErrRequestTooLarge) {
+		t.Fatal("ErrRequestTooLarge and ErrBadRequest must not match each other")
+	}
+	if wrapped := fmt.Errorf("groq: upstream status 413: x: %w", providers.ErrRequestTooLarge); !errors.Is(wrapped, providers.ErrRequestTooLarge) {
+		t.Fatal("wrapped request-size error does not match ErrRequestTooLarge")
 	}
 }

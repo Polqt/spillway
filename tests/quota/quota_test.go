@@ -411,3 +411,57 @@ func TestTracker_ConcurrentObserveAndAvailable(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A request-size rejection is a property of the request, so it must leave every counter where it was (ADR 0034).
+func TestTracker_RequestTooLargeLeavesStateUnchanged(t *testing.T) {
+	tooLarge := fmt.Errorf("groq: upstream status 413: %w", providers.ErrRequestTooLarge)
+	tests := []struct {
+		name  string
+		check func(t *testing.T, tracker *quota.Tracker, ref providers.ModelRef)
+	}{
+		{"fresh candidate stays available", func(t *testing.T, tracker *quota.Tracker, ref providers.ModelRef) {
+			for range 5 {
+				tracker.Observe(ref, tooLarge, providers.RateLimit{Known: true, RemainingTokens: 0, ResetTokens: time.Minute})
+			}
+			if available, _, reason := tracker.Available(ref); !available {
+				t.Fatalf("candidate unavailable (%s) after request-size rejections", reason)
+			}
+		}},
+		{"breaker failure count is neither raised nor reset", func(t *testing.T, tracker *quota.Tracker, ref providers.ModelRef) {
+			for range 2 {
+				tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+			}
+			for range 5 {
+				tracker.Observe(ref, tooLarge, providers.RateLimit{})
+			}
+			if available, _, _ := tracker.Available(ref); !available {
+				t.Fatal("request-size rejections opened the breaker")
+			}
+			tracker.Observe(ref, providers.ErrUpstreamUnavailable, providers.RateLimit{})
+			assertCircuit(t, tracker, ref, 30*time.Second)
+		}},
+		{"rate-limit backoff is not reset", func(t *testing.T, tracker *quota.Tracker, ref providers.ModelRef) {
+			tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+			<-time.After(15 * time.Second)
+			for range 5 {
+				tracker.Observe(ref, tooLarge, providers.RateLimit{})
+			}
+			tracker.Observe(ref, providers.ErrRateLimited, providers.RateLimit{})
+			if _, until, _ := tracker.Available(ref); !until.Equal(time.Now().Add(30 * time.Second)) {
+				t.Fatalf("second rate-limit cooldown ends at %v, want 30s as if no success happened", until.Sub(time.Now()))
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ref := providers.ModelRef{Provider: "groq", Model: "one"}
+				tracker, err := quota.New(quota.Options{Now: time.Now, Candidates: []providers.ModelRef{ref}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tt.check(t, tracker, ref)
+			})
+		})
+	}
+}

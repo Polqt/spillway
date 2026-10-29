@@ -59,6 +59,10 @@ var (
 	ErrUnauthorized = errors.New("provider unauthorized")
 	// ErrBadRequest means the provider rejected the request as invalid.
 	ErrBadRequest = errors.New("provider bad request")
+	// ErrRequestTooLarge means the provider rejected this request as larger than
+	// the model's context window or a per-request token limit; another provider
+	// may accept the same request.
+	ErrRequestTooLarge = errors.New("provider request too large")
 )
 
 // RetryAfterError carries a provider's retry delay while preserving its error kind.
