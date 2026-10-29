@@ -240,7 +240,7 @@ Headers such as `anthropic-version` and `anthropic-beta`, and the `?beta=true` q
 | Gemini, signed -> same Gemini instance | The real signature on the original call ID |
 | Gemini, signed -> Groq, OpenRouter or Ollama | The original call ID, no `extra_content` |
 | Groq or other, unsigned -> Gemini | The placeholder on the first call of each unsigned assistant message |
-| Gemini model A, signed -> Gemini model B in the same tier | The real signature; acceptance across models is unverified (open question 6) |
+| Gemini model A, signed -> Gemini model B in the same tier | The real signature; accepted across four Gemini 3 models in the 2026-10-29 live run (open question 6) |
 | Session recorded before this change -> Gemini | The placeholder |
 | `/v1/chat/completions` client that echoes `extra_content` -> Gemini | The client's signature, verbatim |
 | `/v1/chat/completions` client that drops `extra_content` -> Gemini | The placeholder |
@@ -508,6 +508,7 @@ The options are kept below for the record.
 6. Is a Gemini 3 signature valid on a different Gemini model in the same tier?
    Options: (a) forward the real signature regardless and accept a possible 400; (b) add the originating model to the envelope and substitute the placeholder when the target model differs.
    Recommended default: (a) now, test it manually by replaying a `gemini-3.5-flash` history to another Gemini 3 model, and move to (b) in a follow-up only if Google rejects it.
+   Result, 2026-10-29: Google accepted the replay on `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` and `gemini-3.6-flash`, so (a) stands.
 
 7. Should translated streams defer tool-call events until the call completes?
    Options: (a) defer until `finish_reason` or `[DONE]`; (b) emit on the first delta and read the signature only from that delta.
@@ -520,3 +521,4 @@ The options are kept below for the record.
 9. Should Spillway serve `POST /v1/messages/count_tokens` for Claude Code?
    Options: (a) leave it unrouted (404) as today; (b) return Spillway's conservative token estimate in Anthropic's shape.
    Recommended default: (a), unless step 10 shows that Claude Code degrades without it.
+   Result, 2026-10-29: Claude Code 2.1.312 sent no `count_tokens` request across 17 Messages requests in the live runs, and Codex 0.165.0 sent no `custom_tool_call` items, so (a) stands.

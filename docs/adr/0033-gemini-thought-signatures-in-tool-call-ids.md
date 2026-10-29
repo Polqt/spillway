@@ -59,8 +59,11 @@ Spillway keeps no per-conversation state, and Responses `store` is ignored by de
 - A client-supplied signed ID is untrusted input; it is sent only to the Gemini instance chosen for the request, and a forged one only reaches the user's own key, where Gemini validates it.
 - In translated streams, tool-call arguments arrive at the end of the stream, and an upstream failure mid-stream never delivers a partial tool call.
 - Routing is unchanged: signatures never influence candidate order, spill conditions, cooldowns or route membership, and Gemini's own signature 400 still does not spill (ADR 0006).
-- A real signature is forwarded even when the next candidate is a different Gemini model; whether Google accepts it there is unverified.
-- Whether Gemini models older than Gemini 3 accept the placeholder still has to be confirmed against the live API.
+- A real signature is forwarded even when the next candidate is a different Gemini model.
+  On 2026-10-29 a `gemini-3.5-flash` signature was accepted on `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` and `gemini-3.6-flash`.
+- Live `gemini-3.5-flash` signatures measured 360 and 436 bytes on 2026-10-29, far below the 64 KiB bound, giving signed IDs of about 550 characters that Codex and Claude Code replayed unchanged.
+- The placeholder is accepted by `gemini-3.5-flash`.
+  Whether Gemini 2.5 models accept it is unconfirmed: on 2026-10-29 Google answered 404 for `gemini-2.5-flash` and `gemini-2.5-flash-lite` on a free-tier key, although its model list still named them.
 
 ## Rejected alternatives
 
