@@ -34,7 +34,8 @@ The experimental command validates the existing config, previews the provider en
 Use `provider key set` to store a provider key locally, or configure the named environment variable in your shell.
 Use `--dry-run` to inspect the preview without writing.
 An instance addition does not change `auto` or any existing virtual route.
-Use an explicit model reference such as `gemini-research/gemini-3.5-flash` to select it.
+Direct references are limited to models listed in some tier, so give the instance's model its own tier, such as `research: {models: [gemini-research/gemini-3.5-flash]}`, then select it with the explicit reference `gemini-research/gemini-3.5-flash`.
+`--tier` adds the suggested model only to an existing tier, and a tier that already holds another instance of the same service is rejected.
 Virtual routes reject two distinct instances of one provider service, and no failure automatically rotates to another instance of that service.
 The gateway reads configuration at startup; restart it after a config change.
 
@@ -87,6 +88,8 @@ store:
 tiers:
   free:
     models: [gemini/gemini-3.5-flash]
+  research:
+    models: [gemini-research/gemini-3.5-flash]
 router:
   auto: [free]
 ```
@@ -98,7 +101,7 @@ If the upstream response does not identify its quota scope, Spillway applies a p
 A documented model-scoped limit is shared for that service and model; other models remain eligible only when the provider's policy permits it.
 The per-instance budget is an additional restriction; the process-wide daily and monthly budgets remain the aggregate spending ceiling across every instance and spill attempt.
 
-An explicit reference such as `gemini-research/gemini-3.5-flash` selects only that instance and never spills to its sibling.
+An explicit reference such as `gemini-research/gemini-3.5-flash` selects only that instance and never spills to its sibling; like every direct reference, it must name a model listed in a tier.
 Existing `gemini/...`, `groq/...`, `auto` and `spillway/<tier>` meanings remain unchanged unless a virtual route is invalid under the same-service uniqueness rule.
 OpenAI-compatible `/v1/*` request and response shapes are unchanged.
 
