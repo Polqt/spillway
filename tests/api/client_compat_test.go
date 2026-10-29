@@ -99,6 +99,57 @@ func TestResponses_RestoresNamespacedToolHistory(t *testing.T) {
 	}
 }
 
+func TestResponses_ForwardsFunctionCallArgumentsUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			var got providers.ChatRequest
+			e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+				got = req
+				return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+			}
+			e.fake.stream = func(_ context.Context, req providers.ChatRequest) (providers.Stream, error) {
+				got = req
+				return &compatTestStream{chunks: []providers.ChatChunk{
+					{Data: json.RawMessage(`{"id":"chatcmpl-stream","object":"chat.completion.chunk","created":1760000000,"model":"model","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}`)},
+				}}, nil
+			}
+			body := fmt.Sprintf(`{"model":"fake/model","stream":%t,"input":[{"type":"message","role":"user","content":"Look it up."},{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{\"q\":\"a\"}"},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`, stream)
+			rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+			}
+			var translated struct {
+				Messages []struct {
+					ToolCalls []struct {
+						Function struct {
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+				t.Fatal("decode translated request:", err)
+			}
+			if len(translated.Messages) != 3 || len(translated.Messages[1].ToolCalls) != 1 || translated.Messages[1].ToolCalls[0].Function.Arguments != `{"q":"a"}` {
+				t.Fatalf("forwarded tool call = %s, want arguments {\"q\":\"a\"}", got.RawBody)
+			}
+		})
+	}
+}
+
+func TestResponses_RejectsNonStringFunctionCallArguments(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	body := `{"model":"fake/model","input":[{"type":"function_call","call_id":"call-1","name":"lookup","arguments":{"q":"secret-argument-value"}},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`
+	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "secret-argument-value") {
+		t.Fatalf("status = %d body %s, want 400 without the argument content", rec.Code, rec.Body)
+	}
+}
+
 func TestResponses_GroupsParallelFunctionCallsIntoOneAssistantMessage(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)
