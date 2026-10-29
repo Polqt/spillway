@@ -409,7 +409,7 @@ func anthropicResponse(raw []byte, logger *slog.Logger, provider string) ([]byte
 		content = append(content, map[string]any{"type": "text", "text": *choice.Message.Content})
 	}
 	for _, call := range choice.Message.ToolCalls {
-		ref := toolCallRef{ID: call.ID, ThoughtSignature: call.ExtraContent.Google.ThoughtSignature}
+		ref := toolCallRef{ID: call.ID, ThoughtSignature: string(call.ExtraContent.Google.ThoughtSignature)}
 		if reason := signatureIssue(ref); reason != "" && logger != nil {
 			logger.Warn("thought signature not forwarded", "provider", provider, "reason", reason, "bytes", len(ref.ThoughtSignature))
 		}
@@ -526,7 +526,7 @@ func (s *anthropicStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		if delta.Function.Arguments != "" {
 			tool.Arguments.WriteString(delta.Function.Arguments)
 		}
-		if signature := delta.ExtraContent.Google.ThoughtSignature; signature != "" {
+		if signature := string(delta.ExtraContent.Google.ThoughtSignature); signature != "" {
 			tool.ThoughtSignature = signature
 		}
 	}

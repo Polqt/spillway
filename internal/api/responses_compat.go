@@ -449,7 +449,7 @@ func responsesResponse(raw []byte, namespaces map[string]responseToolNamespace, 
 		output = append(output, map[string]any{"id": "msg_" + chat.ID, "type": "message", "status": "completed", "role": "assistant", "content": []map[string]any{{"type": contentType, "text": text, "annotations": []any{}}}})
 	}
 	for _, call := range choice.Message.ToolCalls {
-		ref := toolCallRef{ID: call.ID, ThoughtSignature: call.ExtraContent.Google.ThoughtSignature}
+		ref := toolCallRef{ID: call.ID, ThoughtSignature: string(call.ExtraContent.Google.ThoughtSignature)}
 		if reason := signatureIssue(ref); reason != "" && logger != nil {
 			logger.Warn("thought signature not forwarded", "provider", provider, "reason", reason, "bytes", len(ref.ThoughtSignature))
 		}
@@ -566,7 +566,7 @@ func (s *responsesStreamState) writeChunk(w *clientCompatibilityWriter, chunk ma
 		if delta.Function.Arguments != "" {
 			tool.Arguments.WriteString(delta.Function.Arguments)
 		}
-		if signature := delta.ExtraContent.Google.ThoughtSignature; signature != "" {
+		if signature := string(delta.ExtraContent.Google.ThoughtSignature); signature != "" {
 			tool.ThoughtSignature = signature
 		}
 	}

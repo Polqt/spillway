@@ -473,6 +473,96 @@ func TestResponses_OversizedUpstreamSignatureIsNotEmbedded(t *testing.T) {
 	}
 }
 
+func TestResponses_SignedCallIDWithHTMLCharactersRoundTrips(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	providerID := strings.Repeat("<", 256)
+	signature := strings.Repeat("s", 64<<10)
+	fixture, err := json.Marshal(map[string]any{"id": "chatcmpl-html", "object": "chat.completion", "created": 1761609600, "model": "gemini", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"id": providerID, "type": "function", "function": map[string]any{"name": "lookup", "arguments": "{}"}, "extra_content": map[string]any{"google": map[string]any{"thought_signature": signature}}}}}, "finish_reason": "tool_calls"}}})
+	if err != nil {
+		t.Fatal("encode provider response:", err)
+	}
+	var got providers.ChatRequest
+	calls := 0
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		calls++
+		got = req
+		if calls == 1 {
+			return providers.ChatResponse{Body: fixture}, nil
+		}
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-done","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	first := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: `{"model":"fake/model","input":"Use a tool."}`})
+	var output struct {
+		Output []struct {
+			CallID string `json:"call_id"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &output); err != nil {
+		t.Fatal("decode first response:", err)
+	}
+	if first.Code != http.StatusOK || len(output.Output) != 1 || !strings.HasPrefix(output.Output[0].CallID, "spwts1_") {
+		t.Fatalf("first response = %d %#v, want one signed call ID", first.Code, output.Output)
+	}
+	secondBody, err := json.Marshal(map[string]any{"model": "fake/model", "input": []any{
+		map[string]any{"type": "function_call", "call_id": output.Output[0].CallID, "name": "lookup", "arguments": "{}"},
+		map[string]any{"type": "function_call_output", "call_id": output.Output[0].CallID, "output": "found"},
+	}})
+	if err != nil {
+		t.Fatal("encode replay request:", err)
+	}
+	second := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: string(secondBody)})
+	if second.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, want 200; body %.200s", second.Code, second.Body)
+	}
+	var translated struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID string `json:"id"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &translated); err != nil {
+		t.Fatal("decode translated request:", err)
+	}
+	if len(translated.Messages) == 0 || len(translated.Messages[0].ToolCalls) != 1 || translated.Messages[0].ToolCalls[0].ID != providerID {
+		t.Fatal("replayed history does not restore the provider ID")
+	}
+}
+
+func TestClientCompatibility_NonStringThoughtSignatureIsIgnored(t *testing.T) {
+	t.Parallel()
+	toolCall := `"tool_calls":[{"index":0,"id":"function-call-1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"docs\"}"},"extra_content":{"google":{"thought_signature":{"unexpected":true}}}}]`
+	completion := json.RawMessage(`{"id":"chatcmpl-odd","object":"chat.completion","created":1760000000,"model":"gemini","choices":[{"index":0,"message":{"role":"assistant","content":null,` + toolCall + `},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)
+	chunks := []providers.ChatChunk{
+		{Data: json.RawMessage(`{"id":"chatcmpl-odd","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{` + toolCall + `},"finish_reason":null}]}`)},
+		{Data: json.RawMessage(`{"id":"chatcmpl-odd","object":"chat.completion.chunk","created":1760000000,"model":"gemini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	}
+	tests := []struct{ name, path, body, wantArguments string }{
+		{"responses", "/v1/responses", `{"model":"fake/model","input":"Use a tool."}`, `"arguments":"{\"query\":\"docs\"}"`},
+		{"responses stream", "/v1/responses", `{"model":"fake/model","input":"Use a tool.","stream":true}`, `"arguments":"{\"query\":\"docs\"}"`},
+		{"messages", "/v1/messages", `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}]}`, `"input":{"query":"docs"}`},
+		{"messages stream", "/v1/messages", `{"model":"fake/model","max_tokens":128,"messages":[{"role":"user","content":"Use a tool."}],"stream":true}`, `"partial_json":"{\"query\":\"docs\"}"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			e.fake.chat = func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{Body: completion}, nil
+			}
+			e.fake.stream = func(context.Context, providers.ChatRequest) (providers.Stream, error) {
+				return &compatTestStream{chunks: chunks}, nil
+			}
+			rec := e.do(t, request{path: tt.path, auth: "Bearer " + keyCI, body: tt.body})
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || !strings.Contains(body, `"function-call-1"`) || strings.Contains(body, "spwts1_") || !strings.Contains(body, tt.wantArguments) {
+				t.Fatalf("response = %d %s, want the unsigned provider ID and full arguments", rec.Code, body)
+			}
+		})
+	}
+}
+
 func TestClientCompatibility_ThoughtSignatureAbsentFromLogs(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t, nil)

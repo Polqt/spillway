@@ -24,22 +24,37 @@ type toolCallRef struct {
 
 type googleExtraContent struct {
 	Google struct {
-		ThoughtSignature string `json:"thought_signature"`
+		ThoughtSignature thoughtSignature `json:"thought_signature"`
 	} `json:"google"`
+}
+
+// thoughtSignature decodes a non-string upstream value as no signature, so one odd field never fails a whole reply.
+type thoughtSignature string
+
+func (s *thoughtSignature) UnmarshalJSON(data []byte) error {
+	var value string
+	if json.Unmarshal(data, &value) != nil {
+		value = ""
+	}
+	*s = thoughtSignature(value)
+	return nil
 }
 
 func clientToolCallID(ref toolCallRef) (string, bool) {
 	if ref.ThoughtSignature == "" || !validProviderToolCallID(ref.ID) || !validThoughtSignature(ref.ThoughtSignature) {
 		return ref.ID, false
 	}
-	envelope, err := json.Marshal(struct {
+	// HTML escaping would grow <, > and & sixfold, past the 2x that maxSignedEnvelopeBytes allows for the ID.
+	var envelope bytes.Buffer
+	encoder := json.NewEncoder(&envelope)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(struct {
 		ID string `json:"id"`
 		TS string `json:"ts"`
-	}{ID: ref.ID, TS: ref.ThoughtSignature})
-	if err != nil {
+	}{ID: ref.ID, TS: ref.ThoughtSignature}); err != nil {
 		return ref.ID, false
 	}
-	return signedToolCallIDPrefix + base64.RawURLEncoding.EncodeToString(envelope), true
+	return signedToolCallIDPrefix + base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(envelope.Bytes(), []byte("\n"))), true
 }
 
 func parseClientToolCallID(id string) (toolCallRef, error) {
@@ -79,7 +94,7 @@ func chatToolCall(ref toolCallRef, name, arguments string) map[string]any {
 	call := map[string]any{"id": ref.ID, "type": "function", "function": map[string]any{"name": name, "arguments": arguments}}
 	if ref.ThoughtSignature != "" {
 		var extra googleExtraContent
-		extra.Google.ThoughtSignature = ref.ThoughtSignature
+		extra.Google.ThoughtSignature = thoughtSignature(ref.ThoughtSignature)
 		call["extra_content"] = extra
 	}
 	return call
