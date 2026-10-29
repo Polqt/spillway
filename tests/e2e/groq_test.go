@@ -99,6 +99,7 @@ func TestGroq_UpstreamErrorsBecomeOpenAIErrors(t *testing.T) {
 		{http.StatusUnauthorized, http.StatusBadGateway, "upstream_unauthorized"},
 		{http.StatusForbidden, http.StatusBadGateway, "upstream_unauthorized"},
 		{http.StatusBadRequest, http.StatusBadRequest, "provider_bad_request"},
+		{http.StatusRequestEntityTooLarge, http.StatusBadRequest, "context_length_exceeded"},
 		{http.StatusNotFound, http.StatusNotFound, "model_not_found"},
 		{http.StatusServiceUnavailable, http.StatusBadGateway, "upstream_unavailable"},
 	}

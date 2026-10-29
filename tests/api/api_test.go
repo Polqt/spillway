@@ -739,7 +739,7 @@ func TestChat_TierSpillsOnlyForProviderFailures(t *testing.T) {
 
 func TestChat_TierDoesNotSpillOnUpstreamClientStatuses(t *testing.T) {
 	t.Parallel()
-	for _, status := range []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var upstreamCalls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1542,5 +1542,55 @@ func TestNewServer_Timeouts(t *testing.T) {
 	}
 	if srv.ErrorLog == nil {
 		t.Error("ErrorLog is nil, want it bridged to slog")
+	}
+}
+
+func TestChat_TierSpillsOnUpstreamRequestTooLarge(t *testing.T) {
+	t.Parallel()
+	bodies := map[string]struct {
+		status int
+		body   string
+	}{
+		"Groq TPM 413":                {http.StatusRequestEntityTooLarge, `{"error":{"message":"Request too large in organization org_test_marker","type":"tokens","code":"rate_limit_exceeded"}}`},
+		"400 context_length_exceeded": {http.StatusBadRequest, `{"error":{"message":"too long","type":"invalid_request_error","code":"context_length_exceeded"}}`},
+	}
+	for name, upstreamReply := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls.Add(1)
+				w.WriteHeader(upstreamReply.status)
+				_, _ = io.WriteString(w, upstreamReply.body)
+			}))
+			defer upstream.Close()
+			first, err := openaicompat.New(openaicompat.Options{Name: "first", BaseURL: upstream.URL, APIKey: redact.NewSecret(keyCursor), Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second := &countingProvider{name: "second", chat: func(providers.ChatRequest) (providers.ChatResponse, error) {
+				return providers.ChatResponse{Body: json.RawMessage(`{"model":"second"}`)}, nil
+			}}
+			set, err := providers.NewSet(first, second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, err := api.NewHandler(api.Options{
+				Providers: set,
+				LocalKeys: []api.LocalKey{{Name: "ci", Key: redact.NewSecret(keyCI)}},
+				Logger:    slog.New(slog.DiscardHandler),
+				Tiers:     map[string][]providers.ModelRef{"demo": {{Provider: "first", Model: "candidate"}, {Provider: "second", Model: "candidate"}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Replace(echoBody, "mock/echo", "spillway/demo", 1)))
+			req.Header.Set("Authorization", "Bearer "+keyCI)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || rec.Header().Get("X-Spillway-Provider") != "second" || upstreamCalls.Load() != 1 || second.calls.Load() != 1 {
+				t.Fatalf("response = %d %v %s, upstream calls %d; want one upstream call and a spill to second", rec.Code, rec.Header(), rec.Body, upstreamCalls.Load())
+			}
+		})
 	}
 }

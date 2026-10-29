@@ -971,3 +971,75 @@ func TestClient_DoesNotFollowRedirect(t *testing.T) {
 		t.Errorf("Models() error = %v, redirect reached = %v", err, redirectReached)
 	}
 }
+
+// Request-size rejections are classified by status and structured code only, never by message text (ADR 0034).
+func TestClient_MapsRequestSizeRejections(t *testing.T) {
+	t.Parallel()
+	groqTPM := `{"error":{"message":"Request too large for model openai/gpt-oss-120b in organization org_test_marker on tokens per minute (TPM): Limit 8000, Requested 35112 ` + providerKey + `","type":"tokens","code":"rate_limit_exceeded"}}`
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"Groq TPM 413 with a rate-limit body", http.StatusRequestEntityTooLarge, groqTPM, providers.ErrRequestTooLarge},
+		{"documented 413", http.StatusRequestEntityTooLarge, `{"error":{"message":"Request body too large","type":"invalid_request_error","code":413}}`, providers.ErrRequestTooLarge},
+		{"empty 413", http.StatusRequestEntityTooLarge, ``, providers.ErrRequestTooLarge},
+		{"400 context_length_exceeded", http.StatusBadRequest, `{"error":{"message":"Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`, providers.ErrRequestTooLarge},
+		{"400 that only says so in text", http.StatusBadRequest, `{"error":{"message":"maximum context length is 8192 tokens","type":"invalid_request_error","code":"invalid_request"}}`, providers.ErrBadRequest},
+		{"OpenRouter numeric code 400", http.StatusBadRequest, `{"error":{"code":400,"message":"This endpoint's maximum context length is 131072 tokens."}}`, providers.ErrBadRequest},
+		{"422", http.StatusUnprocessableEntity, `{"error":{"message":"unprocessable","code":"context_length_exceeded"}}`, providers.ErrBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Retry-After", "60")
+				w.Header().Set("x-ratelimit-remaining-tokens", "0")
+				w.Header().Set("x-ratelimit-reset-tokens", "1m0s")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+			c := client(t, srv.URL)
+			_, chatErr := c.Chat(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[]}`)})
+			_, streamErr := c.ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[],"stream":true}`)})
+			for name, err := range map[string]error{"chat": chatErr, "stream": streamErr} {
+				var retry providers.RetryAfterError
+				if !errors.Is(err, tt.want) || (errors.Is(tt.want, providers.ErrRequestTooLarge) && (errors.Is(err, providers.ErrRateLimited) || errors.As(err, &retry))) {
+					t.Errorf("%s error = %v, want only %v", name, err, tt.want)
+				}
+				if err != nil && strings.Contains(err.Error(), providerKey) {
+					t.Errorf("%s error leaks the provider key: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestClient_ChatStreamFirstEventRequestTooLarge(t *testing.T) {
+	t.Parallel()
+	for _, code := range []string{`"context_length_exceeded"`, `413`, `"413"`} {
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				flusher := w.(http.Flusher)
+				event := `data: {"error":{"message":"too long","code":` + code + `}}` + "\n\n"
+				for _, part := range []string{event[:9], event[9:25], event[25:]} {
+					_, _ = io.WriteString(w, part)
+					flusher.Flush()
+				}
+			}))
+			defer srv.Close()
+			stream, err := client(t, srv.URL).ChatStream(t.Context(), providers.ChatRequest{Model: "upstream", RawBody: []byte(`{"model":"upstream","messages":[],"stream":true}`)})
+			if err != nil {
+				t.Fatal("open stream:", err)
+			}
+			defer func() { _ = stream.Close() }()
+			if _, err := stream.Recv(); !errors.Is(err, providers.ErrRequestTooLarge) {
+				t.Fatalf("Recv error = %v, want ErrRequestTooLarge", err)
+			}
+		})
+	}
+}

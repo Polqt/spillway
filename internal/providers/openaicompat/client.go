@@ -282,6 +282,10 @@ func (c *Client) responseErrorBody(resp *http.Response) ([]byte, error) {
 		message = fmt.Errorf("%w: read upstream error response: %w", message, c.clean.Error(readErr))
 	}
 	switch {
+	// The status decides before any body code: Groq's per-request TPM 413 says rate_limit_exceeded, yet waiting never helps it (ADR 0034).
+	case resp.StatusCode == http.StatusRequestEntityTooLarge,
+		resp.StatusCode == http.StatusBadRequest && isContextLengthCode(errorCode(body)):
+		return body, fmt.Errorf("%w: %w", providers.ErrRequestTooLarge, message)
 	case resp.StatusCode == http.StatusPaymentRequired:
 		after := retryAfter(resp.Header.Get("Retry-After"), time.Now())
 		if after > 0 {
@@ -322,6 +326,25 @@ func responseUsageOnly(body []byte) []byte {
 		return nil
 	}
 	return encoded
+}
+
+// errorCode returns error.code from an OpenAI-shaped error body, or nil.
+func errorCode(body []byte) json.RawMessage {
+	var payload struct {
+		Error struct {
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return nil
+	}
+	return payload.Error.Code
+}
+
+// isContextLengthCode reports whether code is OpenAI's structured code for input beyond a model's limits.
+func isContextLengthCode(code json.RawMessage) bool {
+	var text string
+	return json.Unmarshal(code, &text) == nil && text == "context_length_exceeded"
 }
 
 // errorMessage scrubs before truncating, because a cut through a key would hide it from the scrubber.
@@ -632,6 +655,9 @@ func (s *sseStream) Recv() (providers.ChatChunk, error) {
 }
 
 func streamErrorKind(code json.RawMessage) error {
+	if isContextLengthCode(code) {
+		return providers.ErrRequestTooLarge
+	}
 	var status int
 	if err := json.Unmarshal(code, &status); err != nil {
 		var text string
@@ -645,6 +671,8 @@ func streamErrorKind(code json.RawMessage) error {
 		status = parsed
 	}
 	switch status {
+	case http.StatusRequestEntityTooLarge:
+		return providers.ErrRequestTooLarge
 	case http.StatusTooManyRequests:
 		return providers.ErrRateLimited
 	case http.StatusPaymentRequired:
