@@ -20,11 +20,14 @@ Spillway supports OpenAI Chat Completions at `/v1/chat/completions`, OpenAI Resp
 Text, images, tool calls, and streaming are translated to the existing Chat Completions routing path.
 Codex namespace functions are flattened for the provider and restored in Responses tool calls; provider-hosted tools such as `web_search` are omitted because Chat Completions has no equivalent.
 The Responses `store`, `include`, `client_metadata`, `prompt_cache_key`, `service_tier`, `reasoning.summary`, `text.verbosity`, input-item `id`, and replayed `output_text` `annotations` and `logprobs` fields are accepted for client compatibility. Spillway does not retain Responses objects, return provider-specific included fields, or apply client metadata, cache, service-tier, summary, or verbosity hints; input-item IDs are ignored by the stateless chat adapter.
+Replayed `function_call.arguments` must be a JSON string and is forwarded unchanged.
 Background Responses, `previous_response_id`, computer use, and other protocol features that have no Chat Completions equivalent are not supported.
 
 ### Claude Code Messages compatibility
 
 Claude Code `thinking`, `output_config.effort`, `context_management`, `metadata`, and `cache_control` fields are accepted as hints and are not forwarded to providers.
+Tools marked `defer_loading` are sent to the provider as ordinary tools without the flag.
+Mid-conversation `system` messages are forwarded as Chat Completions system messages in place, except that one sent between a tool call and its result is moved after the result, because providers require tool results to follow their calls directly.
 The accepted thinking types are `adaptive`, `disabled`, `between_tools`, and `enabled`; enabled thinking requires a `budget_tokens` value of at least 1024 and below `max_tokens`.
 The accepted effort values are `low`, `medium`, `high`, `xhigh`, and `max`, and cache control accepts `ephemeral` with an optional `5m` or `1h` TTL.
 These hints do not enable provider features or change model behavior.

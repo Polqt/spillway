@@ -48,6 +48,8 @@ func anthropicRequest(raw []byte) ([]byte, bool, error) {
 		}
 		messages = append(messages, map[string]any{"role": "system", "content": content})
 	}
+	// Chat Completions requires tool results directly after their tool calls, so a system message sent in between waits for them.
+	var heldSystem []map[string]any
 	for _, rawMessage := range request.Messages {
 		var message struct {
 			Role    string          `json:"role"`
@@ -62,7 +64,15 @@ func anthropicRequest(raw []byte) ([]byte, bool, error) {
 			if err != nil {
 				return nil, false, err
 			}
-			messages = append(messages, map[string]any{"role": "system", "content": content})
+			if content == "" {
+				continue
+			}
+			system := map[string]any{"role": "system", "content": content}
+			if len(heldSystem) > 0 || awaitsToolResults(messages) {
+				heldSystem = append(heldSystem, system)
+			} else {
+				messages = append(messages, system)
+			}
 			continue
 		}
 		if message.Role != "user" && message.Role != "assistant" {
@@ -72,8 +82,16 @@ func anthropicRequest(raw []byte) ([]byte, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		messages = append(messages, converted...)
+		results := 0
+		for results < len(converted) && converted[results]["role"] == "tool" {
+			results++
+		}
+		messages = append(messages, converted[:results]...)
+		messages = append(messages, heldSystem...)
+		messages = append(messages, converted[results:]...)
+		heldSystem = nil
 	}
+	messages = append(messages, heldSystem...)
 	if len(messages) == 0 {
 		return nil, false, errors.New("messages must be a non-empty array")
 	}
@@ -589,4 +607,12 @@ func anthropicStop(reason string) string {
 	default:
 		return "end_turn"
 	}
+}
+
+func awaitsToolResults(messages []map[string]any) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	_, ok := messages[len(messages)-1]["tool_calls"]
+	return ok
 }

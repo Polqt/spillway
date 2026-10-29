@@ -124,7 +124,7 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 			CallID    string          `json:"call_id"`
 			Name      string          `json:"name"`
 			Namespace string          `json:"namespace"`
-			Arguments string          `json:"arguments"`
+			Arguments json.RawMessage `json:"arguments"`
 			Output    json.RawMessage `json:"output"`
 		}
 		if err := json.Unmarshal(item, &entry); err != nil {
@@ -152,7 +152,11 @@ func responseInputMessages(raw json.RawMessage, namespaces map[string]responseTo
 					break
 				}
 			}
-			call := chatToolCall(ref, name, entry.Arguments)
+			var arguments string
+			if len(entry.Arguments) == 0 || string(entry.Arguments) == "null" || json.Unmarshal(entry.Arguments, &arguments) != nil {
+				return nil, errors.New("function_call.arguments must be a JSON string")
+			}
+			call := chatToolCall(ref, name, arguments)
 			if last := len(messages) - 1; last >= 0 && messages[last]["role"] == "assistant" {
 				calls, _ := messages[last]["tool_calls"].([]map[string]any)
 				messages[last]["tool_calls"] = append(calls, call)

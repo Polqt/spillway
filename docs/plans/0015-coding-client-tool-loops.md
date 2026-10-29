@@ -1,6 +1,6 @@
 # Coding client tool loops: Gemini thought signatures and Claude Code requests
 
-Status: implemented on local `main` (9d4c650); release blocked by local ticket 15 (live checks), 14 recommended (verifier 2026-10-29)
+Status: implemented and shipped in v1.0.0 (7eefc35); live checks still open in local ticket 15
 Milestone: v1.0.x client compatibility fixes (additive under ADR 0015; may ship in v1.1.0 instead)
 
 ## Goal
@@ -224,6 +224,8 @@ None of them is forwarded upstream.
 | `cache_control` at every documented position | Accept, ignore | Prompt caching is Anthropic-specific; the shape `{"type":"ephemeral","ttl"?:"5m"\|"1h"}` is validated. |
 | `tools[].type: "custom"` | Accept | Equivalent to an untyped tool. |
 | `thinking` and `redacted_thinking` blocks in assistant history | Accept, drop | Their signatures are Anthropic-specific and cannot be replayed to another provider. |
+| `messages[].role: "system"` | Accept, forward as a Chat Completions system message in place; one sent between a tool call and its result moves after the result | The live run showed Claude Code sends them mid-conversation. Chat Completions requires tool results directly after their calls. |
+| `tools[].defer_loading` | Accept, forward the tool without the flag | Spillway sends every tool up front, so on-demand loading has no equivalent. |
 | `tool_result.is_error` | Accept, drop the flag, keep the content verbatim | Chat tool messages have no error flag; Claude Code already wraps error text in its content. Prefixing text was rejected because it changes content the client wrote. |
 | `tool_result` text blocks with `cache_control` | Accept | Same as other blocks. |
 | `tool_result` image blocks | Reject, 400 with a clear message | Chat tool messages are text-only (open question 5). |

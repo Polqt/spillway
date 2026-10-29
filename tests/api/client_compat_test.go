@@ -142,11 +142,30 @@ func TestResponses_ForwardsFunctionCallArgumentsUnchanged(t *testing.T) {
 
 func TestResponses_RejectsNonStringFunctionCallArguments(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t, nil)
-	body := `{"model":"fake/model","input":[{"type":"function_call","call_id":"call-1","name":"lookup","arguments":{"q":"secret-argument-value"}},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`
-	rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
-	if rec.Code != http.StatusBadRequest || strings.Contains(rec.Body.String(), "secret-argument-value") {
-		t.Fatalf("status = %d body %s, want 400 without the argument content", rec.Code, rec.Body)
+	tests := []struct{ name, arguments string }{
+		{"object", `,"arguments":{"q":"secret-argument-value"}`},
+		{"null", `,"arguments":null`},
+		{"missing", ``},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(t, nil)
+			body := `{"model":"fake/model","input":[{"type":"function_call","call_id":"call-1","name":"lookup"` + tt.arguments + `},{"type":"function_call_output","call_id":"call-1","output":"found"}]}`
+			rec := e.do(t, request{path: "/v1/responses", auth: "Bearer " + keyCI, body: body})
+			var response struct {
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal("decode error response:", err)
+			}
+			if rec.Code != http.StatusBadRequest || response.Error.Type != "invalid_request_error" || response.Error.Message != "function_call.arguments must be a JSON string" {
+				t.Fatalf("response = %d %s, want a 400 naming function_call.arguments", rec.Code, rec.Body)
+			}
+		})
 	}
 }
 
@@ -953,6 +972,53 @@ func TestAnthropicMessages_AcceptsClaudeCodeSystemMessagesAndDeferredTools(t *te
 	}
 	if len(upstream.Tools) != 2 || strings.Contains(string(got.RawBody), "defer_loading") {
 		t.Fatalf("upstream tools = %s, want both tools without defer_loading", got.RawBody)
+	}
+}
+
+func TestAnthropicMessages_SystemMessageNeverSplitsToolCallFromResult(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"user","content":"Read it."},{"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"Read","input":{}}]},{"role":"system","content":"Mid system."},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"found"},{"type":"text","text":"Thanks."}]}]}`
+	rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var upstream struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(got.RawBody, &upstream); err != nil {
+		t.Fatal("decode upstream body:", err)
+	}
+	roles := make([]string, 0, len(upstream.Messages))
+	for _, message := range upstream.Messages {
+		roles = append(roles, message.Role)
+	}
+	if want := "user,assistant,tool,system,user"; strings.Join(roles, ",") != want {
+		t.Fatalf("upstream roles = %v, want %s so tool results directly follow their calls", roles, want)
+	}
+}
+
+func TestAnthropicMessages_EmptySystemMessageIsNotForwarded(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, nil)
+	var got providers.ChatRequest
+	e.fake.chat = func(req providers.ChatRequest) (providers.ChatResponse, error) {
+		got = req
+		return providers.ChatResponse{Body: json.RawMessage(`{"id":"chatcmpl-test","object":"chat.completion","created":1760000000,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"Ready."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}`)}, nil
+	}
+	body := `{"model":"fake/model","max_tokens":32,"messages":[{"role":"user","content":"hello"},{"role":"system","content":[]}]}`
+	if rec := e.do(t, request{path: "/v1/messages", auth: "Bearer " + keyCI, body: body}); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(string(got.RawBody), `"role":"system"`) {
+		t.Fatalf("upstream body = %s, want no empty system message", got.RawBody)
 	}
 }
 

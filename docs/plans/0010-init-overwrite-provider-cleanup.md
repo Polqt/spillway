@@ -1,6 +1,6 @@
 # Init config overwrite and provider cleanup
 
-Status: complete; shipped in v1.0.0 (#21); follow-up commits `ed91d7a` and `a50a100` are not yet on `origin/main`
+Status: complete; shipped in v1.0.0 (#21); follow-up commits `ed91d7a` and `a50a100` are on `main`
 
 ## Goal
 
